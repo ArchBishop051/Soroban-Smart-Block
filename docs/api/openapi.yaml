@@ -3906,6 +3906,13 @@ components:
         Admin bearer token supplied through the `ADMIN_SECRET` environment variable.
         When `ADMIN_TOTP_SECRET` is also set, clients must send a current 6-digit
         TOTP code in the `X-Admin-TOTP` header in addition to this bearer token.
+    MetricsApiKeyAuth:
+      type: http
+      scheme: bearer
+      description: >
+        Optional bearer token for the Prometheus metrics endpoints, supplied
+        through the `METRICS_API_KEY` environment variable. When the variable is
+        unset the endpoints are open.
     AdminTotpHeader:
       type: apiKey
       in: header
@@ -3974,7 +3981,8 @@ components:
           description: Percentage of recent calls that succeeded
           example: 99.5
         avgLatency:
-          type: [integer, "null"]
+          type: integer
+          nullable: true
           description: Average successful-call latency in milliseconds over the sliding window, or null with no samples yet
           example: 120
         errorRate:

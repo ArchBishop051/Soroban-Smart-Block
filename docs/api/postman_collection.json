@@ -415,7 +415,7 @@
       "request": {
         "name": "Get contract statistics",
         "description": {
-          "content": "Returns aggregate statistics for a contract: total events, unique callers, first/last seen ledger, and a 30-day events-per-day series.",
+          "content": "Returns aggregate statistics for a contract: total events, unique callers, first/last seen ledger, and a daily event-volume series over the trailing `range` days (default 30, max 365).",
           "type": "text/plain"
         },
         "url": {
@@ -428,7 +428,14 @@
           "host": [
             "{{baseUrl}}"
           ],
-          "query": [],
+          "query": [
+            {
+              "disabled": false,
+              "key": "range",
+              "value": "30",
+              "description": "Number of trailing days to include in the events_per_day series (1-365, default 30). The UI uses 30, 90, and 365-day presets."
+            }
+          ],
           "variable": [
             {
               "disabled": false,
@@ -1977,6 +1984,57 @@
       }
     },
     {
+      "name": "Collection-level NFT analytics",
+      "request": {
+        "name": "Collection-level NFT analytics",
+        "description": {
+          "content": "Returns mint volume over time and a unique-holder-count trend for an NFT collection, derived from already-indexed NFT mint/transfer events.",
+          "type": "text/plain"
+        },
+        "url": {
+          "path": [
+            "api",
+            "tokens",
+            ":contractId",
+            "nfts",
+            "analytics"
+          ],
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "query": [
+            {
+              "disabled": false,
+              "key": "days",
+              "value": "30",
+              "description": "Rolling window length in days (clamped server-side to 7..365)"
+            }
+          ],
+          "variable": [
+            {
+              "disabled": false,
+              "type": "any",
+              "value": "<string>",
+              "key": "contractId",
+              "description": "(Required) "
+            }
+          ]
+        },
+        "header": [
+          {
+            "key": "Accept",
+            "value": "application/json"
+          }
+        ],
+        "method": "GET",
+        "auth": null
+      },
+      "event": [],
+      "protocolProfileBehavior": {
+        "disableBodyPruning": true
+      }
+    },
+    {
       "name": "Transfer history for a single NFT token",
       "request": {
         "name": "Transfer history for a single NFT token",
@@ -2760,7 +2818,7 @@
         "auth": null,
         "body": {
           "mode": "raw",
-          "raw": "[\n  {\n    \"value\": \"reference #/components/schemas/BatchSubRequest not found in the OpenAPI spec\"\n  },\n  {\n    \"value\": \"reference #/components/schemas/BatchSubRequest not found in the OpenAPI spec\"\n  }\n]",
+          "raw": "[\n  {\n    \"path\": \"<string>\",\n    \"method\": \"GET\",\n    \"body\": {\n      \"key_0\": \"<string>\"\n    }\n  },\n  {\n    \"path\": \"<string>\",\n    \"method\": \"GET\",\n    \"body\": {\n      \"key_0\": \"<string>\"\n    }\n  }\n]",
           "options": {
             "raw": {
               "language": "json"
@@ -3969,6 +4027,40 @@
       }
     },
     {
+      "name": "Per-provider RPC health and performance snapshot",
+      "request": {
+        "name": "Per-provider RPC health and performance snapshot",
+        "description": {
+          "content": "Returns health status for every configured Soroban RPC provider, sourced\nfrom `rpcMultiNode.js`'s own call-outcome tracking (the same data that\ndrives failover) rather than a separate synthetic probe. Cached for 5s.\n",
+          "type": "text/plain"
+        },
+        "url": {
+          "path": [
+            "api",
+            "rpc",
+            "health"
+          ],
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "query": [],
+          "variable": []
+        },
+        "header": [
+          {
+            "key": "Accept",
+            "value": "application/json"
+          }
+        ],
+        "method": "GET",
+        "auth": null
+      },
+      "event": [],
+      "protocolProfileBehavior": {
+        "disableBodyPruning": true
+      }
+    },
+    {
       "name": "Export events as CSV or JSON",
       "request": {
         "name": "Export events as CSV or JSON",
@@ -4126,6 +4218,81 @@
         ],
         "method": "GET",
         "auth": null
+      },
+      "event": [],
+      "protocolProfileBehavior": {
+        "disableBodyPruning": true
+      }
+    },
+    {
+      "name": "Decoder success/failure stats over the last 24h",
+      "request": {
+        "name": "Decoder success/failure stats over the last 24h",
+        "description": {
+          "content": "Returns decode outcome counts backed by the `decoder_success_total` /\n`decoder_failure_total` Prometheus counters, aggregated over a trailing\n24-hour rolling window. Feeds the DECODE_RATE_LOW alert condition.\n",
+          "type": "text/plain"
+        },
+        "url": {
+          "path": [
+            "api",
+            "stats",
+            "decoder"
+          ],
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "query": [],
+          "variable": []
+        },
+        "header": [
+          {
+            "key": "Accept",
+            "value": "application/json"
+          }
+        ],
+        "method": "GET",
+        "auth": null
+      },
+      "event": [],
+      "protocolProfileBehavior": {
+        "disableBodyPruning": true
+      }
+    },
+    {
+      "name": "Prometheus metrics (API-prefixed alias)",
+      "request": {
+        "name": "Prometheus metrics (API-prefixed alias)",
+        "description": {
+          "content": "Returns the same Prometheus registry as `/metrics` — event ingestion\n(`soroban_events_ingested_total`), decode latency\n(`soroban_decode_duration_ms`), RPC errors (`soroban_rpc_errors_total`),\nDB pool gauges (`soroban_db_pool_total`/`idle`/`waiting`), decoder\nsuccess/failure counters, `dlq_depth`, and default Node.js process\nmetrics.\n\nGated by an optional `METRICS_API_KEY` Bearer token: when the env var\nis set, requests must send `Authorization: Bearer <METRICS_API_KEY>`\nor receive 401. When unset, the endpoint is unauthenticated.\n",
+          "type": "text/plain"
+        },
+        "url": {
+          "path": [
+            "api",
+            "metrics"
+          ],
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "query": [],
+          "variable": []
+        },
+        "header": [
+          {
+            "key": "Accept",
+            "value": "text/plain; version=0.0.4"
+          }
+        ],
+        "method": "GET",
+        "auth": {
+          "type": "bearer",
+          "bearer": [
+            {
+              "key": "token",
+              "value": "{{bearerToken}}"
+            }
+          ]
+        }
       },
       "event": [],
       "protocolProfileBehavior": {
