@@ -263,7 +263,7 @@ describe("WalletPage", () => {
 
     renderWalletPage(VALID_ADDR);
 
-    const exportBtn = await screen.findByText("↓ Export CSV");
+    const exportBtn = await screen.findByText("↓ Export");
     expect(exportBtn).toBeDefined();
   });
 

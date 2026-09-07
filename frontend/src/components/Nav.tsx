@@ -2,6 +2,7 @@ import { useState, useRef, useEffect } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import ThemeToggle from "./ThemeToggle";
 import NetworkSwitcher from "./NetworkSwitcher";
+import WalletConnectButton from "./WalletConnectButton";
 import { useRecentSearches } from "../hooks/useRecentSearches";
 
 const NAV_LINKS = [
