@@ -439,7 +439,8 @@ describe("Additional Features", () => {
   // Test: Default source account handling
   it("uses default source account when empty", () => {
     const DEFAULT_SOURCE = "GAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOCCWN";
-    const sourceAccount = "" || DEFAULT_SOURCE;
+    const providedSource = "";
+    const sourceAccount = providedSource || DEFAULT_SOURCE;
     
     assert.strictEqual(sourceAccount, DEFAULT_SOURCE);
   });

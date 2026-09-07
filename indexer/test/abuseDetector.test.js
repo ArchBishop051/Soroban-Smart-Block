@@ -127,17 +127,17 @@ describe('abuseDetector middleware (issue #763)', () => {
         .mockResolvedValueOnce(null) // not blocked
         .mockResolvedValueOnce('1'); // has penalty
 
-      let capturedReq;
+      let _capturedReq;
       const app2 = express();
       app2.use(abuseDetector);
       app2.get('/api/test', (req, res) => {
-        capturedReq = req;
+        _capturedReq = req;
         res.json({ ok: true });
       });
 
       await request(app2).get('/api/test');
 
-      expect(capturedReq.rateContext.rateLimit).toBe(5);
+      expect(_capturedReq.rateContext.rateLimit).toBe(5);
     });
 
     it('checks both specific and wildcard penalties', async () => {
@@ -157,17 +157,17 @@ describe('abuseDetector middleware (issue #763)', () => {
         .mockResolvedValueOnce(null) // specific penalty
         .mockResolvedValueOnce('1'); // wildcard penalty
 
-      let capturedReq;
+      let _capturedReq;
       const app2 = express();
       app2.use(abuseDetector);
       app2.get('/api/test', (req, res) => {
-        capturedReq = req;
+        _capturedReq = req;
         res.json({ ok: true });
       });
 
       await request(app2).get('/api/test');
 
-      expect(capturedReq.rateContext.rateLimit).toBe(5);
+      expect(_capturedReq.rateContext.rateLimit).toBe(5);
     });
   });
 
@@ -180,11 +180,11 @@ describe('abuseDetector middleware (issue #763)', () => {
         '/api/search?q=user3', // high similarity in paths
       ]);
 
-      let capturedReq;
+      let _capturedReq;
       const app2 = express();
       app2.use(abuseDetector);
       app2.get('/api/search', (req, res) => {
-        capturedReq = req;
+        _capturedReq = req;
         res.json({ ok: true });
       });
 
@@ -210,11 +210,11 @@ describe('abuseDetector middleware (issue #763)', () => {
       mockRedisClient.get.mockResolvedValue(null);
       mockRedisClient.incr.mockResolvedValue(25); // exceeds threshold of 20
 
-      let capturedReq;
+      let _capturedReq;
       const app2 = express();
       app2.use(abuseDetector);
       app2.get('/api/test', (req, res) => {
-        capturedReq = req;
+        _capturedReq = req;
         res.json({ ok: true });
       });
 
@@ -250,7 +250,7 @@ describe('abuseDetector middleware (issue #763)', () => {
     it('ignores requests without pagination params', async () => {
       mockRedisClient.get.mockResolvedValue(null);
 
-      const prevIncrCalls = mockRedisClient.incr.mock.calls.length;
+      const _prevIncrCalls = mockRedisClient.incr.mock.calls.length;
 
       await request(app).get('/api/test');
 
@@ -320,7 +320,7 @@ describe('abuseDetector middleware (issue #763)', () => {
       app2.use(abuseDetector);
       app2.get('/api/test', (req, res) => res.status(200).json({ ok: true }));
 
-      const incrBefore = mockRedisClient.incr.mock.calls.length;
+      const _incrBefore = mockRedisClient.incr.mock.calls.length;
       await request(app2).get('/api/test');
       await new Promise((r) => setTimeout(r, 100));
     });
@@ -361,23 +361,23 @@ describe('abuseDetector middleware (issue #763)', () => {
     it('initializes rateContext if missing', async () => {
       mockRedisClient.get.mockResolvedValue(null);
 
-      let capturedReq;
+      let _capturedReq;
       const app2 = express();
       app2.use(abuseDetector);
       app2.get('/api/test', (req, res) => {
-        capturedReq = req;
+        _capturedReq = req;
         res.json({ ok: true });
       });
 
       await request(app2).get('/api/test');
 
-      expect(capturedReq.rateContext).toBeDefined();
+      expect(_capturedReq.rateContext).toBeDefined();
     });
 
     it('preserves existing rateContext', async () => {
       mockRedisClient.get.mockResolvedValue(null);
 
-      let capturedReq;
+      let _capturedReq;
       const app2 = express();
       app2.use((req, res, next) => {
         req.rateContext = { clientId: 'test-client', tier: 'pro' };
@@ -385,14 +385,14 @@ describe('abuseDetector middleware (issue #763)', () => {
       });
       app2.use(abuseDetector);
       app2.get('/api/test', (req, res) => {
-        capturedReq = req;
+        _capturedReq = req;
         res.json({ ok: true });
       });
 
       await request(app2).get('/api/test');
 
-      expect(capturedReq.rateContext.clientId).toBe('test-client');
-      expect(capturedReq.rateContext.tier).toBe('pro');
+      expect(_capturedReq.rateContext.clientId).toBe('test-client');
+      expect(_capturedReq.rateContext.tier).toBe('pro');
     });
   });
 

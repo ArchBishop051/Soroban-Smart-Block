@@ -61,7 +61,7 @@ describe('Webhook Wallet Address Subscriptions', () => {
     let deliveryAttempted = false;
 
     // Register a wallet subscription
-    const sub = await db.createWebhookSubscription({
+    const _sub = await db.createWebhookSubscription({
       api_key_id: (await db.createApiKey({ key: 'wallet-test-' + Date.now(), name: 'Test', tier: 'pro' })).id,
       url: 'https://example.com/webhook',
       wallet_address: walletAddress,
@@ -102,14 +102,14 @@ describe('Webhook Wallet Address Subscriptions', () => {
     let deliveryAttempted = false;
 
     // Register a wallet subscription for one address
-    const sub = await db.createWebhookSubscription({
+    const _sub = await db.createWebhookSubscription({
       api_key_id: (await db.createApiKey({ key: 'wallet-test2-' + Date.now(), name: 'Test', tier: 'pro' })).id,
       url: 'https://example.com/webhook',
       wallet_address: walletAddress,
       secret: 'test-secret-' + Date.now(),
     });
 
-    global.fetch = async (url, options) => {
+    global.fetch = async (url, _options) => {
       if (url === 'https://example.com/webhook') {
         deliveryAttempted = true;
       }

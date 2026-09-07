@@ -257,7 +257,7 @@ describe('graphqlComplexity middleware (issue #763)', () => {
         ],
       });
 
-      let capturedReq;
+      let _capturedReq;
       const app2 = express();
       app2.use(express.json());
       app2.use((req, res, next) => {
@@ -266,7 +266,7 @@ describe('graphqlComplexity middleware (issue #763)', () => {
       });
       app2.use('/graphql', graphqlComplexityLimiter);
       app2.post('/graphql', (req, res) => {
-        capturedReq = req;
+        _capturedReq = req;
         res.json({ ok: true });
       });
 

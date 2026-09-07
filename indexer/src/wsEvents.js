@@ -89,7 +89,13 @@ export function attachWebSocketServer(httpServer) {
     },
   });
 
-  wss.on("connection", (ws, _req) => {
+  wss.on("connection", (ws, req) => {
+    // Re-derive the client's network from the connection URL (verifyClient
+    // validated it above but its local `network` is out of scope here).
+    const network =
+      new url.URL(req.url || "", "http://localhost").searchParams.get(
+        "network",
+      ) || getIndexerNetwork();
     logger.info("[ws] Client connected");
 
     // Event batching: accumulate events by ledger, flush on a timer

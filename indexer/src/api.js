@@ -57,7 +57,6 @@ import { sendVerificationEmail, isConfigured } from "./emailService.js";
 import { getHealthStatus, getLivenessStatus, getReadinessStatus } from "./health.js";
 import { getActiveAlerts } from "./alertManager.js";
 import { randomUUID } from "crypto";
-import { resolveAsset } from "./horizonClient.js";
 import Ajv from "ajv";
 import addFormats from "ajv-formats";
 
@@ -153,7 +152,7 @@ function createHttpLogger(logDestination) {
         } else {
           logger.info(line.trim());
         }
-      } catch (e) {
+      } catch {
         logger.info(line.trim());
       }
     });
@@ -257,7 +256,7 @@ function makeCache(cacheType, getKey) {
   };
 }
 
-const generalLimiter = rateLimit({
+const _generalLimiter = rateLimit({
   windowMs: 60_000,
   max: 100,
   standardHeaders: true,
@@ -386,7 +385,7 @@ export function createApi({ logDestination, dbOverride } = {}) {
 
   // NOTE: generalLimiter superseded by tokenBucketMiddleware above.
   // Kept as fallback only if Redis is unavailable (tokenBucket fails open).
-  // app.use(generalLimiter);
+  // app.use(_generalLimiter);
 
   // ── Admin routes (auth-gated) ─────────────────────────────────────────────
   app.use("/api/admin", (req, res, next) => {

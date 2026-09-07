@@ -55,7 +55,7 @@ describe('geoIpLimiter middleware (issue #763)', () => {
 
       // Override getMaxmindReader to return null
       const appNoDb = express();
-      const actualModule = await import('../src/rateLimit/geoIpLimiter.js');
+      const _actualModule = await import('../src/rateLimit/geoIpLimiter.js');
 
       // For this test, we simulate database unavailability
       // by checking that the middleware passes through without 403

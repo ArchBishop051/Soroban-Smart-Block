@@ -45,11 +45,12 @@ import {
 import { startUsageFlushCron, startRetentionCleanupCron } from "./usage/usageTracker.js";
 import { startAuditPartitionCron, startAuditFlush } from "./audit/auditLogger.js";
 import { startUptimeRecorder } from "./uptimeRecorder.js";
-import { updateIndexerStatus, updateWorkerStatus, updateDlqDepth } from "./health.js";
+import { updateIndexerStatus, updateDlqDepth } from "./health.js";
 import { logger } from "./logger.js";
 import * as alertManager from "./alertManager.js";
 import { processRetries as dlqProcessRetries, enqueue as dlqEnqueue, getDlqDepth } from "./deadLetterQueue.js";
-import { recordLedger as gapRecordLedger, analyze as gapAnalyze } from "./predictiveGapDetector.js";
+import { recordLedger as gapRecordLedger } from "./predictiveGapDetector.js";
+import { deliverWebhooksForEvent, retryWebhookDelivery } from "./webhookDelivery.js";
 import { runIntegrityChecks } from "./routes/admin.js";
 
 const RPC_URL = config.SOROBAN_RPC_URL;
@@ -368,7 +369,9 @@ async function run() {
     alertManager.checkIndexerDown().catch(() => {});
     alertManager.checkResourceConstraints().catch(() => {});
     alertManager.checkDecodeRate(getDecodeStats().success_rate).catch(() => {});
-    dlqProcessRetries(processSingleEvent).catch(() => {}); // retry transient failures
+    // Route webhook-delivery retries and normal ledger-event retries to their
+    // respective handlers (see dlqRetryDispatch).
+    dlqProcessRetries(dlqRetryDispatch).catch(() => {}); // retry transient failures
     getDlqDepth()
       .then((depth) => {
         dlqDepth.set(depth);

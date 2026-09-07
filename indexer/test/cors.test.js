@@ -1,5 +1,4 @@
 import request from "supertest";
-import express from "express";
 import { startApi } from "../src/api.js";
 
 describe("CORS configuration", () => {

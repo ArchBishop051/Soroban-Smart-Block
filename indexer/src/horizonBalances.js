@@ -4,7 +4,6 @@
  * Fetches classic XLM + SEP-41/classic asset balances for a Stellar account
  * from the Horizon API and normalises them for the wallet balances endpoint.
  */
-/* global fetch */
 import config from "./config.js";
 import { cacheAside } from "./cacheLayer.js";
 

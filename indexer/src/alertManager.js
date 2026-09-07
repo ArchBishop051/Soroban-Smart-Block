@@ -1,5 +1,4 @@
 import { logger } from "./logger.js";
-/* global fetch */
 
 /**
  * Issue #209 — Alert Manager

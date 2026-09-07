@@ -204,7 +204,7 @@ describe('Health Endpoint with Sync Lag (issue #762)', () => {
       healthModule.updateIndexerStatus(12345, 10, 2); // healthy lag
 
       // Simulate 31 seconds passing without update
-      const later = async () => {
+      const _later = async () => {
         await new Promise((r) => setTimeout(r, 31));
         const res = await request(app).get('/health');
         expect(res.body.dependencies.indexer.status).toBe('unhealthy');

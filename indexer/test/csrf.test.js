@@ -1,4 +1,3 @@
-import { jest } from "@jest/globals";
 import request from "supertest";
 
 const { csrfTokenHandler, verifyCsrf, generateToken, COOKIE_NAME, HEADER_NAME } = await import("../src/csrf.js");
@@ -55,7 +54,7 @@ describe("CSRF Protection — Double-Submit Cookie Pattern", () => {
       // Get initial token
       const res1 = await request(app).get("/api/csrf-token");
       const token1 = res1.body.csrfToken;
-      const cookie1 = res1.headers["set-cookie"]?.[0];
+      const _cookie1 = res1.headers["set-cookie"]?.[0];
 
       // Make a second request with the same cookie
       const res2 = await request(app)

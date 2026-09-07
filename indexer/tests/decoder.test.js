@@ -158,17 +158,7 @@ function nativeXlmDescription(fnName, args, data) {
 
 const CONTRACT_ID_BYTES = Buffer.alloc(32, 0xab);
 
-function makeEvent(type, topics, data, withContractId = true, ledger = 12345, txHash = "ABCD1234") {
-  return {
-    contractId: withContractId ? "CAAAAAAAAAAAAAAAAAAAAAAAAAAABBBBBBBBBBBBBBBBBBBBBBBB" : null,
-    topic: topics,
-    value: data,
-    ledger,
-    txHash,
-  };
-}
-
-function makeXdrEvent(type, topics, data, withContractId = true, ledger = 12345, txHash = "ABCD1234") {
+function makeXdrEvent(type, topics, data, withContractId = true, _ledger = 12345, _txHash = "ABCD1234") {
   // body is an Int-discriminated ContractEventBody union — arm 0 is v0
   return new xdr.ContractEvent({
     ext: new xdr.ExtensionPoint(0),
@@ -180,8 +170,6 @@ function makeXdrEvent(type, topics, data, withContractId = true, ledger = 12345,
 
 // ── Test addresses ──────────────────────────────────────────────────────────
 
-const ADDR_ACCOUNT = "GABC123DEF456GHI789JKL012MNO345PQR678STU901VWX234YZ";
-const ADDR_CONTRACT = "CABC123DEF456GHI789JKL012MNO345PQR678STU901VWX234YZA";
 
 // ── ScVal Type Tests ────────────────────────────────────────────────────────
 // Tests 1: Each ScVal type decoded correctly
@@ -563,15 +551,6 @@ describe("decoder — Amount formatting", () => {
 describe("decoder — SEP-41 events", () => {
   const MOCK_CONTRACT = "CABC123DEF456GHI789JKL012MNO345PQR678STU901VWX234YZA";
 
-  function makeDecodedEvent(fn, topics, value) {
-    return {
-      contract_id: MOCK_CONTRACT,
-      function: fn,
-      raw_topics: topics,
-      raw_data: JSON.stringify(value),
-    };
-  }
-
   it("formats transfer event with exact human-readable output", () => {
     const d = buildDescription(
       "transfer",
@@ -650,7 +629,6 @@ describe("decoder — Unknown event type handling", () => {
 
   it("handles events with no function name gracefully", () => {
     const topics = [123, "not a symbol"];
-    const result = { contract_id: "C123", raw_topics: topics, raw_data: "{}" };
     const fnName = typeof topics[0] === "symbol" || typeof topics[0] === "string" ? String(topics[0]) : "unknown";
     assert.equal(fnName, "unknown");
   });

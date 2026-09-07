@@ -1,4 +1,6 @@
 import { logger } from "./logger.js";
+import { withSpan } from "./tracing.js";
+
 export async function withRetry(fn, { maxAttempts = 5, baseDelayMs = 100 } = {}) {
   let lastError;
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {

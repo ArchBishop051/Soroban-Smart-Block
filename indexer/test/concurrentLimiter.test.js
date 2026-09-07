@@ -139,7 +139,7 @@ describe('concurrentLimiter middleware (issue #763)', () => {
     it('applies free tier limit (20) when tier is free', async () => {
       mockRedisClient.incr.mockResolvedValue(15); // within 20
 
-      let capturedReq;
+      let _capturedReq;
       const app2 = express();
       app2.use((req, res, next) => {
         req.rateContext = { clientId: 'client-free', tier: 'free' };
@@ -147,7 +147,7 @@ describe('concurrentLimiter middleware (issue #763)', () => {
       });
       app2.use(concurrentRequestLimiter);
       app2.get('/api/test', (req, res) => {
-        capturedReq = req;
+        _capturedReq = req;
         res.json({ ok: true });
       });
 
@@ -159,7 +159,7 @@ describe('concurrentLimiter middleware (issue #763)', () => {
     it('applies pro tier limit (100) when tier is pro', async () => {
       mockRedisClient.incr.mockResolvedValue(90); // within 100
 
-      let capturedReq;
+      let _capturedReq;
       const app2 = express();
       app2.use((req, res, next) => {
         req.rateContext = { clientId: 'client-pro', tier: 'pro' };
@@ -167,7 +167,7 @@ describe('concurrentLimiter middleware (issue #763)', () => {
       });
       app2.use(concurrentRequestLimiter);
       app2.get('/api/test', (req, res) => {
-        capturedReq = req;
+        _capturedReq = req;
         res.json({ ok: true });
       });
 
@@ -201,7 +201,7 @@ describe('concurrentLimiter middleware (issue #763)', () => {
       app2.use(concurrentRequestLimiter);
       app2.get('/ws', (req, res) => res.json({ ok: true }));
 
-      const res = await request(app2)
+      const _res = await request(app2)
         .get('/ws')
         .set('upgrade', 'websocket')
         .set('connection', 'upgrade');

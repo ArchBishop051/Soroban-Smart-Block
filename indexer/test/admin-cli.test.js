@@ -6,13 +6,11 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from "@jest/globals";
-import http from "http";
 
 // Mock the http.request function
 jest.mock("http");
 
 // Import after mocking so the mock is in place
-import * as cliModule from "../src/admin-cli.js";
 
 describe("Admin CLI", () => {
   let originalExit;

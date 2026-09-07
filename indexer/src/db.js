@@ -1921,8 +1921,12 @@ export const db = {
     return rows[0] ?? null;
   },
 
-  /** Active subscriptions whose contract/function/wallet filters match a newly-indexed event. */
-  async getMatchingWebhookSubscriptions(contractId, functionName, rawTopics) {
+  /**
+   * Active subscriptions that pass the coarse contract/function filter, plus
+   * every active wallet-address subscription. The caller
+   * (webhookDelivery.deliverWebhooksForEvent) applies the per-wallet match.
+   */
+  async getMatchingWebhookSubscriptions(contractId, functionName) {
     const { rows } = await pool.query(
       `SELECT * FROM webhook_subscriptions
        WHERE active = TRUE

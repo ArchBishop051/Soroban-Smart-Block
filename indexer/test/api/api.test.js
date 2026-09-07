@@ -1,6 +1,5 @@
 import { jest } from "@jest/globals";
 import request from "supertest";
-import pg from "pg";
 import bcrypt from "bcryptjs";
 
 // Ensure process.env uses TEST_DATABASE_URL

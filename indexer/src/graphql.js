@@ -133,11 +133,9 @@ function calculateComplexity(parsed) {
     }
   }
   
-  // Cost for nested data fields
+  // Cost for nested data fields — base cost of 1 each
   if (parsed.dataFields) {
-    for (const field of parsed.dataFields) {
-      totalCost += 1; // Nested fields have base cost
-    }
+    totalCost += parsed.dataFields.length;
   }
   
   return totalCost;
@@ -288,45 +286,6 @@ function calculateMaxBraceDepth(text) {
   return maxDepth;
 }
 
-/**
- * Analyze nested structure and calculate its depth.
- */
-function analyzeNestedStructure(text, startPos) {
-  let braceCount = 0;
-  let pos = startPos;
-  let maxDepth = 0;
-  let contentStart = -1;
-  let contentEnd = -1;
-  
-  while (pos < text.length) {
-    if (text[pos] === '{') {
-      braceCount++;
-      maxDepth = Math.max(maxDepth, braceCount);
-      if (braceCount === 1) {
-        contentStart = pos + 1;
-      }
-    } else if (text[pos] === '}') {
-      if (braceCount === 1) {
-        contentEnd = pos;
-      }
-      braceCount--;
-      if (braceCount === 0) {
-        break;
-      }
-    }
-    pos++;
-  }
-  
-  const content = (contentStart > -1 && contentEnd > -1) 
-    ? text.slice(contentStart, contentEnd).trim() 
-    : null;
-  
-  return {
-    depth: maxDepth, // This is the number of nested braces
-    content,
-    endPos: pos + 1
-  };
-}
 
 /**
  * Extract simple field names from content (no nested analysis).

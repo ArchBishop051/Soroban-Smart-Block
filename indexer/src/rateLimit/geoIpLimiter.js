@@ -20,7 +20,6 @@ import { logger } from "../logger.js";
  *   - The IP lookup fails
  */
 
-import { readFile } from 'fs/promises';
 import { existsSync } from 'fs';
 
 // ── Lazy-loaded MaxMind reader ────────────────────────────────────────────────

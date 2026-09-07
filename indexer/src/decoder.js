@@ -735,7 +735,7 @@ function buildNftDescription(fn, args, _data, contractName) {
  *   provide: (from, token_a, amount_a, token_b, amount_b, lp_amount?)
  *   remove:  (from, lp_amount, token_a, amount_a, token_b, amount_b)
  */
-function buildLiquidityDescription(fn, args, _data, contractName) {
+function buildLiquidityDescription(fn, args, _data, _contractName) {
   const isAdd = fn === "add_liquidity" || fn === "provide_liquidity";
 
   // Find the provider address (first G/C address)

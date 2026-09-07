@@ -18,8 +18,8 @@ jest.unstable_mockModule('../src/rateLimit/tokenBucket.js', async () => {
 });
 
 jest.unstable_mockModule('../src/rateLimit/endpointGroups.js', () => ({
-  resolveEndpointGroup: jest.fn((path) => 'default'),
-  getTierLimits: jest.fn((group, tier) => ({ rpm: 100, burst: 10 })),
+  resolveEndpointGroup: jest.fn((_path) => 'default'),
+  getTierLimits: jest.fn((_group, _tier) => ({ rpm: 100, burst: 10 })),
 }));
 
 const { tokenBucketMiddleware } = await import('../src/rateLimit/tokenBucket.js');

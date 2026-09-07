@@ -1,5 +1,4 @@
 import { logger } from "./logger.js";
-/* global fetch */
 const CRATES_API_BASE = "https://crates.io/api/v1/crates";
 
 const FRAMEWORK_DEPENDENCIES = [

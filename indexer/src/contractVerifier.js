@@ -80,7 +80,6 @@ async function runVerificationBatch() {
   let page = 1;
   let processed = 0;
 
-  // eslint-disable-next-line no-constant-condition
   while (true) {
     const { contracts } = await db.listContracts({ page, limit: BATCH_SIZE });
     if (!contracts.length) break;

@@ -45,10 +45,6 @@ const positiveNumber = (defaultValue) =>
       message: `Must be a positive number, got invalid value`,
     });
 
-// ── Helper: URL validation ────────────────────────────────────────────────────
-const urlString = () =>
-  z.string().url({ message: "Must be a valid URL" });
-
 // ── Helper: Optional URL ──────────────────────────────────────────────────────
 const optionalUrl = () =>
   z

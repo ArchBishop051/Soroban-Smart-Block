@@ -258,7 +258,10 @@ function eventMatchesWallet(decoded, walletAddress) {
 
 /** Find active subscriptions matching a newly-indexed event and deliver to each (fire-and-forget). */
 export async function deliverWebhooksForEvent(decoded) {
-  const subs = await db.getMatchingWebhookSubscriptions(decoded.contract_id, decoded.function, decoded.raw_topics);
+  const candidates = await db.getMatchingWebhookSubscriptions(decoded.contract_id, decoded.function);
+  // The DB query returns every active wallet-address subscription unfiltered;
+  // apply the per-subscription wallet match here (topics + description).
+  const subs = candidates.filter((sub) => eventMatchesWallet(decoded, sub.wallet_address));
   await Promise.all(
     subs.map((sub) =>
       deliverToSubscription(sub, decoded).catch((err) =>

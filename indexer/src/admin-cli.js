@@ -51,7 +51,7 @@ function request(method, path, body) {
         try {
           const json = data ? JSON.parse(data) : null;
           resolve({ status: res.statusCode, data: json });
-        } catch (e) {
+        } catch {
           resolve({ status: res.statusCode, data });
         }
       });

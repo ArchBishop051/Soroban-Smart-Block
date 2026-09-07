@@ -34,7 +34,6 @@ const {
   ALERT_CONDITIONS,
   fireAlert,
   resolveAlert,
-  getActiveAlerts,
 } = await import("../../src/alertManager.js");
 const { db, pool } = await import("../../src/db.js");
 const { startApi } = await import("../../src/api.js");
