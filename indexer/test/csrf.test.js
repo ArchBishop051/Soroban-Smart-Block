@@ -4,7 +4,7 @@ import request from "supertest";
 const { csrfTokenHandler, verifyCsrf, generateToken, COOKIE_NAME, HEADER_NAME } = await import("../src/csrf.js");
 
 // Mock Express app for integration testing
-function createMockApp() {
+async function createMockApp() {
   const express = await import("express");
   const app = express.default();
 

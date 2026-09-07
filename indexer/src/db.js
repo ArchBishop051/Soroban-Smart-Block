@@ -700,60 +700,6 @@ export const db = {
     return rows;
   },
 
-  /**
-   * Aggregate stats for a contract's event history (#536): total events,
-   * unique caller addresses, first/last seen ledger, and a 30-day daily
-   * event-count trend (zero-filled so the frontend sparkline never sees gaps).
-   * @param {string} contractId
-   */
-  async getContractStats(contractId) {
-    const [{ rows: totals }, { rows: callerRows }, { rows: dailyRows }] = await Promise.all([
-      pool.query(
-        `SELECT COUNT(*)::INT AS total_events, MIN(ledger) AS first_seen_ledger, MAX(ledger) AS last_seen_ledger
-         FROM events WHERE contract_id = $1`,
-        [contractId],
-      ),
-      // Unique caller addresses referenced anywhere in the event payload —
-      // same address-extraction approach as searchWallets().
-      pool.query(
-        `SELECT COUNT(DISTINCT a.address)::INT AS unique_callers
-         FROM events e
-         CROSS JOIN LATERAL (
-           SELECT DISTINCT m[1] AS address
-           FROM regexp_matches(
-             coalesce(e.description, '') || ' ' || coalesce(e.raw_topics::text, '') || ' ' || coalesce(e.raw_data, ''),
-             '\\m[GCM][A-Z2-7]{55}\\M',
-             'g'
-           ) AS m
-         ) a
-         WHERE e.contract_id = $1`,
-        [contractId],
-      ),
-      pool.query(
-        `SELECT to_char(created_at, 'YYYY-MM-DD') AS date, COUNT(*)::INT AS count
-         FROM events
-         WHERE contract_id = $1 AND created_at >= NOW() - INTERVAL '30 days'
-         GROUP BY date`,
-        [contractId],
-      ),
-    ]);
-
-    const countsByDate = new Map(dailyRows.map((r) => [r.date, r.count]));
-    const events_per_day = [];
-    for (let i = 29; i >= 0; i--) {
-      const date = new Date(Date.now() - i * 86_400_000).toISOString().slice(0, 10);
-      events_per_day.push({ date, count: countsByDate.get(date) ?? 0 });
-    }
-
-    return {
-      total_events: totals[0].total_events,
-      unique_callers: callerRows[0].unique_callers,
-      first_seen_ledger: totals[0].first_seen_ledger != null ? Number(totals[0].first_seen_ledger) : null,
-      last_seen_ledger: totals[0].last_seen_ledger != null ? Number(totals[0].last_seen_ledger) : null,
-      events_per_day,
-    };
-  },
-
   async upsertContractMeta(meta) {
     // Auto-tag protocol_type from function names if not explicitly provided
     const functionNames = (meta.functions ?? []).map((f) => (typeof f === 'string' ? f : f?.name ?? ''));
@@ -1600,37 +1546,6 @@ export const db = {
   },
 
   // ── Predictive Gap Detection helpers ────────────────────────────────────────
-
-  /**
-   * Return the most recently indexed ledger numbers, newest first.
-   * Used by the predictive gap detector to find missing ranges.
-   *
-   * @param {number} n  Maximum number of ledgers to return
-   * @returns {Promise<number[]>}  Descending array of ledger numbers
-   */
-  async getRecentLedgers(n = 100) {
-    const { rows } = await pool.query(
-      `SELECT DISTINCT ledger FROM events ORDER BY ledger DESC LIMIT $1`,
-      [n],
-    );
-    return rows.map((r) => Number(r.ledger));
-  },
-
-  /**
-   * Insert a gap record into the gap_log table.
-   *
-   * @param {{ from: number, to: number, size: number, status?: string }} gap
-   * @returns {Promise<number>}  The new gap_log id
-   */
-  async insertGapLog(gap) {
-    const { rows } = await pool.query(
-      `INSERT INTO gap_log (from_ledger, to_ledger, size, status)
-       VALUES ($1, $2, $3, $4)
-       RETURNING id`,
-      [gap.from, gap.to, gap.size, gap.status ?? "open"],
-    );
-    return rows[0].id;
-  },
 
   /**
    * Update the status of a gap_log entry.
