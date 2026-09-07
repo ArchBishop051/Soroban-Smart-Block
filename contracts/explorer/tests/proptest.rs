@@ -241,8 +241,10 @@ proptest! {
     #![proptest_config(ProptestConfig::with_cases(50))]
     #[test]
     fn fuzz_concurrent_update_contract_abi_version_guard(
-        // Generate a sequence of abi_version values to submit.
-        // Some will be correct (current + 1), some deliberately stale.
+        // Generate a sequence of steps. `0` means "submit the correct next
+        // version" (must be accepted); `1..=3` means "submit a wrong version"
+        // (must be rejected). Iteration 0 is always forced to a correct update
+        // so the allow-path sanity check below is always exercised.
         version_offsets in prop::collection::vec(0i32..=3, 1..20),
     ) {
         let (env, client) = setup();
@@ -256,15 +258,18 @@ proptest! {
             version: 1,
             abi_version: 0,
             min_ledger: 0,
-            name: sdk_symbol(&env, "test"),
+            name: ascii_string(&env, 4),
             description: ascii_string(&env, 10),
             functions: Vec::new(&env),
             registered_by: contract_registrant.clone(),
         };
-        client.register_contract(&contract_registrant, &cid, &meta);
+        // Only the admin may register; `registered_by` records the registrant
+        // so the subsequent `update_contract` calls below are authorized for
+        // `contract_registrant`.
+        client.register_contract(&admin, &cid, &meta);
 
         // Verify initial state: abi_version is 0.
-        let initial = client.get_contract(cid.clone()).unwrap();
+        let initial = client.get_contract(&cid);
         prop_assert_eq!(initial.abi_version, 0);
 
         let mut current_abi_version: u32 = 0;
@@ -272,17 +277,14 @@ proptest! {
 
         // Simulate concurrent/interleaved updates with randomized abi_version values.
         for (i, offset) in version_offsets.into_iter().enumerate() {
-            // Vary the submitted abi_version: sometimes correct, sometimes stale.
-            let submitted_abi_version = if offset < 0 {
-                // Stale version (e.g., current - 1, current - 2)
-                current_abi_version.saturating_sub((-offset) as u32)
-            } else if offset == 0 {
-                // Correct version (current + 1)
+            // Iteration 0 is always a correct update (guarantees the allow path
+            // is exercised); otherwise `offset == 0` submits the correct next
+            // version and `offset >= 1` submits a deliberately wrong one
+            // (current + 2 ..= current + 4), which the guard must reject.
+            let submitted_abi_version = if i == 0 || offset == 0 {
                 current_abi_version + 1
             } else {
-                // Future version (current + offset)
-                // These are deliberately wrong but test the guard's strictness.
-                current_abi_version.saturating_add(offset as u32)
+                current_abi_version.saturating_add(offset as u32 + 1)
             };
 
             let mut update_meta = meta.clone();
@@ -303,7 +305,7 @@ proptest! {
                 successful_updates += 1;
 
                 // Verify the update was actually persisted.
-                let stored = client.get_contract(cid.clone()).unwrap();
+                let stored = client.get_contract(&cid);
                 prop_assert_eq!(
                     stored.abi_version, submitted_abi_version,
                     "stored abi_version must match submitted value for successful update at iteration {}",
@@ -315,7 +317,7 @@ proptest! {
                 // Stale writes are correctly blocked; current_abi_version does not advance.
 
                 // Verify no silent write occurred: stored version must not have changed.
-                let stored = client.get_contract(cid.clone()).unwrap();
+                let stored = client.get_contract(&cid);
                 prop_assert_eq!(
                     stored.abi_version, current_abi_version,
                     "stored abi_version must not advance after a rejected update at iteration {}",
@@ -325,7 +327,7 @@ proptest! {
         }
 
         // Invariant: the final stored abi_version must match what we tracked as current.
-        let final_stored = client.get_contract(cid.clone()).unwrap();
+        let final_stored = client.get_contract(&cid);
         prop_assert_eq!(
             final_stored.abi_version, current_abi_version,
             "final stored abi_version must match tracked current_abi_version"
