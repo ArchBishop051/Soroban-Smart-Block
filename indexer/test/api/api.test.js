@@ -78,7 +78,7 @@ describe("REST API Integration Tests", () => {
     await db.query(
       `INSERT INTO daemon_state (key, value)
        VALUES ('cursor', '1051'), ('last_indexed_ledger', '1050')
-       ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`,
+       ON CONFLICT (network, key) DO UPDATE SET value = EXCLUDED.value`,
     );
 
     // Start Express app

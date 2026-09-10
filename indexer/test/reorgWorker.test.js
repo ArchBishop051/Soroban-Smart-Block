@@ -190,7 +190,7 @@ describeWithDatabase("reorganization rollback (PostgreSQL integration)", () => {
     } else {
       await pool.query(
         `INSERT INTO daemon_state (key, value) VALUES ('cursor', $1)
-         ON CONFLICT (key) DO UPDATE SET value = $1`,
+         ON CONFLICT (network, key) DO UPDATE SET value = $1`,
         [previousCursor],
       );
     }

@@ -2,6 +2,13 @@ import pg from "pg";
 import { runMigrations } from "./migrate.js";
 import { validateAndSanitizeDecodedEvent } from "./decoderValidator.js";
 import { withSpan } from "./tracing.js";
+import { getIndexerNetwork } from "./networkConfig.js";
+
+// Migration 031 made `daemon_state` and `ledger_hashes` network-scoped:
+// their primary keys are now (network, key) and (network, ledger). Every
+// upsert below must therefore target the composite key, and every read is
+// scoped to this indexer instance's network (NETWORK env var, default
+// "testnet").
 
 // BIGINT/BIGSERIAL (OID 20) columns — seq, ledger — are returned as JS
 // strings by default to avoid silent precision loss above 2^53. Ledger and
@@ -30,9 +37,10 @@ export const db = {
   async init() {
     await runMigrations(pool);
     await pool.query(
-      `INSERT INTO daemon_state (key, value)
-       VALUES ('cursor', '0'), ('last_indexed_ledger', '0')
-       ON CONFLICT (key) DO NOTHING`,
+      `INSERT INTO daemon_state (network, key, value)
+       VALUES ($1, 'cursor', '0'), ($1, 'last_indexed_ledger', '0')
+       ON CONFLICT (network, key) DO NOTHING`,
+      [getIndexerNetwork()],
     );
   },
 
@@ -44,9 +52,9 @@ export const db = {
   // ── daemon cursor persistence ──────────────────────────────────
   async saveDaemonState(key, value) {
     await pool.query(
-      `INSERT INTO daemon_state (key, value) VALUES ($1, $2)
-       ON CONFLICT (key) DO UPDATE SET value = $2`,
-      [key, String(value)],
+      `INSERT INTO daemon_state (network, key, value) VALUES ($1, $2, $3)
+       ON CONFLICT (network, key) DO UPDATE SET value = $3`,
+      [getIndexerNetwork(), key, String(value)],
     );
   },
 
@@ -55,7 +63,10 @@ export const db = {
   },
 
   async loadCursor() {
-    const { rows } = await pool.query("SELECT value FROM daemon_state WHERE key = 'cursor'");
+    const { rows } = await pool.query(
+      "SELECT value FROM daemon_state WHERE network = $1 AND key = 'cursor'",
+      [getIndexerNetwork()],
+    );
     return rows[0] ? Number(rows[0].value) : null;
   },
 
@@ -64,39 +75,46 @@ export const db = {
   },
 
   async getLastIndexedLedger() {
-    const { rows } = await pool.query("SELECT value FROM daemon_state WHERE key = 'last_indexed_ledger'");
+    const { rows } = await pool.query(
+      "SELECT value FROM daemon_state WHERE network = $1 AND key = 'last_indexed_ledger'",
+      [getIndexerNetwork()],
+    );
     return rows[0] ? Number(rows[0].value) : 0;
   },
 
   // ── ledger reorganization state ───────────────────────────────
   async recordLedgerHash(ledger, hash) {
     await pool.query(
-      `INSERT INTO ledger_hashes (ledger, hash)
-       VALUES ($1, $2)
-       ON CONFLICT (ledger) DO NOTHING`,
-      [ledger, hash],
+      `INSERT INTO ledger_hashes (network, ledger, hash)
+       VALUES ($1, $2, $3)
+       ON CONFLICT (network, ledger) DO NOTHING`,
+      [getIndexerNetwork(), ledger, hash],
     );
   },
 
   async getRecentLedgerHashes(limit) {
     const { rows } = await pool.query(
-      "SELECT ledger, hash FROM ledger_hashes ORDER BY ledger DESC LIMIT $1",
-      [limit],
+      "SELECT ledger, hash FROM ledger_hashes WHERE network = $1 ORDER BY ledger DESC LIMIT $2",
+      [getIndexerNetwork(), limit],
     );
     return rows;
   },
 
   /** Atomically purge orphaned data and persist the daemon rewind cursor. */
   async rollbackFromLedger(forkLedger) {
+    const network = getIndexerNetwork();
     const client = await pool.connect();
     try {
       await client.query("BEGIN");
       await client.query("DELETE FROM events WHERE ledger >= $1", [forkLedger]);
-      await client.query("DELETE FROM ledger_hashes WHERE ledger >= $1", [forkLedger]);
+      await client.query("DELETE FROM ledger_hashes WHERE network = $1 AND ledger >= $2", [
+        network,
+        forkLedger,
+      ]);
       await client.query(
-        `INSERT INTO daemon_state (key, value) VALUES ('cursor', $1)
-         ON CONFLICT (key) DO UPDATE SET value = $1`,
-        [String(forkLedger)],
+        `INSERT INTO daemon_state (network, key, value) VALUES ($1, 'cursor', $2)
+         ON CONFLICT (network, key) DO UPDATE SET value = $2`,
+        [network, String(forkLedger)],
       );
       await client.query("COMMIT");
     } catch (err) {

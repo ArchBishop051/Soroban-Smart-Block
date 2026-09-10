@@ -376,11 +376,19 @@ export function createApi({ logDestination, dbOverride } = {}) {
   );
   app.use(auditLoggerMiddleware);
   app.use(apiKeyAuthenticator);
-  app.use(geoIpRateLimiter);
-  app.use(concurrentRequestLimiter);
-  app.use(tokenBucketMiddleware);
+  // RATE_LIMITING_DISABLED short-circuits the per-client throttles. Intended
+  // only for load/perf harnesses (e.g. the k6 PR baseline job) that drive
+  // thousands of requests/second from a single origin and would otherwise
+  // just be measuring 429s. Never set this in production.
+  if (process.env.RATE_LIMITING_DISABLED !== "true") {
+    app.use(geoIpRateLimiter);
+    app.use(concurrentRequestLimiter);
+    app.use(tokenBucketMiddleware);
+  }
   app.use(graphqlComplexityLimiter);
-  app.use(abuseDetector);
+  if (process.env.RATE_LIMITING_DISABLED !== "true") {
+    app.use(abuseDetector);
+  }
   app.use(rateLimitHeaderWriter);
 
   // NOTE: generalLimiter superseded by tokenBucketMiddleware above.

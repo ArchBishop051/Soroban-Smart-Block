@@ -333,7 +333,11 @@ jobs:
         working-directory: e2e
         env:
           DATABASE_URL: postgres://soroban:soroban_secret@localhost:5432/soroban_explorer
-          NODE_ENV: test
+          # NODE_ENV is intentionally NOT "test" here: the indexer's HTTP API
+          # skips listen() under NODE_ENV=test, which would hang Playwright's
+          # webServer wait on http://localhost:3001/health. playwright.config.ts
+          # pins the indexer webServer to NODE_ENV=development regardless.
+          NODE_ENV: development
 
       - name: Upload visual diff report
         if: failure()
@@ -392,20 +396,31 @@ jobs:
           node-version: 20
 
       - name: Install k6
+        # k6 is not in the Ubuntu apt repositories; pull the released binary.
         run: |
-          sudo apt-get update
-          sudo apt-get install -y k6
+          K6_VERSION=v0.54.0
+          curl -sSL "https://github.com/grafana/k6/releases/download/${K6_VERSION}/k6-${K6_VERSION}-linux-amd64.tar.gz" \
+            | sudo tar -xz --strip-components=1 -C /usr/local/bin "k6-${K6_VERSION}-linux-amd64/k6"
+          k6 version
 
       - name: Start indexer
         run: |
-          npm install
+          npm ci
           npm start > indexer.log 2>&1 &
-          sleep 10
-          curl -f http://localhost:3001/health
+          for i in $(seq 1 30); do
+            curl -fsS http://localhost:3001/health && break
+            echo "waiting for indexer... ($i)"; sleep 2
+          done
+          curl -fsS http://localhost:3001/health || { echo "indexer failed to start"; cat indexer.log; exit 1; }
         working-directory: indexer
         env:
           DATABASE_URL: postgres://soroban:soroban_secret@localhost:5432/soroban_explorer
-          NODE_ENV: test
+          # Not NODE_ENV=test: the API only calls listen() outside test mode
+          # (see indexer/src/api.js).
+          NODE_ENV: development
+          # The load generator drives ~2k req/s from one origin; without this
+          # the run would just measure per-client 429s (see src/api.js).
+          RATE_LIMITING_DISABLED: "true"
 
       - name: Run lightweight k6 baseline load test
         run: k6 run test/load/pr-baseline.js

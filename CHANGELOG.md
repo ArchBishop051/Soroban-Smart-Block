@@ -41,6 +41,36 @@ and this project aims to adhere to [Semantic Versioning](https://semver.org/spec
 - **Bug:** `indexer/test/csrf.test.js` and
   `indexer/test/security/sql-injection.test.js` contained syntax errors
   (`await` in a non-async function; a whole second test file concatenated on).
+- **CI / Runtime:** the indexer crashed on startup (`db.init()` →
+  `42P10: no unique or exclusion constraint matching the ON CONFLICT
+  specification`). Migration `031_multi_network_support.sql` moved the primary
+  keys of `daemon_state` and `ledger_hashes` to `(network, key)` /
+  `(network, ledger)`, but `src/db.js` still upserted on the old single-column
+  targets. All daemon-cursor and ledger-hash reads/writes are now network-scoped
+  via `getIndexerNetwork()`. The same stale `ON CONFLICT (key)` was fixed in
+  `test/api/api.test.js`, `test/api/reorg-acceptance.test.js`, and
+  `test/reorgWorker.test.js`. This unblocks the `k6-pr-baseline` and
+  `visual-regression` jobs, which start a real indexer.
+- **CI:** the frontend dev server (`npm run dev`, used by the
+  `visual-regression` Playwright job) failed to boot — `frontend/package.json`
+  pinned `overrides.esbuild` to `^0.28.1` while Vite 6 expects `^0.25.0`, and
+  esbuild 0.28 turns several dependency-prebundle transforms into hard errors.
+  Pinned esbuild to `^0.25.0` and added it as an explicit `devDependency` so
+  `vite-plugin-monaco-editor`'s bare `require("esbuild")` still resolves.
+- **CI:** the `visual-regression` job could never pass — `playwright.config.ts`
+  sets `testDir: ./test/playwright` but the spec lives in `test/visual/`, so
+  `playwright test test/visual/...` matched zero tests (exit 1); there are no
+  committed baseline snapshots; and the job exported `NODE_ENV=test`, under
+  which the indexer API never calls `listen()`. Added
+  `playwright.visual.config.ts` (testDir `./test/visual`),
+  `updateSnapshots: "missing"` + a screenshot pixel tolerance, and pinned the
+  indexer web server to `NODE_ENV=development`.
+- **CI:** the `k6-pr-baseline` job could never pass — `apt-get install k6`
+  fails (k6 is not in the Ubuntu apt repos), `NODE_ENV=test` kept the API from
+  binding a port, and the per-client rate limiter turned the load run into a
+  wall of 429s. k6 is now fetched as a released binary, the indexer runs with
+  `NODE_ENV=development`, and a new `RATE_LIMITING_DISABLED` env var (honoured
+  only by `src/api.js`, load-harness use only) skips the throttling middleware.
 
 ### Removed
 - `indexer/tests/decoderClassic.test.js` and
