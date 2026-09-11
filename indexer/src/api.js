@@ -9,6 +9,37 @@ import cors from "cors";
 import rateLimit from "express-rate-limit";
 import swaggerUi from "swagger-ui-express";
 import { db as defaultDb, pool } from "./db.js";
+import config from "./config.js";
+import { InvalidCursorError, CursorFilterMismatchError } from "./cursor.js";
+
+export function handleLegacyOffset(req, res) {
+  const hasLegacy = req.query.offset !== undefined || req.query.page !== undefined;
+  if (!hasLegacy) return false;
+
+  if (!config.PAGINATION_LEGACY_OFFSET) {
+    res.status(400).json({
+      error: "offset_pagination_deprecated",
+      message: "OFFSET/page pagination is deprecated and disabled. Use keyset cursor pagination (cursor/after/before).",
+    });
+    return true;
+  }
+
+  res.setHeader("Deprecation", "true");
+  res.setHeader("Link", '</docs/api/pagination>; rel="deprecation"');
+  return false;
+}
+
+export function handleCursorError(e, res) {
+  if (e instanceof InvalidCursorError || e?.code === "invalid_cursor") {
+    res.status(400).json({ error: "invalid_cursor", message: e.message });
+    return true;
+  }
+  if (e instanceof CursorFilterMismatchError || e?.code === "cursor_filter_mismatch") {
+    res.status(400).json({ error: "cursor_filter_mismatch", message: e.message });
+    return true;
+  }
+  return false;
+}
 import { analyzeSourceDependencies } from "./dependencyScanner.js";
 import { fetchTokenMetadata } from "./sep41Metadata.js";
 import { fetchWalletBalances, fetchAccountMeta, AccountNotFoundError } from "./horizonBalances.js";
@@ -132,20 +163,24 @@ function requestIdMiddleware(req, _res, next) {
 function tracingMiddleware(req, res, next) {
   const parentCtx = propagation.extract(context.active(), req.headers);
   context.with(parentCtx, () => {
-    tracer.startActiveSpan(`${req.method} ${req.path}`, { attributes: { "http.method": req.method, "http.target": req.originalUrl } }, (span) => {
-      res.on("finish", () => {
-        span.setAttribute("http.status_code", res.statusCode);
-        span.end();
-      });
-      next();
-    });
+    tracer.startActiveSpan(
+      `${req.method} ${req.path}`,
+      { attributes: { "http.method": req.method, "http.target": req.originalUrl } },
+      (span) => {
+        res.on("finish", () => {
+          span.setAttribute("http.status_code", res.statusCode);
+          span.end();
+        });
+        next();
+      },
+    );
   });
 }
 
 function createHttpLogger(logDestination) {
   return (req, res, next) => {
     res.on("finish", () => {
-      const line = `[api] ${req.method} ${req.url} ${res.statusCode} ${req.id || ''}\n`;
+      const line = `[api] ${req.method} ${req.url} ${res.statusCode} ${req.id || ""}\n`;
       try {
         if (logDestination && typeof logDestination.write === "function") {
           logDestination.write(line);
@@ -194,8 +229,17 @@ function requireMetricsApiKey(req, res, next) {
 
 function parseTxHashes(value) {
   if (!value) return [];
-  if (Array.isArray(value)) return value.flatMap((v) => String(v).split(",").map((hash) => hash.trim()).filter(Boolean));
-  return String(value).split(",").map((hash) => hash.trim()).filter(Boolean);
+  if (Array.isArray(value))
+    return value.flatMap((v) =>
+      String(v)
+        .split(",")
+        .map((hash) => hash.trim())
+        .filter(Boolean),
+    );
+  return String(value)
+    .split(",")
+    .map((hash) => hash.trim())
+    .filter(Boolean);
 }
 
 function createSseStream(res) {
@@ -301,25 +345,25 @@ export function createApi({ logDestination, dbOverride } = {}) {
     );
     next();
   });
-  const isWildcard = process.env.CORS_ORIGINS === '*';
+  const isWildcard = process.env.CORS_ORIGINS === "*";
   const allowedOrigins = isWildcard
     ? []
     : process.env.CORS_ORIGINS
-      ? process.env.CORS_ORIGINS.split(',').map((o) => o.trim())
+      ? process.env.CORS_ORIGINS.split(",").map((o) => o.trim())
       : [];
 
   const corsOptionsDelegate = (req, callback) => {
     const corsOptions = {
-      methods: ['GET', 'POST', 'OPTIONS'],
-      allowedHeaders: ['Content-Type', 'Authorization', 'X-Request-Id', 'X-API-Key', 'X-CSRF-Token'],
+      methods: ["GET", "POST", "OPTIONS"],
+      allowedHeaders: ["Content-Type", "Authorization", "X-Request-Id", "X-API-Key", "X-CSRF-Token"],
       maxAge: 86400,
     };
 
     if (isWildcard) {
-      corsOptions.origin = '*';
+      corsOptions.origin = "*";
       corsOptions.credentials = false;
     } else {
-      const origin = req.header('Origin');
+      const origin = req.header("Origin");
       const isAllowed = origin && allowedOrigins.includes(origin);
       corsOptions.origin = isAllowed ? true : false;
       if (isAllowed) {
@@ -348,15 +392,11 @@ export function createApi({ logDestination, dbOverride } = {}) {
   // ── CSP violation reports ───────────────────────────────────────────────────
   // Registered before verifyCsrf so browser-sent reports (no CSRF token) aren't
   // rejected. Logged so violations are visible in log-based observability.
-  app.post(
-    "/api/csp-report",
-    express.json({ type: ["application/csp-report", "application/json"] }),
-    (req, res) => {
-      const report = req.body?.["csp-report"] || req.body;
-      console.warn("[csp-violation]", JSON.stringify(report));
-      res.status(204).end();
-    },
-  );
+  app.post("/api/csp-report", express.json({ type: ["application/csp-report", "application/json"] }), (req, res) => {
+    const report = req.body?.["csp-report"] || req.body;
+    console.warn("[csp-violation]", JSON.stringify(report));
+    res.status(204).end();
+  });
 
   // ── CSRF verification — applied globally to all state-changing methods ─────
   // Exemptions (handled inside verifyCsrf):
@@ -371,9 +411,7 @@ export function createApi({ logDestination, dbOverride } = {}) {
   // Fire-and-forget: guarantees the current month's partition exists before
   // the 500ms flush loop's first tick, even when createApi() is invoked
   // directly (tests) rather than via index.js's startAuditPartitionCron().
-  ensureAuditPartitions().catch((err) =>
-    logger.error("[api] Startup audit partition check failed:", err.message),
-  );
+  ensureAuditPartitions().catch((err) => logger.error("[api] Startup audit partition check failed:", err.message));
   app.use(auditLoggerMiddleware);
   app.use(apiKeyAuthenticator);
   // RATE_LIMITING_DISABLED short-circuits the per-client throttles. Intended
@@ -524,15 +562,16 @@ export function createApi({ logDestination, dbOverride } = {}) {
 
   // ── Existing endpoints ──────────────────────────────────────────────────────
 
-  // GET /api/events?contract=&fn=&type=&after_seq=&limit=
-  // Keyset (cursor) pagination — `after_seq` is the `next_cursor` value from
-  // the previous page (omit for the first page). Responds with
-  // { data: Event[], next_cursor: number|null } (#490).
+  // GET /api/events?contract=&fn=&type=&cursor=&after=&before=&after_seq=&limit=&count=
+  // Keyset (cursor) pagination — supports bidirectional navigation with signed tokens.
+  // Legacy offset/page supported during deprecation window.
   app.get(
     "/api/events",
     // Validate before the cache middleware so malformed params can never be
     // served a cached 200 (their cache key normalizes to the first page).
     (req, res, next) => {
+      if (handleLegacyOffset(req, res)) return;
+
       if (req.query.limit !== undefined) {
         const parsedLimit = Number(req.query.limit);
         if (isNaN(parsedLimit) || parsedLimit <= 0 || parsedLimit > 200) {
@@ -548,31 +587,46 @@ export function createApi({ logDestination, dbOverride } = {}) {
       next();
     },
     makeCache("events_list", (req) => {
-      const { contract = "", fn = "", type = "" } = req.query;
-      const after = Number(req.query.after_seq) || 0;
+      const { contract = "", fn = "", type = "", cursor = "", after = "", before = "", count = "" } = req.query;
+      const afterSeq = Number(req.query.after_seq) || 0;
       const limit = Number(req.query.limit) || 25;
-      return `events:list:${contract}:${fn}:${after}:${limit}:${type}`;
+      return `events:list:${contract}:${fn}:${cursor}:${after}:${before}:${afterSeq}:${limit}:${type}:${count}`;
     }),
     async (req, res) => {
       try {
         const contract = req.query.contract || undefined;
         const fn = req.query.fn || undefined;
         const type = req.query.type || undefined;
+        const cursor = req.query.cursor || undefined;
+        const after = req.query.after || undefined;
+        const before = req.query.before || undefined;
         const after_seq = req.query.after_seq ? Number(req.query.after_seq) : 0;
         const limit = req.query.limit ? Number(req.query.limit) : 25;
+        const count = req.query.count || undefined;
 
-        const result = await db.getEventsCursor({ contract, fn, type, after_seq, limit });
+        const result = await db.getEventsCursor({
+          contract,
+          fn,
+          type,
+          cursor,
+          after,
+          before,
+          after_seq,
+          limit,
+          count,
+        });
 
         // Predictive pre-fetch: next page if user is paginating
         if (result.next_cursor !== null) {
-          const key = `events:list:${contract ?? ""}:${fn ?? ""}:${after_seq}:${limit}:${type ?? ""}`;
+          const key = `events:list:${contract ?? ""}:${fn ?? ""}:${cursor ?? ""}:${after ?? ""}:${before ?? ""}:${after_seq}:${limit}:${type ?? ""}:${count ?? ""}`;
           schedulePrefetch(key, {
-            [`events:list:${contract ?? ""}:${fn ?? ""}:${result.next_cursor}:${limit}:${type ?? ""}`]: () =>
-              db.getEventsCursor({ contract, fn, type, after_seq: result.next_cursor, limit }),
+            [`events:list:${contract ?? ""}:${fn ?? ""}:${result.next_cursor}::::0:${limit}:${type ?? ""}:${count ?? ""}`]:
+              () => db.getEventsCursor({ contract, fn, type, after: result.next_cursor, limit, count }),
           });
         }
         res.json(result);
       } catch (e) {
+        if (handleCursorError(e, res)) return;
         res.status(500).json({ error: e.message });
       }
     },
@@ -623,7 +677,7 @@ export function createApi({ logDestination, dbOverride } = {}) {
             type: "about:blank",
             title: "Not Found",
             status: 404,
-            detail: `Event sequence ${req.params.seq} not found`
+            detail: `Event sequence ${req.params.seq} not found`,
           });
         }
         res.json(ev);
@@ -764,76 +818,36 @@ export function createApi({ logDestination, dbOverride } = {}) {
     }
   });
 
-  // GET /api/contracts?page=&limit=&type=  — paginated list of registered contracts
+  // GET /api/contracts?cursor=&after=&before=&page=&limit=&type=&q=&count=
   app.get(
     "/api/contracts",
+    (req, res, next) => {
+      if (handleLegacyOffset(req, res)) return;
+      next();
+    },
     makeCache("contracts_list", (req) => {
-      const page = Number(req.query.page) || 1;
+      const page = req.query.page || "";
       const limit = Number(req.query.limit) || 25;
       const q = req.query.q || "";
       const type = req.query.type || "all";
-      return `contracts:list:${page}:${limit}:${q}:${type}`;
+      const cursor = req.query.cursor || req.query.after || req.query.before || "";
+      return `contracts:list:${page}:${limit}:${q}:${type}:${cursor}`;
     }),
     async (req, res) => {
       try {
-        const page = Number(req.query.page) || 1;
-        const limit = Math.min(Number(req.query.limit) || 25, 100);
-        const q = (req.query.q || "").trim();
-        const type = (req.query.type || "all").toLowerCase();
-
-        // Build dynamic query supporting optional search (q) and type filter
-        const params = [];
-        const conditions = [];
-
-        if (q) {
-          params.push(`%${q}%`);
-          const idx = params.length;
-          conditions.push(`(name ILIKE $${idx} OR description ILIKE $${idx})`);
-        }
-
-        if (type && type !== "all") {
-          if (type === "verified") {
-            // A contract is "verified" when it has at least one source verification
-            conditions.push(
-              `id IN (SELECT DISTINCT contract_id FROM source_verifications)`,
-            );
-          } else {
-            // Match protocol_type column (may not exist on all installs — guard with COALESCE)
-            params.push(type);
-            conditions.push(`LOWER(COALESCE(protocol_type, '')) = $${params.length}`);
-          }
-        }
-
-        const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
-        const offset = (page - 1) * limit;
-        params.push(limit, offset);
-
-        const [{ rows }, { rows: countRows }] = await Promise.all([
-          db.query(
-            `SELECT id, name, description, registered_by, has_circuit_breaker, is_paused, is_rwa, rwa_type,
-                    protocol_type, created_at
-             FROM contracts ${where}
-             ORDER BY created_at DESC
-             LIMIT $${params.length - 1} OFFSET $${params.length}`,
-            params,
-          ),
-          db.query(
-            `SELECT COUNT(*)::INT AS total FROM contracts ${where}`,
-            params.slice(0, params.length - 2),
-          ),
-        ]);
-
-        const total = countRows[0].total;
-        res.json({
-          contracts: rows,
-          pagination: {
-            page,
-            limit,
-            total,
-            total_pages: Math.ceil(total / limit),
-          },
+        const result = await db.listContracts({
+          page: req.query.page,
+          limit: req.query.limit ? Number(req.query.limit) : 25,
+          type: req.query.type,
+          q: req.query.q,
+          cursor: req.query.cursor,
+          after: req.query.after,
+          before: req.query.before,
+          count: req.query.count,
         });
+        res.json(result);
       } catch (e) {
+        if (handleCursorError(e, res)) return;
         res.status(500).json({ error: e.message });
       }
     },
@@ -850,32 +864,68 @@ export function createApi({ logDestination, dbOverride } = {}) {
     }
   });
 
-  // GET /api/contracts/:id/events?page=&limit=  — events for a specific contract
+  // GET /api/contracts/:id/events?cursor=&after=&before=&page=&limit=&count=  — events for a specific contract
   app.get(
     "/api/contracts/:id/events",
-    makeCache("contract_events", (req) => `contracts:events:${req.params.id}:${req.query.page ?? 1}:${req.query.limit ?? 25}`),
+    (req, res, next) => {
+      if (handleLegacyOffset(req, res)) return;
+      next();
+    },
+    makeCache("contract_events", (req) => {
+      const cursor = req.query.cursor || req.query.after || req.query.before || "";
+      const page = req.query.page ?? "";
+      const limit = req.query.limit ?? 25;
+      return `contracts:events:${req.params.id}:${cursor}:${page}:${limit}`;
+    }),
     async (req, res) => {
-    try {
-      const page = Number(req.query.page) || 1;
-      const limit = Math.min(Number(req.query.limit) || 25, 100);
-      const rows = await db.getEvents({
-        contract: req.params.id,
-        page,
-        limit,
-      });
-      const total = rows.length; // best-effort; full count would need a second query
-      res.json({
-        events: rows,
-        pagination: {
-          page,
+      try {
+        const isLegacy =
+          !req.query.cursor &&
+          !req.query.after &&
+          !req.query.before &&
+          (req.query.page !== undefined || req.query.offset !== undefined);
+        const limit = Math.min(Number(req.query.limit) || 25, 100);
+
+        if (isLegacy) {
+          const page = Number(req.query.page) || 1;
+          const rows = await db.getEvents({
+            contract: req.params.id,
+            page,
+            limit,
+          });
+          return res.json({
+            events: rows,
+            data: rows,
+            pagination: {
+              page,
+              limit,
+              total: rows.length,
+            },
+          });
+        }
+
+        const result = await db.getEventsCursor({
+          contract: req.params.id,
+          cursor: req.query.cursor,
+          after: req.query.after,
+          before: req.query.before,
           limit,
-          total,
-        },
-      });
-    } catch (e) {
-      res.status(500).json({ error: e.message });
-    }
-  },
+          count: req.query.count,
+        });
+
+        res.json({
+          events: result.data,
+          data: result.data,
+          page_info: result.page_info,
+          next_cursor: result.next_cursor,
+          total: result.total,
+          count_is_estimate: result.count_is_estimate,
+        });
+      } catch (e) {
+        if (handleCursorError(e, res)) return;
+        res.status(500).json({ error: e.message });
+      }
+    },
   );
 
   // GET /api/contracts/:id
@@ -900,8 +950,6 @@ export function createApi({ logDestination, dbOverride } = {}) {
       }
     },
   );
-
-
 
   // GET /api/contracts/:id/build-metadata — WASM build metadata (compiler, SDK, repo link)
   app.get("/api/contracts/:id/build-metadata", async (req, res) => {
@@ -1007,10 +1055,7 @@ export function createApi({ logDestination, dbOverride } = {}) {
       // ── Issue #523: store the registrant's API key ID for ownership checks
       const keyId = req.rateContext?.keyId ?? null;
       if (keyId) {
-        await db.query(
-          "UPDATE contracts SET registered_by_key_id = $1 WHERE id = $2",
-          [keyId, id],
-        ).catch(() => {});
+        await db.query("UPDATE contracts SET registered_by_key_id = $1 WHERE id = $2", [keyId, id]).catch(() => {});
       }
       await cacheInvalidate(`contracts:single:${id}`);
       res.status(201).json({ ok: true });
@@ -1041,16 +1086,11 @@ export function createApi({ logDestination, dbOverride } = {}) {
 
       // ── Ownership / admin check ──────────────────────────────────────────
       // Fetch the stored registered_by_key_id
-      const { rows } = await db.query(
-        "SELECT registered_by_key_id FROM contracts WHERE id = $1",
-        [contractId],
-      );
+      const { rows } = await db.query("SELECT registered_by_key_id FROM contracts WHERE id = $1", [contractId]);
       const registeredByKeyId = rows[0]?.registered_by_key_id ?? null;
 
       // Check if caller is admin (tier = 'enterprise' or static admin key)
-      const isAdmin =
-        req.rateContext?.tier === "enterprise" ||
-        req.rateContext?.clientId === "static-admin-key";
+      const isAdmin = req.rateContext?.tier === "enterprise" || req.rateContext?.clientId === "static-admin-key";
 
       if (!isAdmin && registeredByKeyId !== null && String(registeredByKeyId) !== String(keyId)) {
         return res.status(403).json({ error: "Forbidden: you are not the owner of this contract" });
@@ -1206,16 +1246,20 @@ export function createApi({ logDestination, dbOverride } = {}) {
 
   app.get("/api/sandboxes", async (req, res) => {
     try {
-      const limit = Math.min(Number(req.query.limit) || 20, 100);
-      const offset = Number(req.query.offset) || 0;
-      const { rows } = await db.query(
-        `SELECT sandbox_id, template_id, metadata, created_at, updated_at
-         FROM sandboxes ORDER BY updated_at DESC LIMIT $1 OFFSET $2`,
-        [limit, offset],
-      );
-      const { rows: countRows } = await db.query("SELECT COUNT(*)::INT AS total FROM sandboxes");
-      res.json({ sandboxes: rows, total: countRows[0].total });
+      if (handleLegacyOffset(req, res)) return;
+
+      const result = await db.listSandboxes({
+        cursor: req.query.cursor,
+        after: req.query.after,
+        before: req.query.before,
+        page: req.query.page,
+        limit: req.query.limit,
+        offset: req.query.offset,
+        count: req.query.count,
+      });
+      res.json(result);
     } catch (e) {
+      if (handleCursorError(e, res)) return;
       res.status(500).json({ error: e.message });
     }
   });
@@ -1269,27 +1313,28 @@ export function createApi({ logDestination, dbOverride } = {}) {
     "/api/wallet/:address",
     makeCache("wallet", (req) => `wallet:events:${req.params.address}`),
     async (req, res) => {
-    try {
-      const address = req.params.address;
-      if (!/^[GMC][A-Z2-7]{55,}$/.test(address)) {
-        return res.status(400).json({ error: `${address} is not a valid Stellar address` });
+      try {
+        const address = req.params.address;
+        if (!/^[GMC][A-Z2-7]{55,}$/.test(address)) {
+          return res.status(400).json({ error: `${address} is not a valid Stellar address` });
+        }
+        // #527: accept optional from/to date filters (YYYY-MM-DD)
+        const from = req.query.from || undefined;
+        const to = req.query.to || undefined;
+        const [eventsResult, horizonResult] = await Promise.allSettled([
+          db.getWalletEvents(address, { from, to }),
+          fetchAccountMeta(address),
+        ]);
+        // A DB failure is a real error (500); a Horizon failure just degrades
+        // horizon_account to null — the two have different reliability contracts.
+        if (eventsResult.status === "rejected") throw eventsResult.reason;
+        const horizon_account = horizonResult.status === "fulfilled" ? horizonResult.value : null;
+        res.json({ events: eventsResult.value, horizon_account });
+      } catch (e) {
+        res.status(500).json({ error: e.message });
       }
-      // #527: accept optional from/to date filters (YYYY-MM-DD)
-      const from = req.query.from || undefined;
-      const to = req.query.to || undefined;
-      const [eventsResult, horizonResult] = await Promise.allSettled([
-        db.getWalletEvents(address, { from, to }),
-        fetchAccountMeta(address),
-      ]);
-      // A DB failure is a real error (500); a Horizon failure just degrades
-      // horizon_account to null — the two have different reliability contracts.
-      if (eventsResult.status === "rejected") throw eventsResult.reason;
-      const horizon_account = horizonResult.status === "fulfilled" ? horizonResult.value : null;
-      res.json({ events: eventsResult.value, horizon_account });
-    } catch (e) {
-      res.status(500).json({ error: e.message });
-    }
-  });
+    },
+  );
 
   // GET /api/wallet/:address/balances — classic XLM + SEP-41/classic asset
   // balances sourced from Horizon (issue #530). Cached for 30s per address.
@@ -1297,20 +1342,20 @@ export function createApi({ logDestination, dbOverride } = {}) {
     "/api/wallet/:address/balances",
     makeCache("wallet_balances", (req) => `wallet:balances:${req.params.address}`),
     async (req, res) => {
-    try {
-      const address = req.params.address;
-      if (!/^G[A-Z2-7]{55}$/.test(address)) {
-        return res.status(400).json({ error: "Invalid wallet address format" });
+      try {
+        const address = req.params.address;
+        if (!/^G[A-Z2-7]{55}$/.test(address)) {
+          return res.status(400).json({ error: "Invalid wallet address format" });
+        }
+        const balances = await fetchWalletBalances(address);
+        res.json({ balances });
+      } catch (e) {
+        if (e instanceof AccountNotFoundError) {
+          return res.status(404).json({ error: "Account not found on network" });
+        }
+        res.status(502).json({ error: e.message });
       }
-      const balances = await fetchWalletBalances(address);
-      res.json({ balances });
-    } catch (e) {
-      if (e instanceof AccountNotFoundError) {
-        return res.status(404).json({ error: "Account not found on network" });
-      }
-      res.status(502).json({ error: e.message });
-    }
-  },
+    },
   );
 
   // ── Token metadata registry (#550) ──────────────────────────────────────
@@ -1334,29 +1379,30 @@ export function createApi({ logDestination, dbOverride } = {}) {
     "/api/assets",
     makeCache("default", (req) => `assets:list:${req.query.after ?? 0}:${req.query.limit ?? 25}`),
     async (req, res) => {
-    try {
-      if (req.query.limit !== undefined) {
-        const parsedLimit = Number(req.query.limit);
-        if (!Number.isInteger(parsedLimit) || parsedLimit < 1 || parsedLimit > 100) {
-          return res.status(422).json({ error: "Invalid limit" });
+      try {
+        if (req.query.limit !== undefined) {
+          const parsedLimit = Number(req.query.limit);
+          if (!Number.isInteger(parsedLimit) || parsedLimit < 1 || parsedLimit > 100) {
+            return res.status(422).json({ error: "Invalid limit" });
+          }
         }
-      }
-      if (req.query.after !== undefined) {
-        const parsedAfter = Number(req.query.after);
-        if (!Number.isInteger(parsedAfter) || parsedAfter < 0) {
-          return res.status(422).json({ error: "Invalid after" });
+        if (req.query.after !== undefined) {
+          const parsedAfter = Number(req.query.after);
+          if (!Number.isInteger(parsedAfter) || parsedAfter < 0) {
+            return res.status(422).json({ error: "Invalid after" });
+          }
         }
+
+        const limit = req.query.limit ? Number(req.query.limit) : 25;
+        const after = req.query.after ? Number(req.query.after) : 0;
+
+        const { data, next_cursor } = await db.listAssets({ after_id: after, limit });
+        res.json({ data: data.map(serializeAsset), next_cursor });
+      } catch (e) {
+        res.status(500).json({ error: e.message });
       }
-
-      const limit = req.query.limit ? Number(req.query.limit) : 25;
-      const after = req.query.after ? Number(req.query.after) : 0;
-
-      const { data, next_cursor } = await db.listAssets({ after_id: after, limit });
-      res.json({ data: data.map(serializeAsset), next_cursor });
-    } catch (e) {
-      res.status(500).json({ error: e.message });
-    }
-  });
+    },
+  );
 
   // GET /api/assets/:issuer/:code — single asset metadata.
   app.get("/api/assets/:issuer/:code", async (req, res) => {
@@ -1524,10 +1570,11 @@ export function createApi({ logDestination, dbOverride } = {}) {
   });
 
   // ── cursor-based pagination endpoint ────────────────────────────
-  // GET /api/v1/events?contract=&fn=&type=&after=&limit=
-  // `after` is the opaque seq cursor returned as `next_cursor` in the previous page.
+  // GET /api/v1/events?contract=&fn=&type=&cursor=&after=&before=&limit=&count=
   app.get("/api/v1/events", async (req, res) => {
     try {
+      if (handleLegacyOffset(req, res)) return;
+
       if (req.query.limit !== undefined) {
         const parsedLimit = Number(req.query.limit);
         if (isNaN(parsedLimit) || parsedLimit <= 0 || parsedLimit > 200) {
@@ -1539,29 +1586,40 @@ export function createApi({ logDestination, dbOverride } = {}) {
         contract: req.query.contract || undefined,
         fn: req.query.fn || undefined,
         type: req.query.type || undefined,
-        after_seq: req.query.after ? Number(req.query.after) : 0,
+        cursor: req.query.cursor || undefined,
+        after: req.query.after || undefined,
+        before: req.query.before || undefined,
+        after_seq: req.query.after_seq ? Number(req.query.after_seq) : 0,
         limit: req.query.limit ? Number(req.query.limit) : 25,
+        count: req.query.count || undefined,
       });
       res.json(result);
     } catch (e) {
+      if (handleCursorError(e, res)) return;
       res.status(500).json({ error: e.message });
     }
   });
 
   // ── Contract transaction history ─────────────────────────────────
-  // GET /api/v1/contracts/:id/transactions?function_name=&start_ledger=&end_ledger=&page=&limit=
+  // GET /api/v1/contracts/:id/transactions?function_name=&start_ledger=&end_ledger=&cursor=&after=&before=&page=&limit=
   app.get("/api/v1/contracts/:id/transactions", async (req, res) => {
     try {
-      const { function_name, start_ledger, end_ledger, page, limit } = req.query;
+      if (handleLegacyOffset(req, res)) return;
+
+      const { function_name, start_ledger, end_ledger, page, limit, cursor, after, before } = req.query;
       const result = await db.getContractTransactions(req.params.id, {
         function_name: function_name || undefined,
         start_ledger: start_ledger ? Number(start_ledger) : undefined,
         end_ledger: end_ledger ? Number(end_ledger) : undefined,
-        page: page ? Number(page) : 1,
+        page: page ? Number(page) : undefined,
         limit: limit ? Math.min(Number(limit), 100) : 25,
+        cursor: cursor || undefined,
+        after: after || undefined,
+        before: before || undefined,
       });
       res.json(result);
     } catch (e) {
+      if (handleCursorError(e, res)) return;
       res.status(500).json({ error: e.message });
     }
   });
@@ -1674,35 +1732,40 @@ export function createApi({ logDestination, dbOverride } = {}) {
   });
 
   // ── Self-Service API Key Creation with Email Verification ─────────────────────
-  
+
   // POST /api/keys (unauthenticated) - Create an inactive API key and send verification email
   app.post("/api/keys", async (req, res) => {
     try {
       const { name, email } = req.body;
 
       // Validate required fields
-      if (!name || typeof name !== 'string' || name.trim() === '') {
-        return res.status(400).json({ error: 'name is required and must be a non-empty string' });
+      if (!name || typeof name !== "string" || name.trim() === "") {
+        return res.status(400).json({ error: "name is required and must be a non-empty string" });
       }
-      if (!email || typeof email !== 'string' || !email.includes('@')) {
-        return res.status(400).json({ error: 'email is required and must be a valid email address' });
+      if (!email || typeof email !== "string" || !email.includes("@")) {
+        return res.status(400).json({ error: "email is required and must be a valid email address" });
       }
 
       // Check if email service is configured
       if (!isConfigured()) {
-        return res.status(503).json({ error: 'Email service not configured. Contact administrator.' });
+        return res.status(503).json({ error: "Email service not configured. Contact administrator." });
       }
 
       // Import crypto and bcrypt for key generation
-      const crypto = (await import('crypto')).default;
-      const bcrypt = (await import('bcryptjs')).default;
+      const crypto = (await import("crypto")).default;
+      const bcrypt = (await import("bcryptjs")).default;
 
       // Generate verification token
-      const verificationToken = crypto.randomBytes(32).toString('hex');
+      const verificationToken = crypto.randomBytes(32).toString("hex");
       const verificationExpiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000); // 24 hours
 
       // Generate API key
-      const rawKey = crypto.randomBytes(32).toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
+      const rawKey = crypto
+        .randomBytes(32)
+        .toString("base64")
+        .replace(/\+/g, "-")
+        .replace(/\//g, "_")
+        .replace(/=/g, "");
       const keyPrefix = rawKey.slice(0, 8);
       const keyHash = await bcrypt.hash(rawKey, 12);
 
@@ -1712,7 +1775,16 @@ export function createApi({ logDestination, dbOverride } = {}) {
            (name, email, key_hash, key_prefix, tier, verified, verification_token, verification_expires_at)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
          RETURNING id, name, email, key_prefix, tier, verified, created_at`,
-        [name.trim(), email.trim().toLowerCase(), keyHash, keyPrefix, 'free', false, verificationToken, verificationExpiresAt]
+        [
+          name.trim(),
+          email.trim().toLowerCase(),
+          keyHash,
+          keyPrefix,
+          "free",
+          false,
+          verificationToken,
+          verificationExpiresAt,
+        ],
       );
 
       // Build verification URL
@@ -1723,21 +1795,21 @@ export function createApi({ logDestination, dbOverride } = {}) {
       await sendVerificationEmail({
         email: email.trim(),
         keyName: name.trim(),
-        verificationUrl
+        verificationUrl,
       });
 
       // Return success message (do NOT return the key or verification token)
       res.status(201).json({
-        message: 'API key created successfully. Please check your email to verify and activate your key.',
+        message: "API key created successfully. Please check your email to verify and activate your key.",
         keyId: rows[0].id,
         keyPrefix: rows[0].key_prefix,
         email: rows[0].email,
-        verified: rows[0].verified
+        verified: rows[0].verified,
       });
     } catch (e) {
-      logger.error('[POST /api/keys] Error:', e);
-      if (e.message.includes('duplicate key') || e.message.includes('unique constraint')) {
-        return res.status(409).json({ error: 'An API key for this email already exists and is pending verification.' });
+      logger.error("[POST /api/keys] Error:", e);
+      if (e.message.includes("duplicate key") || e.message.includes("unique constraint")) {
+        return res.status(409).json({ error: "An API key for this email already exists and is pending verification." });
       }
       res.status(500).json({ error: e.message });
     }
@@ -1748,8 +1820,8 @@ export function createApi({ logDestination, dbOverride } = {}) {
     try {
       const { token } = req.query;
 
-      if (!token || typeof token !== 'string') {
-        return res.status(400).json({ error: 'token is required' });
+      if (!token || typeof token !== "string") {
+        return res.status(400).json({ error: "token is required" });
       }
 
       // Look up the key by verification token
@@ -1757,23 +1829,23 @@ export function createApi({ logDestination, dbOverride } = {}) {
         `SELECT id, name, email, key_hash, key_prefix, tier, verified, verification_expires_at
          FROM api_keys
          WHERE verification_token = $1`,
-        [token]
+        [token],
       );
 
       if (rows.length === 0) {
-        return res.status(404).json({ error: 'Invalid verification token' });
+        return res.status(404).json({ error: "Invalid verification token" });
       }
 
       const keyRecord = rows[0];
 
       // Check if already verified
       if (keyRecord.verified) {
-        return res.status(400).json({ error: 'This API key has already been verified' });
+        return res.status(400).json({ error: "This API key has already been verified" });
       }
 
       // Check if token has expired
       if (new Date(keyRecord.verification_expires_at) < new Date()) {
-        return res.status(400).json({ error: 'Verification token has expired. Please request a new API key.' });
+        return res.status(400).json({ error: "Verification token has expired. Please request a new API key." });
       }
 
       // Activate the key by setting verified = true and clearing the verification token
@@ -1784,16 +1856,21 @@ export function createApi({ logDestination, dbOverride } = {}) {
              verification_expires_at = NULL,
              updated_at = NOW()
          WHERE id = $1`,
-        [keyRecord.id]
+        [keyRecord.id],
       );
 
       // Since this is the only time we return the full key, we need to reconstruct it
       // We can't retrieve the original raw key from the hash, so we need to generate a new one
       // and update the record. This is a security trade-off for the one-time display requirement.
-      const crypto = (await import('crypto')).default;
-      const bcrypt = (await import('bcryptjs')).default;
-      
-      const newRawKey = crypto.randomBytes(32).toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
+      const crypto = (await import("crypto")).default;
+      const bcrypt = (await import("bcryptjs")).default;
+
+      const newRawKey = crypto
+        .randomBytes(32)
+        .toString("base64")
+        .replace(/\+/g, "-")
+        .replace(/\//g, "_")
+        .replace(/=/g, "");
       const newKeyPrefix = newRawKey.slice(0, 8);
       const newKeyHash = await bcrypt.hash(newRawKey, 12);
 
@@ -1801,20 +1878,20 @@ export function createApi({ logDestination, dbOverride } = {}) {
         `UPDATE api_keys
          SET key_hash = $1, key_prefix = $2, updated_at = NOW()
          WHERE id = $3`,
-        [newKeyHash, newKeyPrefix, keyRecord.id]
+        [newKeyHash, newKeyPrefix, keyRecord.id],
       );
 
       // Return the full key (this is the only time it will be shown)
       res.json({
-        message: 'API key verified and activated successfully. Save this key securely - it will not be shown again.',
+        message: "API key verified and activated successfully. Save this key securely - it will not be shown again.",
         key: newRawKey,
         keyId: keyRecord.id,
         name: keyRecord.name,
         email: keyRecord.email,
-        tier: keyRecord.tier
+        tier: keyRecord.tier,
       });
     } catch (e) {
-      logger.error('[GET /api/keys/verify] Error:', e);
+      logger.error("[GET /api/keys/verify] Error:", e);
       res.status(500).json({ error: e.message });
     }
   });
@@ -2178,16 +2255,12 @@ export function createApi({ logDestination, dbOverride } = {}) {
         limit,
       });
       if (format === "json") {
-        const filename = wallet
-          ? `wallet-${wallet}-events.json`
-          : "events.json";
+        const filename = wallet ? `wallet-${wallet}-events.json` : "events.json";
         res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
         res.setHeader("Content-Type", "application/json");
         return res.json(rows);
       }
-      const filename = wallet
-        ? `wallet-${wallet}-events.csv`
-        : "events.csv";
+      const filename = wallet ? `wallet-${wallet}-events.csv` : "events.csv";
       res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
       res.setHeader("Content-Type", "text/csv");
       return res.send(rowsToCsv(rows, EVENT_COLUMNS));
@@ -2313,11 +2386,7 @@ export function createApi({ logDestination, dbOverride } = {}) {
       if (!Array.isArray(calls)) {
         return res.status(400).json({ error: "calls must be an array" });
       }
-      const result = await (await import("./batch.js")).simulateBatch(
-        calls,
-        sourceAccount,
-        networkPassphrase
-      );
+      const result = await (await import("./batch.js")).simulateBatch(calls, sourceAccount, networkPassphrase);
       res.json(result);
     } catch (e) {
       res.status(500).json({ error: e.message });
@@ -2338,7 +2407,7 @@ export function createApi({ logDestination, dbOverride } = {}) {
           memBytes: acc.memBytes + (e.memBytes || 0),
           fee: acc.fee + (e.fee || 0),
         }),
-        { cpuInsns: 0, memBytes: 0, fee: 0 }
+        { cpuInsns: 0, memBytes: 0, fee: 0 },
       );
       res.json({ estimates, totalGas });
     } catch (e) {
