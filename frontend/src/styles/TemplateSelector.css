@@ -1,33 +1,35 @@
 .template-selector-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.7);
+  background: var(--surface-overlay);
   display: flex;
   align-items: center;
   justify-content: center;
   z-index: 1000;
+  backdrop-filter: blur(4px);
 }
 
 .template-selector {
-  background: #252526;
-  border: 1px solid #3e3e42;
-  border-radius: 4px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
   padding: 24px;
   max-width: 700px;
   width: 90%;
   max-height: 80vh;
   overflow-y: auto;
+  box-shadow: var(--shadow-lg);
 }
 
 .template-selector h2 {
   margin: 0 0 8px 0;
   font-size: 20px;
-  color: #d4d4d4;
+  color: var(--text-primary);
 }
 
 .template-selector > p {
   margin: 0 0 20px 0;
-  color: #bebebe;
+  color: var(--text-secondary);
   font-size: 13px;
 }
 
@@ -38,9 +40,9 @@
 }
 
 .template-card {
-  background: #1e1e1e;
-  border: 1px solid #3e3e42;
-  border-radius: 4px;
+  background: var(--surface-raised);
+  border: 1px solid var(--border);
+  border-radius: 6px;
   padding: 16px;
   cursor: pointer;
   text-align: left;
@@ -48,20 +50,21 @@
 }
 
 .template-card:hover {
-  background: #2d2d30;
-  border-color: #0e639c;
+  background: var(--surface);
+  border-color: var(--accent);
   transform: translateY(-2px);
+  box-shadow: var(--shadow-md);
 }
 
 .template-card h3 {
   margin: 0 0 8px 0;
   font-size: 14px;
-  color: #4ec9b0;
+  color: var(--accent);
 }
 
 .template-card p {
   margin: 0;
   font-size: 12px;
-  color: #bebebe;
+  color: var(--text-secondary);
   line-height: 1.4;
 }
