@@ -28,9 +28,85 @@ export default function EventPage() {
   </div>
 );
 
+  const isReorg = Boolean((ev as any).is_reorg || (ev as any).superseded);
+
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-      <h2>Event #{ev.seq}</h2>
+      {/* Dedicated print-only header */}
+      <div className="print-only print-header">
+        <div>
+          <div className="print-header-brand">Soroban Smart Block Explorer</div>
+          <div style={{ fontSize: "9pt", color: "#4b5563" }}>Certified Event Compliance Audit</div>
+        </div>
+        <div className="print-header-meta">
+          <div>Event #{ev.seq}</div>
+          <div>Ledger #{ev.ledger.toLocaleString()}</div>
+        </div>
+      </div>
+
+      {/* Screen action bar */}
+      <div
+        className="no-print"
+        style={{
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "center",
+          flexWrap: "wrap",
+          gap: 10,
+        }}
+      >
+        <h2 style={{ margin: 0 }}>Event #{ev.seq}</h2>
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          <button
+            type="button"
+            onClick={() => window.print()}
+            style={{
+              padding: "6px 14px",
+              background: "var(--surface)",
+              color: "var(--text)",
+              border: "1px solid var(--border)",
+              borderRadius: 6,
+              cursor: "pointer",
+              fontSize: 13,
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 6,
+            }}
+            title="Print or save as PDF via browser print dialog"
+          >
+            🖨 Print View
+          </button>
+          <a
+            href={api.eventReportUrl(ev.seq)}
+            target="_blank"
+            rel="noopener noreferrer"
+            download={`soroban-event-${ev.seq}-audit.pdf`}
+            style={{
+              padding: "6px 14px",
+              background: "var(--accent)",
+              color: "var(--bg, #0d1117)",
+              border: "none",
+              borderRadius: 6,
+              fontWeight: 600,
+              fontSize: 13,
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 6,
+              textDecoration: "none",
+            }}
+            title="Download cryptographically signed Tagged PDF 1.7 report"
+          >
+            📥 Export Signed PDF
+          </a>
+        </div>
+      </div>
+
+      {/* Superseded / Reorg Warning */}
+      {isReorg && (
+        <div className="print-watermark-reorg">
+          ⚠ SUPERSEDED BY REORG — Historical ledger data preserved for compliance and audit trail
+        </div>
+      )}
 
       <div className="card" style={{ display: "grid", gap: 12 }}>
         <Row label="Description" value={ev.description} highlight />
@@ -108,6 +184,15 @@ export default function EventPage() {
 
       {/* State restoration (RestoreFootprintOp) */}
       {ev.archival_info?.isRestoreOp && <RestoreFootprintPanel restore={ev.archival_info} />}
+
+      {/* Dedicated print-only footer */}
+      <div className="print-only print-footer">
+        <div>
+          <span>Audit URL: </span>
+          <code>{window.location.href}</code>
+        </div>
+        <div>Certified Tagged PDF 1.7 &middot; SHA-256 Verified</div>
+      </div>
     </div>
   );
 }

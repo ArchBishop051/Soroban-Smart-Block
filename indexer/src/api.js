@@ -59,6 +59,12 @@ import { getActiveAlerts } from "./alertManager.js";
 import { randomUUID } from "crypto";
 import Ajv from "ajv";
 import addFormats from "ajv-formats";
+import {
+  generateEventReportPdf,
+  generateContractReportPdf,
+  generateBatchEventsReportPdf,
+  verifyReport,
+} from "./reports/index.js";
 
 // ── AJV schema validator for POST /api/contracts ──────────────────────────────
 // This validates the real ContractMeta shape stored via db.upsertContractMeta
@@ -2209,6 +2215,116 @@ export function createApi({ logDestination, dbOverride } = {}) {
       res.setHeader("Content-Disposition", 'attachment; filename="contracts.csv"');
       res.setHeader("Content-Type", "text/csv");
       return res.send(rowsToCsv(rows, CONTRACT_COLUMNS));
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // ── Certified Report & Deterministic Signed PDF Endpoints (Issue #805) ────
+
+  // GET /api/reports/event/:seq?format=pdf|json
+  app.get("/api/reports/event/:seq", async (req, res) => {
+    try {
+      const seq = Number(req.params.seq);
+      const ev = await db.getEvent(seq);
+      if (!ev) {
+        return res.status(404).json({ error: `Event sequence ${seq} not found` });
+      }
+
+      const result = generateEventReportPdf(ev);
+
+      if (req.query.format === "json") {
+        return res.json({
+          canonicalData: result.canonicalData,
+          verificationHash: result.verificationHash,
+          signature: result.signature,
+          permalink: result.permalink,
+        });
+      }
+
+      res.setHeader("Content-Type", "application/pdf");
+      res.setHeader("Content-Disposition", `attachment; filename="event-${seq}-report.pdf"`);
+      res.setHeader("X-Report-Hash", result.verificationHash);
+      res.setHeader("X-Report-Signature", result.signature);
+      res.setHeader("Cache-Control", "public, max-age=300");
+      return res.send(result.buffer);
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // GET /api/reports/contract/:id?format=pdf|json
+  app.get("/api/reports/contract/:id", async (req, res) => {
+    try {
+      const contractId = req.params.id;
+      const contract = await db.getContractMeta(contractId);
+      if (!contract) {
+        return res.status(404).json({ error: `Contract ${contractId} not found` });
+      }
+
+      const result = generateContractReportPdf(contract);
+
+      if (req.query.format === "json") {
+        return res.json({
+          canonicalData: result.canonicalData,
+          verificationHash: result.verificationHash,
+          signature: result.signature,
+          permalink: result.permalink,
+        });
+      }
+
+      res.setHeader("Content-Type", "application/pdf");
+      res.setHeader("Content-Disposition", `attachment; filename="contract-${contractId}-report.pdf"`);
+      res.setHeader("X-Report-Hash", result.verificationHash);
+      res.setHeader("X-Report-Signature", result.signature);
+      res.setHeader("Cache-Control", "public, max-age=300");
+      return res.send(result.buffer);
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // POST /api/reports/batch
+  app.post("/api/reports/batch", async (req, res) => {
+    try {
+      const { seqs = [], contract } = req.body || {};
+      let events = [];
+
+      if (Array.isArray(seqs) && seqs.length > 0) {
+        const bounded = seqs.slice(0, 100);
+        for (const s of bounded) {
+          const ev = await db.getEvent(Number(s));
+          if (ev) events.push(ev);
+        }
+      } else if (contract) {
+        events = await db.getEventsForExport({ contract, limit: 100 });
+      }
+
+      if (events.length === 0) {
+        return res.status(400).json({ error: "No matching events found for batch report" });
+      }
+
+      const result = generateBatchEventsReportPdf(events);
+
+      res.setHeader("Content-Type", "application/pdf");
+      res.setHeader("Content-Disposition", 'attachment; filename="batch-events-report.pdf"');
+      res.setHeader("X-Report-Hash", result.verificationHash);
+      res.setHeader("X-Report-Signature", result.signature);
+      return res.send(result.buffer);
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // POST /api/reports/verify
+  app.post("/api/reports/verify", (req, res) => {
+    try {
+      const { data, hash, signature } = req.body || {};
+      if (!data || !hash) {
+        return res.status(400).json({ error: "Missing required 'data' or 'hash' fields" });
+      }
+      const outcome = verifyReport(data, hash, signature);
+      return res.json(outcome);
     } catch (e) {
       res.status(500).json({ error: e.message });
     }

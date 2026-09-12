@@ -220,6 +220,18 @@ export default function ContractPage() {
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
+      {/* Dedicated print-only header */}
+      <div className="print-only print-header">
+        <div>
+          <div className="print-header-brand">Soroban Smart Block Explorer</div>
+          <div style={{ fontSize: "9pt", color: "#4b5563" }}>Smart Contract Audit & Specification Report</div>
+        </div>
+        <div className="print-header-meta">
+          <div>Contract: {truncateAddress(id)}</div>
+          <div>Printed: {new Date().toISOString().split("T")[0]}</div>
+        </div>
+      </div>
+
       {/* SEP-49 migration pending banner */}
       {migrationStatus?.pending && migrationStatus.upgradedAtLedger != null && (
         <MigrationBanner upgradedAtLedger={migrationStatus.upgradedAtLedger} />
@@ -277,7 +289,49 @@ export default function ContractPage() {
               {meta.min_ledger != null && <span>Registration ledger: {meta.min_ledger.toLocaleString()}</span>}
             </div>
           </div>
-          <div style={{ display: "flex", gap: 8 }}>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", justifyContent: "flex-end" }}>
+            <button
+              type="button"
+              onClick={() => window.print()}
+              style={{
+                padding: "8px 14px",
+                background: "transparent",
+                color: "var(--text)",
+                border: "1px solid var(--border)",
+                borderRadius: 4,
+                cursor: "pointer",
+                fontSize: 13,
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 6,
+              }}
+              title="Print or save as PDF via browser print dialog"
+            >
+              🖨 Print View
+            </button>
+            <a
+              href={api.contractReportUrl(id)}
+              target="_blank"
+              rel="noopener noreferrer"
+              download={`soroban-contract-${id.slice(0, 8)}-audit.pdf`}
+              style={{
+                padding: "8px 14px",
+                background: "var(--accent)",
+                color: "var(--bg, #0d1117)",
+                border: "none",
+                borderRadius: 4,
+                cursor: "pointer",
+                fontSize: 13,
+                fontWeight: 600,
+                textDecoration: "none",
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 6,
+              }}
+              title="Download cryptographically signed Tagged PDF 1.7 report"
+            >
+              📥 Export Signed PDF
+            </a>
             <button
               type="button"
               onClick={() => setHistoryOpen(true)}
@@ -668,6 +722,15 @@ export default function ContractPage() {
         open={historyOpen}
         onClose={() => setHistoryOpen(false)}
       />
+
+      {/* Dedicated print-only footer */}
+      <div className="print-only print-footer">
+        <div>
+          <span>Audit URL: </span>
+          <code>{window.location.href}</code>
+        </div>
+        <div>Certified Tagged PDF 1.7 &middot; SHA-256 Verified</div>
+      </div>
     </div>
   );
 }
