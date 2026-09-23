@@ -8,12 +8,14 @@
   "service": "devcontainer",
   "workspaceFolder": "/workspaces/Soroban-Smart-Block",
   "overrideCommand": true,
+  "remoteUser": "vscode",
+  "shutdownAction": "stopCompose",
 
-  "forwardPorts": [5173, 3001, 5432],
+  "forwardPorts": [5173, 3001, "postgres:5432"],
   "portsAttributes": {
     "5173": { "label": "Frontend", "onAutoForward": "openPreview" },
     "3001": { "label": "Indexer API", "onAutoForward": "silent" },
-    "5432": { "label": "PostgreSQL", "onAutoForward": "silent" }
+    "postgres:5432": { "label": "PostgreSQL", "onAutoForward": "silent" }
   },
 
   "customizations": {
@@ -32,6 +34,6 @@
     }
   },
 
-  "postCreateCommand": "cp -n .env.example .env 2>/dev/null || true && npm ci --prefer-offline 2>/dev/null || true && cd indexer && npm ci --prefer-offline && cd ../frontend && npm ci --prefer-offline && cd .. && cargo fetch 2>/dev/null || true",
+  "postCreateCommand": "bash .devcontainer/post-create.sh",
   "postStartCommand": "echo '✅ Container ready. Run: make dev'"
 }
