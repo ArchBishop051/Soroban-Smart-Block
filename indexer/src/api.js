@@ -59,6 +59,7 @@ import { getActiveAlerts } from "./alertManager.js";
 import { randomUUID } from "crypto";
 import Ajv from "ajv";
 import { buildNarrative } from "./narrative/index.js";
+import { decodeSmartWalletEvent, deriveWalletState, isSmartWalletAbi } from "./smartWallet.js";
 import addFormats from "ajv-formats";
 
 // ── AJV schema validator for POST /api/contracts ──────────────────────────────
@@ -578,6 +579,34 @@ export function createApi({ logDestination, dbOverride } = {}) {
       }
     },
   );
+
+  // GET /api/wallet/:address/smart-wallet — signers and policies of a
+  // contract account, derived from its signer/policy events (#898).
+  app.get("/api/wallet/:address/smart-wallet", async (req, res) => {
+    try {
+      const { address } = req.params;
+      if (!/^C[A-Z2-7]{55}$/.test(address)) return res.status(400).json({ error: "Smart wallets are contract accounts (C...)" });
+      const rows = await db.getSmartWalletEvents(address);
+      const decoded = rows
+        .map((r) => {
+          let data = r.raw_data;
+          try {
+            data = JSON.parse(r.raw_data);
+          } catch {
+            /* keep raw */
+          }
+          const e = decodeSmartWalletEvent(r.raw_topics ?? [], data);
+          return e ? { ...e, ledger: r.ledger } : null;
+        })
+        .filter(Boolean);
+      const meta = await db.getContractMeta(address).catch(() => null);
+      const detected = decoded.length > 0 || isSmartWalletAbi(meta?.functions ?? []);
+      if (!detected) return res.status(404).json({ error: "Not a recognised smart wallet" });
+      res.json({ address, ...deriveWalletState(decoded), history: decoded });
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  });
 
   // GET /api/transactions/:hash/narrative — one-line summary of everything a
   // transaction did, composed from its decoded events (#897).

@@ -136,6 +136,18 @@ export const db = {
    *               Omit (or pass 0) for the first page.
    * @returns {{ data: object[], next_cursor: number|null }}
    */
+  /** Signer/policy events of a smart wallet contract, oldest first (#898). */
+  async getSmartWalletEvents(contractId, limit = 2000) {
+    const { rows } = await pool.query(
+      `SELECT raw_topics, raw_data, ledger FROM events
+       WHERE contract_id = $1
+         AND (raw_topics->>0 ~ '(signer|policy)' OR raw_topics->>1 ~ '(signer|policy)')
+       ORDER BY seq ASC LIMIT $2`,
+      [contractId, limit],
+    );
+    return rows;
+  },
+
   /** All events of one transaction, in emission order (narratives, #897). */
   async getEventsByTxHash(txHash, limit = 500) {
     const { rows } = await pool.query("SELECT * FROM events WHERE tx_hash = $1 ORDER BY seq ASC LIMIT $2", [txHash, limit]);

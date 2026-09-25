@@ -684,6 +684,20 @@ export interface TransactionTreeDiff {
   changed: { a: SubInvocationExtended; b: SubInvocationExtended }[];
 }
 
+/** Signers and policies of a contract account (#898). */
+export interface SmartWalletSigner {
+  key: string;
+  type: string;
+  expiration: number | null;
+  since_ledger: number | null;
+}
+export interface SmartWalletState {
+  address: string;
+  signers: SmartWalletSigner[];
+  policies: SmartWalletSigner[];
+  history: { subject: string; action: string; key: string; type: string; ledger: number; description: string }[];
+}
+
 /** One-line transaction summary (#897). */
 export interface TxNarrative {
   tx_hash: string;
@@ -708,6 +722,7 @@ export const api = {
   },
   event: (seq: number) => get<DecodedEvent>(`/events/${seq}`),
   txNarrative: (hash: string) => get<TxNarrative>(`/transactions/${hash}/narrative`),
+  smartWallet: (address: string) => get<SmartWalletState>(`/wallet/${address}/smart-wallet`),
   asset: (issuer: string, code: string) => get<AssetInfo>(`/assets/${issuer}/${code}`),
   search: (q: string, limit = 10) => {
     const params = new URLSearchParams();

@@ -4,6 +4,7 @@ import { db } from "./db.js";
 import { detectSac, detectSacAsset, sacLabel } from "./sac.js";
 import { extractRoleAssignment } from "./roleTracker.js";
 import { decodeOpenZeppelinEvent } from "./decoders/openzeppelin/index.js";
+import { decodeSmartWalletEvent } from "./smartWallet.js";
 import { decodeRwaEvent } from "./rwaDecoder.js";
 import { parseHeuristic } from "./heuristicParser.js";
 import { parseTTLHostFunction, formatTTLExtension } from "./ttlExtensionParser.js";
@@ -279,6 +280,21 @@ async function decodeEvent(ev, { currentAbi = false } = {}) {
         ...extractGasCosts(ev),
       };
     }
+  }
+
+  // Smart-wallet signer / policy events (#898).
+  const walletEvent = decodeSmartWalletEvent(topics, data);
+  if (walletEvent) {
+    return {
+      contract_id: contractId,
+      function: `${walletEvent.subject}_${walletEvent.action}`,
+      ledger: ev.ledger,
+      tx_hash: ev.txHash,
+      description: walletEvent.description,
+      raw_topics: topics.map((t) => stripNul(t)),
+      raw_data: safeStringify(data),
+      ...extractGasCosts(ev),
+    };
   }
 
   // OpenZeppelin Stellar Contracts events (#896): works without a registered
