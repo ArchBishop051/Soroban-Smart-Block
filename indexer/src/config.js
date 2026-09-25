@@ -122,6 +122,17 @@ const configSchema = z.object({
 
   START_LEDGER: nonNegativeInt(0),
 
+  DATALAKE_URL: optionalUrl(),
+  DATALAKE_ENABLED: booleanWithDefault(false),
+  DATALAKE_SCHEMA: z.string().optional().transform((val) => {
+    if (!val) return { ledgersPerFile: 1, filesPerPartition: 1000 };
+    try { return JSON.parse(val); } catch { return { ledgersPerFile: 1, filesPerPartition: 1000 }; }
+  }),
+  DATALAKE_ACCESS_KEY: z.string().optional(),
+  DATALAKE_SECRET_KEY: z.string().optional(),
+  RPC_RETENTION_LEDGERS: nonNegativeInt(100000),
+  LATEST_LEDGER: nonNegativeInt(0),
+
   POLL_MS: positiveInt(5000).refine((val) => val >= 100, {
     message: "POLL_MS must be at least 100ms to avoid overwhelming the RPC",
   }),

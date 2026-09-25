@@ -24,7 +24,8 @@ import { extractStateDiffs } from "./stateDiffIndexer.js";
 import { parseFeeBump } from "./feeBumpParser.js";
 import { detectEvictions } from "./archivalEvictionDetector.js";
 import { parseAndDescribeRestore } from "./restoreFootprintParser.js";
-import { publish, publishTransactionStatus } from "./wsEvents.js";
+import { publishTransactionStatus } from "./wsEvents.js";
+import { enqueueOutbox, startOutboxRelay } from "./outboxRelay.js";
 import { extractBuildMetadata } from "./wasmBuildMetadata.js";
 import { scanFootprintContention } from "./footprintContentionScanner.js";
 import { handleVaultEvent, refreshAllVaults } from "./vaultIndexer.js";
@@ -50,7 +51,7 @@ import { logger } from "./logger.js";
 import * as alertManager from "./alertManager.js";
 import { processRetries as dlqProcessRetries, enqueue as dlqEnqueue, getDlqDepth } from "./deadLetterQueue.js";
 import { recordLedger as gapRecordLedger } from "./predictiveGapDetector.js";
-import { deliverWebhooksForEvent, retryWebhookDelivery } from "./webhookDelivery.js";
+import { retryWebhookDelivery } from "./webhookDelivery.js";
 import { runIntegrityChecks } from "./routes/admin.js";
 
 const RPC_URL = config.SOROBAN_RPC_URL;
@@ -212,12 +213,20 @@ export async function processSingleEvent(rawSorobanEvent, context = undefined) {
   decoded.fee_bump = feeBump;
   decoded.archival_info = archivalInfo;
   await db.upsertEventValidated(decoded);
+  // The event row is committed before it is exposed to consumers. The outbox
+  // relay provides durable retries and stable event IDs for deduplication.
+  const outboxClient = await pool.connect();
+  try {
+    await outboxClient.query("BEGIN");
+    await enqueueOutbox(outboxClient, { topic: "event", payload: decoded }, { eventId: String(decoded.seq ?? `${decoded.contract_id}:${decoded.ledger}:${decoded.tx_hash}`) });
+    await outboxClient.query("COMMIT");
+  } catch (error) {
+    await outboxClient.query("ROLLBACK").catch(() => {});
+    logger.error({ err: error.message, ledger: decoded.ledger }, "outbox enqueue failed");
+  } finally { outboxClient.release(); }
   // Bust wallet event caches (#534) — any new event may reference a wallet address.
   cacheInvalidate("wallet:events:*").catch(() => {});
-  // Notify matching webhook subscriptions (non-blocking; failures retry via the DLQ).
-  deliverWebhooksForEvent(decoded).catch((err) =>
-    logger.error("[webhookDelivery] dispatch failed:", err.message),
-  );
+  // WebSocket/webhook fan-out is performed by the post-commit relay.
 
   // Persist per-key state diffs for the timeline.
   const diffs = extractStateDiffs(rawSorobanEvent, decoded);
@@ -234,7 +243,6 @@ export async function processSingleEvent(rawSorobanEvent, context = undefined) {
     );
   }
 
-  publish(decoded); // push to WS clients
   handleVaultEvent(decoded); // vault ratio update (async, non-blocking)
 
   // Process circuit breaker events.
@@ -353,6 +361,7 @@ async function run() {
   startPruner(); // daily temporary-storage cleanup
   startGasGuzzlersWorker(); // daily gas consumption leaderboard
   startReDecodeWorker(); // low-priority ABI refresh for superseded events
+  startOutboxRelay(); // post-commit WS/SSE/webhook fan-out
 
   // ── Auth & Rate Limiting cron jobs ─────────────────────────────────────────
   startUsageFlushCron();       // flush Redis usage counters → DB every minute
