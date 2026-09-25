@@ -684,6 +684,18 @@ export interface TransactionTreeDiff {
   changed: { a: SubInvocationExtended; b: SubInvocationExtended }[];
 }
 
+/** One-line transaction summary (#897). */
+export interface TxNarrative {
+  tx_hash: string;
+  event_count: number;
+  action: string | null;
+  protocol: string | null;
+  actor: string | null;
+  sentence: string;
+  rule: string;
+  net_flows: Record<string, Record<string, string>>;
+}
+
 export const api = {
   events: (params: { contract?: string; fn?: string; after_seq?: number; limit?: number; type?: string }) => {
     const q = new URLSearchParams();
@@ -695,6 +707,7 @@ export const api = {
     return get<EventsPage>(`/events?${q}`);
   },
   event: (seq: number) => get<DecodedEvent>(`/events/${seq}`),
+  txNarrative: (hash: string) => get<TxNarrative>(`/transactions/${hash}/narrative`),
   asset: (issuer: string, code: string) => get<AssetInfo>(`/assets/${issuer}/${code}`),
   search: (q: string, limit = 10) => {
     const params = new URLSearchParams();

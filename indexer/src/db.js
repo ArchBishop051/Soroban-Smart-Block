@@ -136,6 +136,12 @@ export const db = {
    *               Omit (or pass 0) for the first page.
    * @returns {{ data: object[], next_cursor: number|null }}
    */
+  /** All events of one transaction, in emission order (narratives, #897). */
+  async getEventsByTxHash(txHash, limit = 500) {
+    const { rows } = await pool.query("SELECT * FROM events WHERE tx_hash = $1 ORDER BY seq ASC LIMIT $2", [txHash, limit]);
+    return rows;
+  },
+
   async getEventsCursor({ contract, fn, type, after_seq = 0, limit = 25 } = {}) {
     const conditions = [];
     const params = [];

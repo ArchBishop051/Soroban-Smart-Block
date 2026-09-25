@@ -18,6 +18,14 @@ export default function EventPage() {
     queryFn: () => api.event(Number(seq)),
   });
 
+  // Summary of everything the event's transaction did (#897).
+  const { data: narrative } = useQuery({
+    queryKey: ["tx-narrative", ev?.tx_hash],
+    queryFn: () => api.txNarrative(ev!.tx_hash!),
+    enabled: Boolean(ev?.tx_hash),
+    retry: false,
+  });
+
   if (isLoading) return <p style={{ color: "var(--muted)" }}>Loading…</p>;
   if (!ev) return (
   <div style={{ textAlign: "center", marginTop: "2rem" }}>
@@ -82,6 +90,7 @@ export default function EventPage() {
           <Row label="Type" value="Classic (no Soroban contract)" />
         )}
         {ev.tx_hash && <Row label="Tx Hash" value={ev.tx_hash} mono />}
+        {narrative && narrative.event_count > 1 && <Row label="Transaction" value={narrative.sentence} />}
         {ev.raw_topics.length > 0 && <Row label="Topics" value={ev.raw_topics.join(", ")} mono />}
       </div>
 

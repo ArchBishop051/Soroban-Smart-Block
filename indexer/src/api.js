@@ -58,6 +58,7 @@ import { getHealthStatus, getLivenessStatus, getReadinessStatus } from "./health
 import { getActiveAlerts } from "./alertManager.js";
 import { randomUUID } from "crypto";
 import Ajv from "ajv";
+import { buildNarrative } from "./narrative/index.js";
 import addFormats from "ajv-formats";
 
 // ── AJV schema validator for POST /api/contracts ──────────────────────────────
@@ -577,6 +578,19 @@ export function createApi({ logDestination, dbOverride } = {}) {
       }
     },
   );
+
+  // GET /api/transactions/:hash/narrative — one-line summary of everything a
+  // transaction did, composed from its decoded events (#897).
+  app.get("/api/transactions/:hash/narrative", async (req, res) => {
+    try {
+      if (!/^[0-9a-f]{64}$/i.test(req.params.hash)) return res.status(400).json({ error: "Invalid transaction hash" });
+      const events = await db.getEventsByTxHash(req.params.hash);
+      if (!events.length) return res.status(404).json({ error: "No events indexed for this transaction" });
+      res.json({ tx_hash: req.params.hash, event_count: events.length, ...buildNarrative(events) });
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  });
 
   // GET /api/search?q=&limit=
   app.get(
