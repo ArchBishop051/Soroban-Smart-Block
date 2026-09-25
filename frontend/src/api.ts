@@ -3,6 +3,40 @@ import { getCsrfToken, refreshCsrfToken } from "./hooks/useCsrf";
 
 const BASE = "/api";
 
+function randomTraceId() {
+  const bytes = new Uint8Array(16);
+  crypto.getRandomValues(bytes);
+  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+function randomSpanId() {
+  const bytes = new Uint8Array(8);
+  crypto.getRandomValues(bytes);
+  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+function buildTraceHeaders() {
+  const traceId = randomTraceId();
+  const spanId = randomSpanId();
+  const version = "00";
+  const flags = "01";
+  const traceparent = `${version}-${traceId}-${spanId}-${flags}`;
+  return {
+    "X-Request-Id": crypto.randomUUID(),
+    traceparent,
+    "sentry-trace": traceparent,
+  };
+}
+
+function withTraceHeaders(init: RequestInit = {}): RequestInit {
+  const headers = new Headers(init.headers || {});
+  const traceHeaders = buildTraceHeaders();
+  for (const [key, value] of Object.entries(traceHeaders)) {
+    headers.set(key, value);
+  }
+  return { ...init, headers };
+}
+
 export interface SpecType {
   kind: "struct" | "enum" | "union" | "error_enum";
   name: string;
@@ -335,7 +369,7 @@ export interface ContractGraphData {
 }
 
 async function get<T>(path: string): Promise<T> {
-  const res = await fetch(BASE + path);
+  const res = await fetch(BASE + path, withTraceHeaders());
   if (!res.ok) throw new Error(`API ${res.status}: ${path}`);
   return res.json();
 }
@@ -357,11 +391,11 @@ async function mutationFetch(
     ...(token ? { "X-CSRF-Token": token } : {}),
   });
 
-  const res = await fetch(url, {
+  const res = await fetch(url, withTraceHeaders({
     credentials: "include",
     ...options,
     headers: buildHeaders(getCsrfToken()),
-  });
+  }));
 
   // On CSRF mismatch refresh the token and retry exactly once.
   if (res.status === 403) {
@@ -372,11 +406,11 @@ async function mutationFetch(
       body.error === "CSRF token mismatch"
     ) {
       await refreshCsrfToken();
-      return fetch(url, {
+      return fetch(url, withTraceHeaders({
         credentials: "include",
         ...options,
         headers: buildHeaders(getCsrfToken()),
-      });
+      }));
     }
   }
 

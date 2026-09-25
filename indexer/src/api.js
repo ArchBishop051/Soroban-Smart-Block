@@ -17,7 +17,7 @@ import { verifyAbi } from "./verify_abi.js";
 import { getMetrics } from "./rpcMetrics.js";
 import { getRpcNodeStatus, getProviderStats } from "./rpcMultiNode.js";
 import { cacheHitTotal, cacheMissTotal, apiRequestDuration } from "./metrics.js";
-import { tracer } from "./tracing.js";
+import { tracer, getTraceHeaders } from "./tracing.js";
 import { context, propagation } from "@opentelemetry/api";
 import { getUptimeHistory } from "./uptimeRecorder.js";
 import { getDecodeStats } from "./decoder.js";
@@ -132,13 +132,26 @@ function requestIdMiddleware(req, _res, next) {
 function tracingMiddleware(req, res, next) {
   const parentCtx = propagation.extract(context.active(), req.headers);
   context.with(parentCtx, () => {
-    tracer.startActiveSpan(`${req.method} ${req.path}`, { attributes: { "http.method": req.method, "http.target": req.originalUrl } }, (span) => {
-      res.on("finish", () => {
-        span.setAttribute("http.status_code", res.statusCode);
-        span.end();
-      });
-      next();
-    });
+    tracer.startActiveSpan(
+      `${req.method} ${req.path}`,
+      {
+        attributes: { "http.method": req.method, "http.target": req.originalUrl },
+        kind: 2,
+      },
+      (span) => {
+        const traceHeaders = getTraceHeaders(context.active());
+        const traceparent = traceHeaders.traceparent || req.headers["traceparent"];
+        if (traceparent) res.setHeader("traceparent", traceparent);
+        if (traceHeaders["sentry-trace"]) res.setHeader("sentry-trace", traceHeaders["sentry-trace"]);
+        if (traceHeaders.baggage) res.setHeader("baggage", traceHeaders.baggage);
+
+        res.on("finish", () => {
+          span.setAttribute("http.status_code", res.statusCode);
+          span.end();
+        });
+        next();
+      },
+    );
   });
 }
 
