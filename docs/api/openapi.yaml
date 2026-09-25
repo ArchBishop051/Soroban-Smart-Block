@@ -749,6 +749,12 @@ paths:
                   ok:
                     type: boolean
                     example: true
+          links:
+            GetRegisteredContract:
+              operationRef: "#/paths/~1api~1contracts~1{id}/get"
+              description: Fetch the contract that was just registered (stateful API fuzzing, #907).
+              parameters:
+                id: "$request.body#/id"
         "400":
           description: >-
             Invalid input. Body-schema failures (AJV) return `{ errors: [...] }`

@@ -68,6 +68,7 @@ import {
   signedResultUrl,
   verifyResultUrl,
 } from "./jobs/queryJobs.js";
+import { loadResponseValidator, responseValidationMiddleware } from "./openapiValidator.js";
 import { loadSigningKeys, publishedKeys, signEnvelope, wantsSignedResponse, SIGNED_MEDIA_TYPE } from "./signing.js";
 import addFormats from "ajv-formats";
 
@@ -346,6 +347,16 @@ export function createApi({ logDestination, dbOverride } = {}) {
     }
     next();
   });
+
+  // ── Test-mode OpenAPI response validation (#907) ───────────────────────────
+  // Registered after the signing wrapper so the raw body is validated. Any
+  // response that does not match docs/api/openapi.yaml becomes a 500.
+  if (process.env.OPENAPI_VALIDATE_RESPONSES === "true") {
+    const validate = loadResponseValidator(
+      path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../docs/api/openapi.yaml"),
+    );
+    if (validate) app.use("/api", responseValidationMiddleware(validate));
+  }
 
   app.get("/.well-known/explorer-keys.json", (_req, res) => {
     res.set("Cache-Control", "public, max-age=300");
