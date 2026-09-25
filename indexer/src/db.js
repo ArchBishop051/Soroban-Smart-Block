@@ -193,8 +193,8 @@ export const db = {
          (contract_id, function, ledger, tx_hash, description, raw_topics, raw_data,
           cpu_instructions, mem_bytes, fee_charged, is_high_bloat_risk, upgrade_info, storage_tiers, is_clawback,
           footprint_contention, ttl_extension, fee_bump, archival_info, zk_host_calls, abi_version, slippage_bps,
-          event_id)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)
+          event_id, decode_source)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23)
        ON CONFLICT (contract_id, ledger, tx_hash) DO NOTHING`,
       [
         ev.contract_id,
@@ -219,6 +219,7 @@ export const db = {
         ev.abi_version ?? 0,
         ev.slippage_bps ?? null,
         ev.event_id ?? null,
+        ev.decode_source ?? null,
       ],
     );
   },

@@ -72,6 +72,8 @@ export interface HeuristicParam {
 export interface DecodedEvent {
   /** Canonical, chain-derived event ID (Soroban RPC format, #892). */
   event_id?: string | null;
+  /** How the event was decoded (#895): registered ABI, on-chain spec, or heuristics. */
+  decode_source?: "abi" | "spec" | "spec_mismatch" | "heuristic" | null;
   seq: number;
   contract_id: string;
   function: string;

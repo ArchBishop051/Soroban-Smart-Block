@@ -83,6 +83,10 @@
     "zk_host_calls": {
       "type": "object"
     },
+    "decode_source": {
+      "type": "string",
+      "enum": ["abi", "spec", "spec_mismatch", "heuristic"]
+    },
     "event_id": {
       "type": "string",
       "pattern": "^\\d{19}-\\d{10}$"

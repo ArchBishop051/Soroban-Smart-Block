@@ -83,6 +83,19 @@ export default function EventPage() {
         )}
         {ev.event_id && <Row label="Event ID" value={<Link to={`/event/${ev.event_id}`}>{ev.event_id}</Link>} mono />}
         {ev.tx_hash && <Row label="Tx Hash" value={ev.tx_hash} mono />}
+        {ev.decode_source && (
+          <Row
+            label="Decoded from"
+            value={
+              {
+                abi: "Registered ABI",
+                spec: "On-chain contract spec",
+                spec_mismatch: "On-chain spec (arguments did not match — generic rendering)",
+                heuristic: "Heuristics (no ABI or spec)",
+              }[ev.decode_source]
+            }
+          />
+        )}
         {ev.raw_topics.length > 0 && <Row label="Topics" value={ev.raw_topics.join(", ")} mono />}
       </div>
 

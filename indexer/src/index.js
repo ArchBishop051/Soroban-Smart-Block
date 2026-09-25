@@ -1,4 +1,5 @@
 import "dotenv/config";
+import { invalidateContract as invalidateContractSpec } from "./contractSpecCache.js";
 import { initRuntimeConfig } from "./runtimeConfig.js";
 import "./tracing.js";
 import { pathToFileURL } from "node:url";
@@ -204,6 +205,7 @@ export async function processSingleEvent(rawSorobanEvent, context = undefined) {
       `[${rawSorobanEvent.ledger}] CONTRACT UPGRADE ${rawSorobanEvent.contractId}: ${upgrade.oldHash} → ${upgrade.newHash}`,
     );
     decoded.upgrade = upgrade;
+    invalidateContractSpec(rawSorobanEvent.contractId); // new WASM → new spec from this ledger on (#895)
     if (decoded.abi_version > 0) {
       await db.markNeedsRedecode(rawSorobanEvent.contractId, decoded.abi_version);
     }

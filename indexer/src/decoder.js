@@ -11,6 +11,7 @@ import { resolveAsset } from "./horizonClient.js";
 import config from "./config.js";
 import { decoderSuccessTotal, decoderFailureTotal } from "./metrics.js";
 import { eventIdFromRpc } from "./eventId.js";
+import { getCachedSpec, prefetchSpec, nameArgs } from "./contractSpecCache.js";
 
 // Classic operation types decoded from Horizon alongside Soroban events.
 const PATH_PAYMENT_TYPES = new Set(["path_payment_strict_send", "path_payment_strict_receive"]);
@@ -293,6 +294,14 @@ async function decodeEvent(ev, { currentAbi = false } = {}) {
         .catch(() => null) ?? await db.getContractMeta(contractId).catch(() => null);
   const fnAbi = meta?.functions?.find((f) => f.name === fnName);
 
+  // On-chain contract spec (#895): used when no ABI is registered. Only the
+  // cache is read here; a miss schedules a background fetch.
+  const { isSac: isSacContract } = detectSac(contractId);
+  const spec = meta ? null : getCachedSpec(contractId);
+  if (!meta && !spec) prefetchSpec(contractId, { isSac: isSacContract });
+  const specArgs = spec ? nameArgs(spec, fnName, [...topics.slice(1), ...(data !== undefined && data !== null ? [data] : [])]) : null;
+  const decodeSource = meta ? "abi" : specArgs ? specArgs.source : "heuristic";
+
   // Check if this contract is a registered vault
   const vaultMeta = await db.getVault(contractId).catch(() => null);
 
@@ -322,12 +331,16 @@ async function decodeEvent(ev, { currentAbi = false } = {}) {
       ? vaultDescription(fnName, topics.slice(1), data, contractLabel, vaultMeta, topics)
       : fnAbi
         ? buildDescription(fnName, topics.slice(1), data, contractLabel, topics)
-        : genericDescription(fnName, topics.slice(1), data, contractLabel, topics);
+        : specArgs?.source === "spec"
+          ? specDescription(fnName, specArgs.args, contractLabel)
+          : genericDescription(fnName, topics.slice(1), data, contractLabel, topics);
   }
 
-  // Attach heuristic params when no ABI was available
+  // Attach heuristic params when neither an ABI nor a matching spec was available
   const heuristicParams =
-    !fnAbi && !vaultMeta && !meta ? parseHeuristic([...topics.slice(1), ...(data != null ? [data] : [])]) : undefined;
+    !fnAbi && !vaultMeta && !meta && specArgs?.source !== "spec"
+      ? parseHeuristic([...topics.slice(1), ...(data != null ? [data] : [])])
+      : undefined;
 
   // DEX swap slippage (issue #554) — only computable when the ABI-matched
   // swap args carry a min_amount_out (6th positional arg, see buildDescription).
@@ -335,6 +348,7 @@ async function decodeEvent(ev, { currentAbi = false } = {}) {
     fnAbi && SWAP_FUNCTIONS.has(fnName) ? extractSwapSlippageBps(topics.slice(1)) : null;
 
   const decoded = {
+    decode_source: decodeSource,
     contract_id: contractId,
     function: fnName,
     ledger: ev.ledger,
@@ -503,6 +517,17 @@ function vaultDescription(fn, args, data, contractName, vaultMeta, fullTopics = 
  *   "Address {short-from} transferred {amount} {token} to {short-to} on {contractName}"
  * where short addresses are truncated to "AAAAAA…ZZZZ" (6 + 4 chars).
  */
+/** Description with argument names from the on-chain spec (#895). */
+function specDescription(fnName, namedArgs, contractName) {
+  const render = (v) => {
+    if (typeof v === "string" && /^[GC][A-Z2-7]{55}$/.test(v)) return fmt(v);
+    const s = typeof v === "string" ? v : safeStringify(v);
+    return s && s.length > 80 ? `${s.slice(0, 77)}…` : s;
+  };
+  const parts = Object.entries(namedArgs).map(([k, v]) => `${k}: ${render(v)}`);
+  return `${fnName}(${parts.join(", ")}) on ${contractName}`;
+}
+
 export function buildDescription(fn, args, data, contractName, fullTopics = null) {
   switch (fn) {
     case "swap":
