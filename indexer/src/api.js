@@ -26,6 +26,7 @@ import { apiKeyAuthenticator } from "./auth/apiKeyAuth.js";
 import { scopeMiddleware, assertRoutesDeclareScopes } from "./auth/scopes.js";
 import { toFilterAst, planFilter, FilterError, FILTER_TIER_LIMITS } from "./filters/filter.js";
 import { compileFilter } from "./filters/sql.js";
+import { parseRpcFilters, compileRpcFilters, RpcFilterError } from "./rpcFilters.js";
 import { geoIpRateLimiter } from "./rateLimit/geoIpLimiter.js";
 import { concurrentRequestLimiter } from "./rateLimit/concurrentLimiter.js";
 import { tokenBucketMiddleware } from "./rateLimit/tokenBucket.js";
@@ -555,6 +556,7 @@ export function createApi({ logDestination, dbOverride } = {}) {
     // Filter DSL (#902): ?filter=<text or JSON AST> or ?query_id=<saved query>.
     // Served uncached — results depend on the caller's tier limits.
     async (req, res, next) => {
+      if (req.query.filters !== undefined) return runRpcFilteredEvents(req, res, req.query.filters);
       if (req.query.filter === undefined && req.query.query_id === undefined) return next();
       await runFilteredEvents(req, res);
     },
@@ -616,6 +618,31 @@ export function createApi({ logDestination, dbOverride } = {}) {
       res.status(e.status ?? 500).json({ error: e.message });
     }
   }
+
+  // ── Soroban-RPC-compatible filters (#903) ──────────────────────────────────
+  // GET /api/events?filters=<URL-encoded JSON> or POST /api/events { filters }.
+  async function runRpcFilteredEvents(req, res, input) {
+    try {
+      const filters = parseRpcFilters(input);
+      const { sql, params } = compileRpcFilters(filters);
+      const limits = FILTER_TIER_LIMITS[req.rateContext?.tier] ?? FILTER_TIER_LIMITS.unauthenticated;
+      const source = req.method === "POST" ? req.body ?? {} : req.query;
+      const limit = Math.min(Number(source.limit) || 25, 200);
+      const afterSeq = Number(source.after_seq) || 0;
+      const result = await db.queryEventsByFilter({ where: sql, params, afterSeq, limit, ...limits });
+      res.set("Cache-Control", "no-store").json(result);
+    } catch (e) {
+      if (e instanceof RpcFilterError) return res.status(400).json({ error: e.message });
+      res.status(e.status ?? 500).json({ error: e.message });
+    }
+  }
+
+  app.post("/api/events", async (req, res) => {
+    if (req.body?.filters === undefined) {
+      return res.status(400).json({ error: "body must contain an RPC-style filters array" });
+    }
+    await runRpcFilteredEvents(req, res, req.body.filters);
+  });
 
   const requireKey = (req, res) => {
     if (!req.rateContext?.keyId) {

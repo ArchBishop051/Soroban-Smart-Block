@@ -95,3 +95,27 @@ The compiler never concatenates values into SQL. Every value, including
 `args` paths, is a bind parameter, and a fuzz test compiles 100,000 random
 ASTs with hostile strings against an injection oracle
 (`indexer/test/filters.test.js`).
+
+## Soroban RPC `getEvents` filters
+
+`GET /api/events?filters=<URL-encoded JSON>`, `POST /api/events { filters, limit?, after_seq? }`
+and WebSocket `{"type":"subscribe","filters":[…]}` (or `?filters=` on connect)
+accept the RPC `filters` shape verbatim:
+
+```json
+[{ "type": "contract", "contractIds": ["C…"], "topics": [["AAAADwAAAAh0cmFuc2Zlcg==", "*", "**"]] }]
+```
+
+- Topic segments are base64 XDR ScVals, compared on canonical XDR bytes, so
+  a symbol and a string with the same text don't match each other. `*`
+  matches exactly one segment. `**` (last segment only) matches zero or more
+  remaining segments.
+- An event with fewer topics than a pattern doesn't match, unless the
+  pattern ends in `**`.
+- Only contract events are indexed; `system` and `diagnostic` filters match
+  nothing.
+- Limits (as in Soroban RPC): at most 5 filters, 5 `contractIds` and 5 topic
+  patterns per filter, and 4 segments per pattern (plus a trailing `**`).
+- Topic hashes are stored in the indexed columns `topic0..topic3`
+  (migration 039). Events indexed before that only match filters without
+  topic patterns until they are re-indexed.

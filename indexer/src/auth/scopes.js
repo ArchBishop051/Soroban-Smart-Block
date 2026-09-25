@@ -63,6 +63,7 @@ export const ROUTE_SCOPES = {
 
   // Events and chain data
   "GET /api/events": R_EVENTS,
+  "POST /api/events": R_EVENTS, // RPC-style filters in the body (#903)
   "GET /api/v1/events": R_EVENTS,
   "GET /api/events/:seq": R_EVENTS,
   "GET /api/events/:seq/zk-costs": R_EVENTS,

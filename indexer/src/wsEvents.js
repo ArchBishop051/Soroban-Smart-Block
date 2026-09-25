@@ -16,6 +16,7 @@ import { WebSocketServer } from "ws";
 import url from "url";
 import { NETWORK_NAMES, getIndexerNetwork } from "./networkConfig.js";
 import { toFilterAst, evaluateFilter } from "./filters/filter.js";
+import { parseRpcFilters, matchRpcFilters } from "./rpcFilters.js";
 
 const API_KEY = process.env.API_KEY;
 const bus = new EventEmitter();
@@ -107,7 +108,9 @@ export function attachWebSocketServer(httpServer) {
       matches = input === undefined || input === null ? null : evaluateFilter(toFilterAst(input));
     };
     try {
-      setFilter(new url.URL(req.url || "", "http://localhost").searchParams.get("filter") ?? undefined);
+      const qs = new url.URL(req.url || "", "http://localhost").searchParams;
+      setFilter(qs.get("filter") ?? undefined);
+      if (qs.get("filters")) matches = matchRpcFilters(parseRpcFilters(qs.get("filters")));
     } catch (err) {
       ws.send(JSON.stringify({ type: "error", message: `invalid filter: ${err.message}` }));
     }
@@ -119,7 +122,11 @@ export function attachWebSocketServer(httpServer) {
         return;
       }
       try {
-        if (msg?.type === "subscribe") {
+        if (msg?.type === "subscribe" && msg.filters !== undefined) {
+          // Soroban-RPC getEvents filters shape (#903).
+          matches = matchRpcFilters(parseRpcFilters(msg.filters));
+          ws.send(JSON.stringify({ type: "subscribed", filters: msg.filters }));
+        } else if (msg?.type === "subscribe") {
           setFilter(msg.filter);
           ws.send(JSON.stringify({ type: "subscribed", filter: msg.filter ?? null }));
         } else if (msg?.type === "unsubscribe") {

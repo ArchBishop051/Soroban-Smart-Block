@@ -11,6 +11,7 @@ import { resolveAsset } from "./horizonClient.js";
 import config from "./config.js";
 import { decoderSuccessTotal, decoderFailureTotal } from "./metrics.js";
 import { PluginRegistry } from "./plugins/registry.js";
+import { topicColumns } from "./rpcFilters.js";
 import { enqueue as enqueueDeadLetter } from "./deadLetterQueue.js";
 
 // Sandboxed community decoder plugins (#900). Loaded lazily; with no plugins
@@ -225,6 +226,14 @@ export async function decode(ev, opts = {}) {
   try {
     const decoded = await decodeEvent(ev, opts);
     _recordDecodeOutcome(true);
+    // Hashed topic columns for RPC-compatible topic filters (#903).
+    if (decoded && Array.isArray(ev.topic)) {
+      try {
+        Object.assign(decoded, topicColumns(ev.topic));
+      } catch {
+        // topics without XDR (e.g. test fixtures) — leave unset
+      }
+    }
     return decoded;
   } catch (err) {
     _recordDecodeOutcome(false);
