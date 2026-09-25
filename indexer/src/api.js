@@ -44,6 +44,7 @@ import {
   recordCachedLatency,
   recordUncachedLatency,
   getAnalytics,
+  edgeCachePolicy,
 } from "./cacheLayer.js";
 import { recordAccess, schedulePrefetch } from "./prefetchEngine.js";
 import { attachGraphQL } from "./graphql.js";
@@ -58,6 +59,7 @@ import { getHealthStatus, getLivenessStatus, getReadinessStatus } from "./health
 import { getActiveAlerts } from "./alertManager.js";
 import { randomUUID } from "crypto";
 import Ajv from "ajv";
+import { isPurgeHealthy } from "./cdnPurge.js";
 import { loadSigningKeys, publishedKeys, signEnvelope, wantsSignedResponse, SIGNED_MEDIA_TYPE } from "./signing.js";
 import addFormats from "ajv-formats";
 
@@ -316,6 +318,24 @@ export function createApi({ logDestination, dbOverride } = {}) {
         .catch(next);
       return res;
     };
+    next();
+  });
+
+  // ── CDN edge caching (#905) ────────────────────────────────────────────────
+  // Edge TTL + surrogate keys per endpoint class; the daemon purges keys on
+  // each ledger. The API key is not part of the cache key (no Vary on it), so
+  // authenticated reads of public data share edge entries; usage for edge
+  // hits is counted from CDN logs (docs/guides/cdn.md).
+  app.use("/api", (req, res, next) => {
+    const policy = edgeCachePolicy({ method: req.method, path: req.originalUrl.split("?")[0] }, {
+      purgeHealthy: isPurgeHealthy(),
+    });
+    res.set("Surrogate-Control", policy.edge);
+    res.set("CDN-Cache-Control", policy.edge);
+    if (policy.keys.length) {
+      res.set("Surrogate-Key", policy.keys.join(" "));
+      res.set("Cache-Tag", policy.keys.join(","));
+    }
     next();
   });
 

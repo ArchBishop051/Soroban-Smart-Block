@@ -34,6 +34,7 @@ import { checkForReorg, recordLedgerHash } from "./reorgWorker.js";
 import { startReDecodeWorker } from "./reDecodeWorker.js";
 import { warmCache } from "./cacheWarming.js";
 import { cacheInvalidate } from "./cacheLayer.js";
+import { enqueuePurge } from "./cdnPurge.js";
 import {
   eventsIngested,
   decodeLatency,
@@ -301,6 +302,12 @@ async function indexLedger(ledger) {
 
     for (const ev of res.events) {
       await processSingleEvent(ev, transactionContextCache.get(ev.txHash));
+    }
+
+    // Purge the CDN entries this page changed: "latest" lists plus every
+    // contract it touched (debounced/batched in cdnPurge.js).
+    if (res.events.length) {
+      enqueuePurge(["latest", ...new Set(res.events.map((e) => `contract:${e.contractId}`).filter((k) => k !== "contract:undefined"))]);
     }
 
     // Scan transactions for UploadContractWasm operations (non-blocking)

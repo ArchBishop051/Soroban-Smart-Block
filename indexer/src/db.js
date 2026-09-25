@@ -101,6 +101,15 @@ export const db = {
   },
 
   /** Atomically purge orphaned data and persist the daemon rewind cursor. */
+  /** Events at or after `forkLedger` (seq + contract), for CDN purging on reorg. */
+  async getEventsFromLedger(forkLedger, limit = 10_000) {
+    const { rows } = await pool.query(
+      "SELECT seq, contract_id FROM events WHERE ledger >= $1 ORDER BY seq LIMIT $2",
+      [forkLedger, limit],
+    );
+    return rows;
+  },
+
   async rollbackFromLedger(forkLedger) {
     const network = getIndexerNetwork();
     const client = await pool.connect();
