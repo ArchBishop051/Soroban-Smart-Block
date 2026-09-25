@@ -1,0 +1,138 @@
+{
+  "thresholds": {
+    "cpu_insns": 5,
+    "mem_bytes": 5,
+    "event_bytes": 5,
+    "wasm_bytes": 10
+  },
+  "entries": {
+    "explorer::bump_contract_ttl": {
+      "cpu_insns": 62854,
+      "mem_bytes": 7380,
+      "event_bytes": 0
+    },
+    "explorer::deregister_contract": {
+      "cpu_insns": 76928,
+      "mem_bytes": 9837,
+      "event_bytes": 180
+    },
+    "explorer::event_count": {
+      "cpu_insns": 31267,
+      "mem_bytes": 4227,
+      "event_bytes": 0
+    },
+    "explorer::get_contract": {
+      "cpu_insns": 46150,
+      "mem_bytes": 5396,
+      "event_bytes": 0
+    },
+    "explorer::get_contract_version": {
+      "cpu_insns": 58201,
+      "mem_bytes": 6539,
+      "event_bytes": 0
+    },
+    "explorer::get_event": {
+      "cpu_insns": 51117,
+      "mem_bytes": 6160,
+      "event_bytes": 0
+    },
+    "explorer::get_events": {
+      "cpu_insns": 276465,
+      "mem_bytes": 26378,
+      "event_bytes": 0
+    },
+    "explorer::get_latest_contract": {
+      "cpu_insns": 46155,
+      "mem_bytes": 5403,
+      "event_bytes": 0
+    },
+    "explorer::init": {
+      "cpu_insns": 29269,
+      "mem_bytes": 3560,
+      "event_bytes": 0
+    },
+    "explorer::is_paused": {
+      "cpu_insns": 28952,
+      "mem_bytes": 3888,
+      "event_bytes": 0
+    },
+    "explorer::pause": {
+      "cpu_insns": 58686,
+      "mem_bytes": 8269,
+      "event_bytes": 84
+    },
+    "explorer::register_contract": {
+      "cpu_insns": 137588,
+      "mem_bytes": 17869,
+      "event_bytes": 328
+    },
+    "explorer::set_max_events": {
+      "cpu_insns": 60309,
+      "mem_bytes": 7744,
+      "event_bytes": 0
+    },
+    "explorer::storage_utilisation": {
+      "cpu_insns": 31279,
+      "mem_bytes": 3515,
+      "event_bytes": 0
+    },
+    "explorer::submit_event": {
+      "cpu_insns": 98247,
+      "mem_bytes": 12956,
+      "event_bytes": 344
+    },
+    "explorer::submit_events": {
+      "cpu_insns": 486228,
+      "mem_bytes": 72950,
+      "event_bytes": 3552
+    },
+    "explorer::transfer_admin": {
+      "cpu_insns": 57129,
+      "mem_bytes": 7841,
+      "event_bytes": 160
+    },
+    "explorer::unpause": {
+      "cpu_insns": 66211,
+      "mem_bytes": 9639,
+      "event_bytes": 84
+    },
+    "explorer::update_contract": {
+      "cpu_insns": 164791,
+      "mem_bytes": 21059,
+      "event_bytes": 352
+    },
+    "explorer::wasm": {
+      "wasm_bytes": 36205
+    },
+    "ticket::get_ticket": {
+      "cpu_insns": 43044,
+      "mem_bytes": 5296,
+      "event_bytes": 0
+    },
+    "ticket::initialize": {
+      "cpu_insns": 29854,
+      "mem_bytes": 4567,
+      "event_bytes": 0
+    },
+    "ticket::mint_ticket": {
+      "cpu_insns": 64024,
+      "mem_bytes": 10989,
+      "event_bytes": 132
+    },
+    "ticket::tickets_sold": {
+      "cpu_insns": 23586,
+      "mem_bytes": 3884,
+      "event_bytes": 0
+    },
+    "ticket::transfer_ticket": {
+      "cpu_insns": 67062,
+      "mem_bytes": 10084,
+      "event_bytes": 172
+    },
+    "ticket::verify_ticket": {
+      "cpu_insns": 70513,
+      "mem_bytes": 10737,
+      "event_bytes": 92
+    }
+  }
+}
