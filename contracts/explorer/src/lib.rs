@@ -21,6 +21,7 @@ pub enum Error {
     BelowFloor = 4,
     ContractPaused = 5,
     InvalidInput = 6,
+    EmptyBatch = 7,
 }
 
 // ── Storage keys ─────────────────────────────────────────────────────────────
@@ -67,6 +68,33 @@ pub const MAX_PARAM_NAME_LEN: u32 = 32;
 pub const MAX_PARAM_KIND_LEN: u32 = 32;
 /// Maximum number of parameters per `FunctionAbi`.
 pub const MAX_PARAMS_PER_FUNCTION: u32 = 20;
+
+// ── Batch submission ──────────────────────────────────────────────────────────
+
+/// Maximum number of events accepted by one `submit_events` call.
+///
+/// Measured by `tests/gas_benchmarks.rs::test_submit_events_batch_benchmark`
+/// (soroban-sdk 21 test host, 512-byte descriptions — the per-item worst case
+/// allowed by `MAX_DESCRIPTION_LEN`). A single `submit_event` costs ~109K CPU
+/// instructions.
+///
+/// | batch size | CPU instructions | per event | persistent writes |
+/// | ---------- | ---------------- | --------- | ----------------- |
+/// | 1          | ~108K            | ~108K     | 1 + instance      |
+/// | 10         | ~487K            | ~49K      | 10 + instance     |
+/// | 20         | ~1.0M            | ~51K      | 20 + instance     |
+///
+/// CPU is not the constraint (20 items use ~1% of the 100M per-tx instruction
+/// limit). The bound is the per-transaction ledger write limits: every item is
+/// its own `EventLog` entry of ~0.7KB plus caller-supplied `raw_topics` /
+/// `raw_data`, so 20 items keep write entries and write bytes well inside the
+/// network limits while leaving headroom for large raw payloads. Re-check the
+/// live network settings before raising this value.
+pub const MAX_BATCH: u32 = 20;
+
+/// A batch rejected because item `i` is invalid fails with contract error
+/// code `BATCH_ITEM_ERROR_BASE + i`, so callers can locate the offending item.
+pub const BATCH_ITEM_ERROR_BASE: u32 = 1_000;
 
 // ── Storage TTL ────────────────────────────────────────────────────────────────
 
@@ -185,6 +213,14 @@ fn validate_event_description(description: &String) -> Result<(), Error> {
         return Err(Error::InvalidInput);
     }
     Ok(())
+}
+
+/// Validate a single `EventInput` (shared by `submit_event` and `submit_events`).
+fn validate_event_input(env: &Env, input: &EventInput) -> Result<(), Error> {
+    if input.function == Symbol::new(env, "") {
+        return Err(Error::InvalidInput);
+    }
+    validate_event_description(&input.description)
 }
 
 // ── Contract ──────────────────────────────────────────────────────────────────
@@ -563,10 +599,7 @@ impl ExplorerContract {
     pub fn submit_event(env: Env, caller: Address, input: EventInput) {
         Self::bump_instance_ttl(&env);
         caller.require_auth();
-        if input.function == Symbol::new(&env, "") {
-            panic_with_error!(&env, Error::InvalidInput);
-        }
-        if let Err(e) = validate_event_description(&input.description) {
+        if let Err(e) = validate_event_input(&env, &input) {
             panic_with_error!(&env, e);
         }
         if env
@@ -593,6 +626,83 @@ impl ExplorerContract {
             .get(&DataKey::MaxEvents)
             .unwrap_or(DEFAULT_MAX_EVENTS);
 
+        Self::store_event(&env, seq, max, input);
+        env.storage().instance().set(&DataKey::EventSeq, &(seq + 1));
+    }
+
+    /// Submit a batch of decoded events in one invocation (admin only).
+    ///
+    /// Semantics are **all-or-nothing**: every item is validated exactly like
+    /// `submit_event` before anything is written, and any failure reverts the
+    /// whole batch. An invalid item at index `i` fails with contract error code
+    /// `BATCH_ITEM_ERROR_BASE + i`.
+    ///
+    /// - Empty `inputs` → `EmptyBatch`.
+    /// - More than `MAX_BATCH` items, or more items than `max_events` (the batch
+    ///   would evict its own entries from the ring buffer) → `InvalidInput`.
+    /// - Paused → `ContractPaused` for the whole batch.
+    ///
+    /// Sequence numbers are assigned contiguously (gap-free) and returned in
+    /// input order. The event counter is written once per batch.
+    pub fn submit_events(env: Env, caller: Address, inputs: Vec<EventInput>) -> Vec<u64> {
+        Self::bump_instance_ttl(&env);
+        caller.require_auth();
+        if env
+            .storage()
+            .instance()
+            .get(&DataKey::Paused)
+            .unwrap_or(false)
+        {
+            panic_with_error!(&env, Error::ContractPaused);
+        }
+        let admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
+        if caller != admin {
+            panic_with_error!(&env, Error::Unauthorized);
+        }
+
+        let count = inputs.len();
+        if count == 0 {
+            panic_with_error!(&env, Error::EmptyBatch);
+        }
+        let max: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::MaxEvents)
+            .unwrap_or(DEFAULT_MAX_EVENTS);
+        if count > MAX_BATCH || count > max {
+            panic_with_error!(&env, Error::InvalidInput);
+        }
+        for i in 0..count {
+            if validate_event_input(&env, &inputs.get_unchecked(i)).is_err() {
+                panic_with_error!(
+                    &env,
+                    soroban_sdk::Error::from_contract_error(BATCH_ITEM_ERROR_BASE + i)
+                );
+            }
+        }
+
+        let first: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::EventSeq)
+            .unwrap_or(0);
+        let mut seqs: Vec<u64> = Vec::new(&env);
+        let mut seq = first;
+        for input in inputs.iter() {
+            Self::store_event(&env, seq, max, input);
+            seqs.push_back(seq);
+            seq += 1;
+        }
+        env.storage().instance().set(&DataKey::EventSeq, &seq);
+
+        env.events()
+            .publish((symbol_short!("ev_batch"),), (first, count));
+        seqs
+    }
+
+    /// Writes one event into its ring-buffer slot and emits the per-event
+    /// diagnostics (`ev_sub`, `cap_hit`, `decoded`). Does not touch `EventSeq`.
+    fn store_event(env: &Env, seq: u64, max: u32, input: EventInput) {
         let slot = seq % (max as u64);
         let evicting = seq >= (max as u64);
         let evicted_seq = if evicting { seq - (max as u64) } else { seq };
@@ -613,7 +723,6 @@ impl ExplorerContract {
             PERSISTENT_TTL_THRESHOLD,
             PERSISTENT_TTL_EXTEND_TO,
         );
-        env.storage().instance().set(&DataKey::EventSeq, &(seq + 1));
 
         env.events().publish(
             (
@@ -857,6 +966,133 @@ mod tests {
         let admin = Address::generate(&env);
         client.init(&admin, &0u32);
         client.init(&admin, &0u32);
+    }
+
+    // ── Batched submission (#872) ─────────────────────────────────────────────
+
+    fn batch_of(env: &Env, n: u32) -> Vec<EventInput> {
+        let cid: BytesN<32> = BytesN::from_array(env, &[5u8; 32]);
+        let mut inputs = Vec::new(env);
+        for _ in 0..n {
+            inputs.push_back(make_input(env, &cid));
+        }
+        inputs
+    }
+
+    #[test]
+    fn test_submit_events_assigns_gap_free_seqs() {
+        let (env, client) = setup();
+        let admin = Address::generate(&env);
+        client.init(&admin, &0u32);
+
+        client.submit_event(
+            &admin,
+            &make_input(&env, &BytesN::from_array(&env, &[5u8; 32])),
+        );
+        let seqs = client.submit_events(&admin, &batch_of(&env, 3));
+        assert_eq!(seqs, Vec::from_array(&env, [1u64, 2, 3]));
+        assert_eq!(client.event_count(), 4);
+        for seq in 0..4u64 {
+            assert_eq!(client.get_event(&seq).seq, seq);
+        }
+
+        let next = client.submit_events(&admin, &batch_of(&env, 2));
+        assert_eq!(next, Vec::from_array(&env, [4u64, 5]));
+    }
+
+    #[test]
+    fn test_submit_events_max_batch_accepted() {
+        let (env, client) = setup();
+        let admin = Address::generate(&env);
+        client.init(&admin, &0u32);
+        let seqs = client.submit_events(&admin, &batch_of(&env, MAX_BATCH));
+        assert_eq!(seqs.len(), MAX_BATCH);
+        assert_eq!(client.event_count(), MAX_BATCH as u64);
+    }
+
+    #[test]
+    fn test_submit_events_empty_batch_rejected() {
+        let (env, client) = setup();
+        let admin = Address::generate(&env);
+        client.init(&admin, &0u32);
+        assert_eq!(
+            client.try_submit_events(&admin, &Vec::new(&env)),
+            Err(Ok(soroban_sdk::Error::from_contract_error(
+                Error::EmptyBatch as u32
+            )))
+        );
+    }
+
+    #[test]
+    fn test_submit_events_over_max_batch_rejected() {
+        let (env, client) = setup();
+        let admin = Address::generate(&env);
+        client.init(&admin, &0u32);
+        assert!(client
+            .try_submit_events(&admin, &batch_of(&env, MAX_BATCH + 1))
+            .is_err());
+        assert_eq!(client.event_count(), 0);
+    }
+
+    #[test]
+    fn test_submit_events_crossing_max_events_reverts() {
+        let (env, client) = setup();
+        let admin = Address::generate(&env);
+        client.init(&admin, &5u32);
+        assert!(client
+            .try_submit_events(&admin, &batch_of(&env, 6))
+            .is_err());
+        assert_eq!(client.event_count(), 0);
+    }
+
+    #[test]
+    fn test_submit_events_invalid_item_reports_index_and_reverts() {
+        let (env, client) = setup();
+        let admin = Address::generate(&env);
+        client.init(&admin, &0u32);
+
+        let mut inputs = batch_of(&env, 4);
+        let mut bad = inputs.get(2).unwrap();
+        bad.description = String::from_bytes(&env, &[b'a'; 513]);
+        inputs.set(2, bad);
+
+        assert_eq!(
+            client.try_submit_events(&admin, &inputs),
+            Err(Ok(soroban_sdk::Error::from_contract_error(
+                BATCH_ITEM_ERROR_BASE + 2
+            )))
+        );
+        assert_eq!(client.event_count(), 0);
+    }
+
+    #[test]
+    fn test_submit_events_duplicates_are_distinct_events() {
+        let (env, client) = setup();
+        let admin = Address::generate(&env);
+        client.init(&admin, &0u32);
+        let seqs = client.submit_events(&admin, &batch_of(&env, 2));
+        assert_eq!(seqs.len(), 2);
+        assert_eq!(client.event_count(), 2);
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_submit_events_paused_rejected() {
+        let (env, client) = setup();
+        let admin = Address::generate(&env);
+        client.init(&admin, &0u32);
+        client.pause(&admin);
+        client.submit_events(&admin, &batch_of(&env, 1));
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_submit_events_non_admin_rejected() {
+        let (env, client) = setup();
+        let admin = Address::generate(&env);
+        let stranger = Address::generate(&env);
+        client.init(&admin, &0u32);
+        client.submit_events(&stranger, &batch_of(&env, 1));
     }
 
     // ── Ring buffer ───────────────────────────────────────────────────────────
