@@ -236,6 +236,16 @@ const configSchema = z.object({
 
   RPC_LAG_THRESHOLD: positiveInt(5),
 
+  PROTOCOL_MAX_VERSION: nonNegativeInt(22),
+
+  RPC_VERIFICATION_MODE: z.enum(["off", "sample", "quorum"]).default("off"),
+  RPC_VERIFICATION_SAMPLE_PERCENT: positiveInt(1),
+  RPC_VERIFICATION_QUORUM: positiveInt(2),
+  RPC_VERIFICATION_SINGLE_PROVIDER: z.enum(["degrade", "halt"]).default("degrade"),
+
+  JOB_HEARTBEAT_MS: positiveInt(30000),
+  JOB_MAX_RUNTIME_MS: positiveInt(3600000),
+
   // ── RPC Metrics ─────────────────────────────────────────────────────────────
   METRICS_PROBE_INTERVAL_MS: positiveInt(15000),
 

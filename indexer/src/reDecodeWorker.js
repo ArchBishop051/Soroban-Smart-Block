@@ -56,6 +56,20 @@ export async function runReDecodeBatch({ dbModule = db, decodeFn = decode, batch
   return processed;
 }
 
+/** Re-decode rows retained during protocol degraded mode after an SDK upgrade. */
+export async function runProtocolReDecodeBatch({ dbModule = db, decodeFn = decode, batchSize = DEFAULT_BATCH_SIZE } = {}) {
+  const rows = await dbModule.query("SELECT seq, contract_id, ledger, tx_hash, raw_topics, raw_data FROM events WHERE protocol_degraded = TRUE ORDER BY ledger ASC LIMIT $1", [parseBatchSize(batchSize)]);
+  let processed = 0;
+  for (const row of rows) {
+    try {
+      const decoded = await decodeFn(rawEventFromRow(row));
+      await dbModule.query("UPDATE events SET protocol_degraded = FALSE, function = $2, description = $3, raw_topics = $4, raw_data = $5 WHERE seq = $1", [row.seq, decoded.function, decoded.description, JSON.stringify(decoded.raw_topics), decoded.raw_data]);
+      processed++;
+    } catch (error) { logger.warn(`[protocol-redecode] event ${row.seq} remains deferred: ${error.message}`); }
+  }
+  return processed;
+}
+
 export function startReDecodeWorker({
   dbModule = db,
   decodeFn = decode,

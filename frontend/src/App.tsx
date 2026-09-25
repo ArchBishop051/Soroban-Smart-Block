@@ -26,6 +26,7 @@ const RegistrationSuccessPage = lazy(() => import("./pages/RegistrationSuccessPa
 const AbiDiffPage = lazy(() => import("./pages/AbiDiffPage"));
 const DashboardPage = lazy(() => import("./pages/DashboardPage"));
 const Status = lazy(() => import("./pages/Status"));
+const AdminJobsPage = lazy(() => import("./pages/AdminJobsPage"));
 
 function Fallback() {
   return <p style={{ padding: 32, textAlign: "center", color: "var(--muted)" }}>Loading…</p>;
@@ -61,6 +62,7 @@ export default function App() {
             <Route path="/admin/rate-limits" element={<RateLimitDashboard />} />
             {/* Issue #737: admin audit-trail UI */}
             <Route path="/admin/audit-log" element={<AuditLogPage />} />
+            <Route path="/admin/jobs" element={<AdminJobsPage />} />
             <Route path="/nft/:contractId" element={<NftGallery />} />
             <Route path="/dashboard" element={<DashboardPage />} />
             <Route path="/status" element={<Status />} />

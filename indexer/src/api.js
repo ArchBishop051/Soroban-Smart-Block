@@ -1932,6 +1932,19 @@ export function createApi({ logDestination, dbOverride } = {}) {
     }
   });
 
+  // Point-in-time contract storage and per-key temporal history.
+  app.get("/api/contracts/:id/state", async (req, res) => {
+    const ledger = Number(req.query.ledger);
+    if (!Number.isInteger(ledger) || ledger < 0) return res.status(400).json({ error: "ledger must be a non-negative integer" });
+    try { res.json(await db.getContractStateAt(req.params.id, ledger, req.query.prefix || null)); }
+    catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
+  app.get("/api/contracts/:id/state/:key/history", async (req, res) => {
+    try { res.json(await db.getContractStateHistory(req.params.id, req.params.key)); }
+    catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
   // ── Contract Stats ────────────────────────────────────────────
 
   // GET /api/contracts/:id/stats?range=30|90|365 — event/caller counts + a

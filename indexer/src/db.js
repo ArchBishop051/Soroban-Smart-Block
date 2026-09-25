@@ -33,6 +33,30 @@ pool.query = (text, params) =>
 export { pool };
 
 export const db = {
+  async upsertStateVersions(versions) {
+    if (!versions?.length) return 0;
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      for (const version of versions) {
+        await client.query("UPDATE contract_state_versions SET ledger_to = $1 WHERE contract_id = $2 AND key_xdr = $3 AND ledger_to IS NULL AND ledger_from <= $1", [Number(version.ledger_from) - 1, version.contract_id, version.key_xdr]);
+        await client.query(`INSERT INTO contract_state_versions (contract_id,key_xdr,durability,ledger_from,ledger_to,value_xdr,decoded_key,decoded_value,tx_hash,tx_index,change_type) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`, [version.contract_id, version.key_xdr, version.durability, version.ledger_from, version.ledger_to, version.value_xdr, version.decoded_key == null ? null : JSON.stringify(version.decoded_key), version.decoded_value == null ? null : JSON.stringify(version.decoded_value), version.tx_hash, version.tx_index ?? 0, version.change_type]);
+      }
+      await client.query("COMMIT");
+      return versions.length;
+    } catch (error) { await client.query("ROLLBACK"); throw error; } finally { client.release(); }
+  },
+  async getContractStateAt(contractId, ledger, prefix = null) {
+    const params = [contractId, Number(ledger)];
+    const filter = prefix ? ` AND (decoded_key::text LIKE $3 OR key_xdr LIKE $3)` : "";
+    if (prefix) params.push(`${prefix}%`);
+    const { rows } = await pool.query(`SELECT DISTINCT ON (key_xdr) * FROM contract_state_versions WHERE contract_id = $1 AND ledger_range @> $2 ${filter} ORDER BY key_xdr, ledger_from DESC, tx_index DESC`, params);
+    return rows.filter((row) => row.change_type !== "removed");
+  },
+  async getContractStateHistory(contractId, key) {
+    const { rows } = await pool.query("SELECT * FROM contract_state_versions WHERE contract_id = $1 AND key_xdr = $2 ORDER BY ledger_from ASC, tx_index ASC", [contractId, key]);
+    return rows;
+  },
   /** Run all pending SQL migrations from indexer/migrations/. */
   async init() {
     await runMigrations(pool);
@@ -192,8 +216,8 @@ export const db = {
       `INSERT INTO events
          (contract_id, function, ledger, tx_hash, description, raw_topics, raw_data,
           cpu_instructions, mem_bytes, fee_charged, is_high_bloat_risk, upgrade_info, storage_tiers, is_clawback,
-          footprint_contention, ttl_extension, fee_bump, archival_info, zk_host_calls, abi_version, slippage_bps)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)
+          footprint_contention, ttl_extension, fee_bump, archival_info, zk_host_calls, abi_version, slippage_bps, protocol_version, raw_xdr)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23)
        ON CONFLICT (contract_id, ledger, tx_hash) DO NOTHING`,
       [
         ev.contract_id,
@@ -217,6 +241,8 @@ export const db = {
         ev.zk_host_calls ? JSON.stringify(ev.zk_host_calls) : null,
         ev.abi_version ?? 0,
         ev.slippage_bps ?? null,
+        ev.protocol_version ?? null,
+        ev.raw_xdr ?? null,
       ],
     );
   },

@@ -21,6 +21,8 @@ import { multiNodeRpc, startNodeRecoveryPoll } from "./rpcMultiNode.js";
 import { startMetricsCollector } from "./rpcMetrics.js";
 import { startPruner } from "./pruner.js";
 import { extractStateDiffs } from "./stateDiffIndexer.js";
+import { extractStateVersions } from "./stateHistoryIndexer.js";
+import { observeProtocolVersion, protocolVersionFromLedger, isProtocolDegraded } from "./protocolReadiness.js";
 import { parseFeeBump } from "./feeBumpParser.js";
 import { detectEvictions } from "./archivalEvictionDetector.js";
 import { parseAndDescribeRestore } from "./restoreFootprintParser.js";
@@ -188,10 +190,19 @@ export async function loadTransactionContext(
  */
 export async function processSingleEvent(rawSorobanEvent, context = undefined) {
   const { feeBump, archivalInfo } = context ?? (await loadTransactionContext(rawSorobanEvent.txHash));
+  await observeProtocolVersion(protocolVersionFromLedger(rawSorobanEvent));
   const decodeStart = Date.now();
-  const decoded = await decode(rawSorobanEvent);
+  let decoded;
+  try {
+    decoded = await decode(rawSorobanEvent);
+  } catch (error) {
+    if (!/unknown|arm|union|xdr/i.test(error.message)) throw error;
+    decoded = { contract_id: rawSorobanEvent.contractId, ledger: Number(rawSorobanEvent.ledger), tx_hash: rawSorobanEvent.txHash ?? "unknown", function: "unknown", description: "Deferred: unsupported protocol XDR", raw_topics: rawSorobanEvent.topic ?? [], raw_data: typeof rawSorobanEvent.value === "string" ? rawSorobanEvent.value : JSON.stringify(rawSorobanEvent.value ?? null), protocol_degraded: true, raw_xdr: rawSorobanEvent.rawXdr ?? rawSorobanEvent.xdr ?? null };
+  }
   const contractMeta = await db.getContractMeta(rawSorobanEvent.contractId).catch(() => null);
   decoded.abi_version = Number(contractMeta?.abi_version ?? 0);
+  decoded.protocol_version = protocolVersionFromLedger(rawSorobanEvent);
+  decoded.protocol_degraded = decoded.protocol_degraded || isProtocolDegraded();
   decodeLatency.observe(Date.now() - decodeStart);
   eventsIngested.inc({ function: decoded.function });
   decoded.is_high_bloat_risk = isHighBloatRisk(rawSorobanEvent, rawSorobanEvent.contractId);
@@ -222,6 +233,8 @@ export async function processSingleEvent(rawSorobanEvent, context = undefined) {
   // Persist per-key state diffs for the timeline.
   const diffs = extractStateDiffs(rawSorobanEvent, decoded);
   if (diffs.length) await db.insertStateDiffs(diffs).catch(() => {});
+  const stateVersions = extractStateVersions({ ...rawSorobanEvent, txMeta: rawSorobanEvent.txMeta });
+  if (stateVersions.length) await db.upsertStateVersions(stateVersions).catch((err) => logger.error("[state-history] insert failed:", err.message));
 
   // Detect evicted ledger keys (TTL → 0) in this transaction.
   const evictions = detectEvictions(rawSorobanEvent, rawSorobanEvent.ledger, rawSorobanEvent.txHash);

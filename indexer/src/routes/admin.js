@@ -36,6 +36,7 @@ import {
 } from '../admin/keyManager.js';
 import { db, pool } from '../db.js';
 import { getActiveAlerts, resolveAlert } from '../alertManager.js';
+import { listJobs, cancelJob, enqueueJob } from '../jobs/scheduler.js';
 // Note: getRedisClient (rateLimit/tokenBucket.js) and runAllChecks
 // (doctor-lib.js) were imported here but never called anywhere in this
 // file — dead imports left over from the removed legacy /api/doctor route
@@ -191,6 +192,19 @@ export default function registerAdminRoutes(app) {
 
     resolveAlert(condition);
     res.json({ condition, resolved });
+  });
+
+  router.get('/jobs', async (req, res) => {
+    try { res.json({ data: await listJobs({ status: req.query.status, limit: req.query.limit }) }); }
+    catch (e) { res.status(500).json({ error: e.message }); }
+  });
+  router.post('/jobs', async (req, res) => {
+    try { res.status(201).json(await enqueueJob(req.body)); }
+    catch (e) { res.status(400).json({ error: e.message }); }
+  });
+  router.post('/jobs/:id/cancel', async (req, res) => {
+    try { await cancelJob(req.params.id); res.json({ ok: true, id: req.params.id }); }
+    catch (e) { res.status(500).json({ error: e.message }); }
   });
 
   // ── GET /api/admin/api-keys ────────────────────────────────────────────────
