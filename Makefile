@@ -1,4 +1,4 @@
-.PHONY: build test check deploy indexer frontend clean fmt fmt-check lint \
+.PHONY: build test check deploy indexer frontend clean fmt fmt-check lint soak \
 	docker-up docker-down docker-build docker-logs docker-test docker-staging docker-prod \
 	db-reset db-seed \
 	e2e e2e-setup e2e-test e2e-api e2e-chaos e2e-property e2e-playwright e2e-k6 e2e-full
@@ -21,6 +21,10 @@ lint:
 	cargo clippy -- -D warnings
 
 check: fmt-check lint test
+
+# 2-hour soak test against a running indexer (tests/soak/README.md, #893).
+soak:
+	node tests/soak/run.js --duration $${SOAK_DURATION:-2h}
 
 optimize:
 	stellar contract optimize \
