@@ -524,7 +524,7 @@ export function createApi({ logDestination, dbOverride } = {}) {
 
   // ── Existing endpoints ──────────────────────────────────────────────────────
 
-  // GET /api/events?contract=&fn=&type=&after_seq=&limit=
+  // GET /api/events?contract=&fn=&type=&after_seq=&limit=&from=&to=
   // Keyset (cursor) pagination — `after_seq` is the `next_cursor` value from
   // the previous page (omit for the first page). Responds with
   // { data: Event[], next_cursor: number|null } (#490).
@@ -545,30 +545,37 @@ export function createApi({ logDestination, dbOverride } = {}) {
           return res.status(422).json({ error: "Invalid after_seq" });
         }
       }
+      for (const key of ["from", "to"]) {
+        if (req.query[key] !== undefined && !/^\d{4}-\d{2}-\d{2}$/.test(String(req.query[key]))) {
+          return res.status(422).json({ error: `Invalid ${key}` });
+        }
+      }
       next();
     },
     makeCache("events_list", (req) => {
-      const { contract = "", fn = "", type = "" } = req.query;
+      const { contract = "", fn = "", type = "", from = "", to = "" } = req.query;
       const after = Number(req.query.after_seq) || 0;
       const limit = Number(req.query.limit) || 25;
-      return `events:list:${contract}:${fn}:${after}:${limit}:${type}`;
+      return `events:list:${contract}:${fn}:${after}:${limit}:${type}:${from}:${to}`;
     }),
     async (req, res) => {
       try {
         const contract = req.query.contract || undefined;
         const fn = req.query.fn || undefined;
         const type = req.query.type || undefined;
+        const from = req.query.from || undefined;
+        const to = req.query.to || undefined;
         const after_seq = req.query.after_seq ? Number(req.query.after_seq) : 0;
         const limit = req.query.limit ? Number(req.query.limit) : 25;
 
-        const result = await db.getEventsCursor({ contract, fn, type, after_seq, limit });
+        const result = await db.getEventsCursor({ contract, fn, type, after_seq, limit, from, to });
 
         // Predictive pre-fetch: next page if user is paginating
         if (result.next_cursor !== null) {
-          const key = `events:list:${contract ?? ""}:${fn ?? ""}:${after_seq}:${limit}:${type ?? ""}`;
+          const key = `events:list:${contract ?? ""}:${fn ?? ""}:${after_seq}:${limit}:${type ?? ""}:${from ?? ""}:${to ?? ""}`;
           schedulePrefetch(key, {
-            [`events:list:${contract ?? ""}:${fn ?? ""}:${result.next_cursor}:${limit}:${type ?? ""}`]: () =>
-              db.getEventsCursor({ contract, fn, type, after_seq: result.next_cursor, limit }),
+            [`events:list:${contract ?? ""}:${fn ?? ""}:${result.next_cursor}:${limit}:${type ?? ""}:${from ?? ""}:${to ?? ""}`]: () =>
+              db.getEventsCursor({ contract, fn, type, after_seq: result.next_cursor, limit, from, to }),
           });
         }
         res.json(result);

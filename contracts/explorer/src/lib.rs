@@ -52,6 +52,8 @@ pub enum DataKey {
 pub const MIN_MAX_EVENTS: u32 = 1_000;
 /// Default ring-buffer capacity used at init when caller passes `0`.
 pub const DEFAULT_MAX_EVENTS: u32 = 50_000;
+/// Maximum ring-buffer capacity accepted from callers.
+pub const MAX_MAX_EVENTS: u32 = 1_000_000;
 
 // ── Input-size limits (anti-bloat / rent DoS protection) ──────────────────────
 
@@ -67,6 +69,12 @@ pub const MAX_PARAM_NAME_LEN: u32 = 32;
 pub const MAX_PARAM_KIND_LEN: u32 = 32;
 /// Maximum number of parameters per `FunctionAbi`.
 pub const MAX_PARAMS_PER_FUNCTION: u32 = 20;
+/// Maximum number of topics accepted for one stored event.
+pub const MAX_EVENT_TOPICS: u32 = 32;
+/// Maximum byte length of one event topic.
+pub const MAX_EVENT_TOPIC_LEN: u32 = 256;
+/// Maximum byte length of the raw event payload.
+pub const MAX_EVENT_RAW_DATA_LEN: u32 = 4_096;
 
 // ── Storage TTL ────────────────────────────────────────────────────────────────
 
@@ -187,6 +195,22 @@ fn validate_event_description(description: &String) -> Result<(), Error> {
     Ok(())
 }
 
+fn validate_event_input(input: &EventInput) -> Result<(), Error> {
+    validate_event_description(&input.description)?;
+    if input.raw_topics.len() > MAX_EVENT_TOPICS {
+        return Err(Error::InvalidInput);
+    }
+    for i in 0..input.raw_topics.len() {
+        if input.raw_topics.get(i).unwrap().len() > MAX_EVENT_TOPIC_LEN {
+            return Err(Error::InvalidInput);
+        }
+    }
+    if input.raw_data.len() > MAX_EVENT_RAW_DATA_LEN {
+        return Err(Error::InvalidInput);
+    }
+    Ok(())
+}
+
 // ── Contract ──────────────────────────────────────────────────────────────────
 
 #[allow(missing_docs)]
@@ -220,6 +244,9 @@ impl ExplorerContract {
         } else {
             max_events
         };
+        if cap < MIN_MAX_EVENTS || cap > MAX_MAX_EVENTS {
+            panic_with_error!(&env, Error::InvalidInput);
+        }
         env.storage().instance().set(&DataKey::Admin, &admin);
         env.storage().instance().set(&DataKey::EventSeq, &0u64);
         env.storage().instance().set(&DataKey::MaxEvents, &cap);
@@ -566,7 +593,7 @@ impl ExplorerContract {
         if input.function == Symbol::new(&env, "") {
             panic_with_error!(&env, Error::InvalidInput);
         }
-        if let Err(e) = validate_event_description(&input.description) {
+        if let Err(e) = validate_event_input(&input) {
             panic_with_error!(&env, e);
         }
         if env
@@ -613,7 +640,10 @@ impl ExplorerContract {
             PERSISTENT_TTL_THRESHOLD,
             PERSISTENT_TTL_EXTEND_TO,
         );
-        env.storage().instance().set(&DataKey::EventSeq, &(seq + 1));
+        let next_seq = seq
+            .checked_add(1)
+            .unwrap_or_else(|| panic_with_error!(&env, Error::InvalidInput));
+        env.storage().instance().set(&DataKey::EventSeq, &next_seq);
 
         env.events().publish(
             (

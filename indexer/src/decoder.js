@@ -201,6 +201,36 @@ export function getDecodeStats() {
 }
 
 /**
+ * Check that an event's decoded values match the registered function shape.
+ * A function-name match alone is insufficient because upgraded or malicious
+ * contracts can emit the same symbol with a different payload.
+ */
+export function validateAbiEventShape(fnAbi, args) {
+  if (!fnAbi) return { valid: false, warning: "abi_function_missing" };
+  const params = Array.isArray(fnAbi.params) ? fnAbi.params : [];
+  if (params.length !== args.length) {
+    return { valid: false, warning: `abi_arity_mismatch:${params.length}:${args.length}` };
+  }
+
+  for (let i = 0; i < params.length; i++) {
+    const kind = String(params[i]?.type ?? params[i]?.kind ?? "").toLowerCase();
+    const value = args[i];
+    const isInteger = typeof value === "bigint" || (typeof value === "number" && Number.isInteger(value));
+    const matches = kind.includes("address") || kind.includes("contract")
+      ? typeof value === "string" && /^[GCM][A-Z2-7]{20,}$/.test(value)
+      : kind.includes("bool")
+        ? typeof value === "boolean"
+        : kind.includes("string") || kind.includes("symbol")
+          ? typeof value === "string" || typeof value === "symbol"
+          : kind.includes("u") || kind.includes("i")
+            ? isInteger
+            : true;
+    if (!matches) return { valid: false, warning: `abi_type_mismatch:${i}:${kind || "unknown"}` };
+  }
+  return { valid: true, warning: null };
+}
+
+/**
  * Decode a raw Soroban RPC event into a human-readable record.
  * Uses the ABI template when available; falls back to a generic description.
  */
@@ -288,6 +318,9 @@ async function decodeEvent(ev, { currentAbi = false } = {}) {
         .getContractMetaByLedger(contractId, ev.ledger)
         .catch(() => null) ?? await db.getContractMeta(contractId).catch(() => null);
   const fnAbi = meta?.functions?.find((f) => f.name === fnName);
+  const abiArgs = [...topics.slice(1), ...(data == null ? [] : [data])];
+  const abiCheck = fnAbi ? validateAbiEventShape(fnAbi, abiArgs) : { valid: false, warning: meta ? "abi_function_missing" : "abi_missing" };
+  const trustedFnAbi = abiCheck.valid ? fnAbi : null;
 
   // Check if this contract is a registered vault
   const vaultMeta = await db.getVault(contractId).catch(() => null);
@@ -316,19 +349,19 @@ async function decodeEvent(ev, { currentAbi = false } = {}) {
   if (!description) {
     description = vaultMeta
       ? vaultDescription(fnName, topics.slice(1), data, contractLabel, vaultMeta, topics)
-      : fnAbi
+      : trustedFnAbi
         ? buildDescription(fnName, topics.slice(1), data, contractLabel, topics)
         : genericDescription(fnName, topics.slice(1), data, contractLabel, topics);
   }
 
   // Attach heuristic params when no ABI was available
   const heuristicParams =
-    !fnAbi && !vaultMeta && !meta ? parseHeuristic([...topics.slice(1), ...(data != null ? [data] : [])]) : undefined;
+    !trustedFnAbi && !vaultMeta && !meta ? parseHeuristic(abiArgs) : undefined;
 
   // DEX swap slippage (issue #554) — only computable when the ABI-matched
   // swap args carry a min_amount_out (6th positional arg, see buildDescription).
   const slippageBps =
-    fnAbi && SWAP_FUNCTIONS.has(fnName) ? extractSwapSlippageBps(topics.slice(1)) : null;
+    trustedFnAbi && SWAP_FUNCTIONS.has(fnName) ? extractSwapSlippageBps(topics.slice(1)) : null;
 
   const decoded = {
     contract_id: contractId,
@@ -344,6 +377,8 @@ async function decodeEvent(ev, { currentAbi = false } = {}) {
     ...extractGasCosts(ev),
     ...(heuristicParams && { heuristic_params: heuristicParams }),
     ...(slippageBps != null && { slippage_bps: slippageBps }),
+    decode_status: trustedFnAbi ? "verified" : meta ? "unverified" : "heuristic",
+    ...(abiCheck.warning ? { decode_warnings: [abiCheck.warning] } : {}),
   };
 
   // Protocol 26: detect TTL extension host function calls on this event

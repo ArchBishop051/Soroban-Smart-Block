@@ -1,5 +1,6 @@
 import { BatchCall } from "./types/batch";
 import { getCsrfToken, refreshCsrfToken } from "./hooks/useCsrf";
+import { readCachedResponse, writeCachedResponse } from "./services/offlineStore";
 
 const BASE = "/api";
 
@@ -127,6 +128,9 @@ export interface DecodedEvent {
   factory_deployment?: FactoryDeploymentTree;
   // DEX swap slippage in basis points (1% = 100 bps); present only when computable
   slippage_bps?: number | null;
+  created_at?: string;
+  decode_status?: "verified" | "unverified" | "heuristic";
+  decode_warnings?: string[];
 }
 
 export interface SourceFile {
@@ -335,9 +339,18 @@ export interface ContractGraphData {
 }
 
 async function get<T>(path: string): Promise<T> {
-  const res = await fetch(BASE + path);
-  if (!res.ok) throw new Error(`API ${res.status}: ${path}`);
-  return res.json();
+  const cacheable = /^\/(events|contracts)(\/|\?|$)/.test(path);
+  try {
+    const res = await fetch(BASE + path);
+    if (!res.ok) throw new Error(`API ${res.status}: ${path}`);
+    const value = (await res.json()) as T;
+    if (cacheable) writeCachedResponse(path, value);
+    return value;
+  } catch (error) {
+    const cached = cacheable ? readCachedResponse<T>(path) : null;
+    if (cached !== null) return cached;
+    throw error;
+  }
 }
 
 /**
@@ -685,13 +698,15 @@ export interface TransactionTreeDiff {
 }
 
 export const api = {
-  events: (params: { contract?: string; fn?: string; after_seq?: number; limit?: number; type?: string }) => {
+  events: (params: { contract?: string; fn?: string; after_seq?: number; limit?: number; type?: string; from?: string; to?: string }) => {
     const q = new URLSearchParams();
     if (params.contract) q.set("contract", params.contract);
     if (params.fn) q.set("fn", params.fn);
     if (params.after_seq) q.set("after_seq", String(params.after_seq));
     if (params.limit) q.set("limit", String(params.limit));
     if (params.type) q.set("type", params.type);
+    if (params.from) q.set("from", params.from);
+    if (params.to) q.set("to", params.to);
     return get<EventsPage>(`/events?${q}`);
   },
   event: (seq: number) => get<DecodedEvent>(`/events/${seq}`),

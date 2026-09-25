@@ -30,6 +30,7 @@ import AbiHistoryDrawer from "../components/AbiHistoryDrawer";
 import ProtocolBadge from "../components/ProtocolBadge";
 import InvocationFrequencyChart, { type StatsRange } from "../components/InvocationFrequencyChart";
 import StorageTierStackedBar from "../components/StorageTierStackedBar";
+import OfflineContractActions from "../components/OfflineContractActions";
 
 type Tab = "overview" | "source" | "simulate" | "flow" | "roles" | "networks" | "graph" | "call-graph" | "state-diff" | "abi-history";
 
@@ -227,6 +228,8 @@ export default function ContractPage() {
 
       {/* Circuit breaker status banner */}
       <CircuitBreakerStatus contractId={id} />
+
+      <OfflineContractActions contractId={id} />
 
       {/* CAP-0077 quorum freeze security warning */}
       <QuorumFreezeBadge contractId={id} />

@@ -33,6 +33,16 @@ export default function EventPage() {
       <h2>Event #{ev.seq}</h2>
 
       <div className="card" style={{ display: "grid", gap: 12 }}>
+        {ev.decode_status && (
+          <Row
+            label="Decode trust"
+            value={
+              <span title={ev.decode_warnings?.join(", ")}>
+                {ev.decode_status === "verified" ? "Verified against registered ABI" : ev.decode_status === "heuristic" ? "Heuristic — no matching ABI" : "Unverified — ABI shape mismatch"}
+              </span>
+            }
+          />
+        )}
         <Row label="Description" value={ev.description} highlight />
         <Row label="Function" value={ev.function} badge />
         {ev.is_clawback && (

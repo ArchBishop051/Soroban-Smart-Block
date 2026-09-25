@@ -130,13 +130,13 @@ export const db = {
    * Return a page of events using keyset (cursor-based) pagination.
    * Avoids OFFSET degradation on large tables.
    *
-   * @param {{ contract?: string, fn?: string, type?: string,
-   *           after_seq?: number, limit?: number }} opts
+  * @param {{ contract?: string, fn?: string, type?: string,
+  *           after_seq?: number, limit?: number, from?: string, to?: string }} opts
    *   after_seq — the `seq` of the last event on the previous page (opaque cursor).
    *               Omit (or pass 0) for the first page.
    * @returns {{ data: object[], next_cursor: number|null }}
    */
-  async getEventsCursor({ contract, fn, type, after_seq = 0, limit = 25 } = {}) {
+  async getEventsCursor({ contract, fn, type, after_seq = 0, limit = 25, from, to } = {}) {
     const conditions = [];
     const params = [];
 
@@ -162,6 +162,15 @@ export const db = {
     }
     if (type === "classic") {
       conditions.push(`(contract_id IS NULL OR contract_id = '')`);
+    }
+
+    if (from) {
+      params.push(from);
+      conditions.push(`created_at >= $${params.length}::date`);
+    }
+    if (to) {
+      params.push(to);
+      conditions.push(`created_at < ($${params.length}::date + interval '1 day')`);
     }
 
     // Keyset: fetch rows with seq < after_seq (descending) or all rows for first page
@@ -192,8 +201,9 @@ export const db = {
       `INSERT INTO events
          (contract_id, function, ledger, tx_hash, description, raw_topics, raw_data,
           cpu_instructions, mem_bytes, fee_charged, is_high_bloat_risk, upgrade_info, storage_tiers, is_clawback,
-          footprint_contention, ttl_extension, fee_bump, archival_info, zk_host_calls, abi_version, slippage_bps)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)
+           footprint_contention, ttl_extension, fee_bump, archival_info, zk_host_calls, abi_version, slippage_bps,
+           decode_status, decode_warnings)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23)
        ON CONFLICT (contract_id, ledger, tx_hash) DO NOTHING`,
       [
         ev.contract_id,
@@ -217,6 +227,8 @@ export const db = {
         ev.zk_host_calls ? JSON.stringify(ev.zk_host_calls) : null,
         ev.abi_version ?? 0,
         ev.slippage_bps ?? null,
+        ev.decode_status ?? "unverified",
+        ev.decode_warnings ? JSON.stringify(ev.decode_warnings) : null,
       ],
     );
   },
@@ -258,6 +270,8 @@ export const db = {
            raw_topics = $4,
            raw_data = $5,
            abi_version = $6,
+           decode_status = $7,
+           decode_warnings = $8,
            needs_redecode = FALSE
        WHERE seq = $1 AND needs_redecode = TRUE`,
       [
@@ -267,6 +281,8 @@ export const db = {
         JSON.stringify(decoded.raw_topics),
         decoded.raw_data,
         abiVersion,
+        decoded.decode_status ?? "unverified",
+        decoded.decode_warnings ? JSON.stringify(decoded.decode_warnings) : null,
       ],
     );
   },

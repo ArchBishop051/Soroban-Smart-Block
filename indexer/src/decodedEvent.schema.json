@@ -98,6 +98,17 @@
       "description": "DEX swap slippage in basis points: |amount_out - min_amount_out| / min_amount_out * 10000.",
       "minimum": 0
     },
+    "decode_status": {
+      "type": "string",
+      "enum": ["verified", "unverified", "heuristic"]
+    },
+    "decode_warnings": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "decoded": {
+      "type": "boolean"
+    },
     "type": {
       "type": "string",
       "description": "Event category — \"classic\" for Horizon payment/path-payment operations, omitted for Soroban contract events.",
