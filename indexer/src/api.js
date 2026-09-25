@@ -53,6 +53,7 @@ import { registry } from "./metrics.js";
 import pg from "pg";
 import { getBurnAlerts } from "./burnDetector.js";
 import { formatAmount } from "./formatAmount.js";
+import { verifySourceVerification } from "./sourceVerification.js";
 import { sendVerificationEmail, isConfigured } from "./emailService.js";
 import { getHealthStatus, getLivenessStatus, getReadinessStatus } from "./health.js";
 import { getActiveAlerts } from "./alertManager.js";
@@ -1875,6 +1876,11 @@ export function createApi({ logDestination, dbOverride } = {}) {
           error: "Missing wasm_hash, signer, signature, or compiler_hash",
         });
       }
+      if (!verifySourceVerification({ wasm_hash, signer, signature, compiler_hash })) {
+        return res.status(400).json({
+          error: "Invalid source verification signature",
+        });
+      }
       await db.addSourceVerification({
         contract_id: req.params.id,
         wasm_hash,
@@ -1892,7 +1898,7 @@ export function createApi({ logDestination, dbOverride } = {}) {
   app.get("/api/contracts/:id/source-verifications", async (req, res) => {
     try {
       const rows = await db.getSourceVerifications(req.params.id, req.query.wasm_hash || undefined);
-      res.json(rows);
+      res.json(rows.filter((row) => verifySourceVerification(row)));
     } catch (e) {
       res.status(500).json({ error: e.message });
     }

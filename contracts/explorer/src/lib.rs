@@ -38,6 +38,7 @@ pub struct VersionKey {
 #[contracttype]
 pub enum DataKey {
     Admin,
+    Role(Address),
     Contract(BytesN<32>),
     /// Event log entries use persistent storage to ensure they survive ledger archival.
     /// Temporary storage would expire when TTL reaches zero, causing silent data loss.
@@ -46,6 +47,13 @@ pub enum DataKey {
     MaxEvents,
     Paused,
     ContractVersion(VersionKey),
+}
+
+#[allow(missing_docs)]
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub enum Role {
+    Moderator,
 }
 
 /// Minimum allowed value for `max_events` (prevents accidental data loss).
@@ -206,6 +214,14 @@ impl ExplorerContract {
             .extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_EXTEND_TO);
     }
 
+    fn require_admin(env: &Env, caller: &Address) {
+        caller.require_auth();
+        let admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
+        if caller != &admin {
+            panic_with_error!(env, Error::Unauthorized);
+        }
+    }
+
     // ── Admin ─────────────────────────────────────────────────────────────────
 
     /// Initialises the explorer and configures the event ring buffer.
@@ -237,6 +253,30 @@ impl ExplorerContract {
         env.storage().instance().set(&DataKey::Admin, &new_admin);
         env.events()
             .publish((symbol_short!("adm_xfer"), caller), new_admin);
+    }
+
+    /// Grant a delegated role. Only the admin may change roles.
+    pub fn grant_role(env: Env, caller: Address, account: Address, role: Role) {
+        Self::bump_instance_ttl(&env);
+        Self::require_admin(&env, &caller);
+        env.storage()
+            .instance()
+            .set(&DataKey::Role(account.clone()), &role);
+        env.events()
+            .publish((symbol_short!("role_grant"), account), role);
+    }
+
+    /// Revoke all delegated privileges from an account.
+    pub fn revoke_role(env: Env, caller: Address, account: Address) {
+        Self::bump_instance_ttl(&env);
+        Self::require_admin(&env, &caller);
+        env.storage().instance().remove(&DataKey::Role(account.clone()));
+        env.events().publish((symbol_short!("role_revoke"),), account);
+    }
+
+    /// Return the delegated role assigned to an account, if any.
+    pub fn get_role(env: Env, account: Address) -> Option<Role> {
+        env.storage().instance().get(&DataKey::Role(account))
     }
 
     /// Update the ring-buffer capacity (admin only).
@@ -389,7 +429,7 @@ impl ExplorerContract {
     }
 
     /// Update registered metadata.
-    /// Caller must be the admin or the original registrant.
+    /// Caller must be the admin, original registrant, or a moderator.
     /// `meta.abi_version` must equal `existing.abi_version + 1` (optimistic concurrency guard).
     pub fn update_contract(env: Env, caller: Address, contract_id: BytesN<32>, meta: ContractMeta) {
         Self::bump_instance_ttl(&env);
@@ -410,7 +450,11 @@ impl ExplorerContract {
             .unwrap_or_else(|| panic_with_error!(&env, Error::NotFound));
 
         let admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
-        if caller != existing.registered_by && caller != admin {
+        let is_moderator = matches!(
+            env.storage().instance().get(&DataKey::Role(caller.clone())),
+            Some(Role::Moderator)
+        );
+        if caller != existing.registered_by && caller != admin && !is_moderator {
             panic_with_error!(&env, Error::Unauthorized);
         }
 
@@ -1182,6 +1226,24 @@ mod tests {
 
         let cid: BytesN<32> = BytesN::from_array(&env, &[99u8; 32]);
         client.deregister_contract(&admin, &cid);
+    }
+
+    #[test]
+    fn test_moderator_can_deregister_but_cannot_pause() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let id = env.register_contract(None, ExplorerContract);
+        let client = ExplorerContractClient::new(&env, &id);
+        let admin = Address::generate(&env);
+        let moderator = Address::generate(&env);
+        let cid = BytesN::from_array(&env, &[13; 32]);
+
+        client.init(&admin, &1000u32);
+        client.grant_role(&admin, &moderator, &Role::Moderator);
+        client.register_contract(&admin, &cid, &make_meta(&env, "Moderated", &admin));
+        client.deregister_contract(&moderator, &cid);
+        assert!(client.get_latest_contract(&cid).is_none());
+        assert!(client.try_pause(&moderator).is_err());
     }
 
     #[test]

@@ -14,6 +14,16 @@ concurrency:
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
+  dependency-review:
+    name: Dependency Review
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/dependency-review-action@v4
+        with:
+          fail-on-severity: high
+
   # ── Secret Scanning ──────────────────────────────────────────────────────
   # Closes #735 — fails the build if a credential-shaped string is committed.
   secret-scan:
@@ -62,7 +72,16 @@ jobs:
         run: cargo clippy --all-targets --all-features -- -D warnings
 
       - name: Build (wasm32)
-        run: cargo build --target wasm32-unknown-unknown --release -p soroban-explorer-contract
+        run: ./scripts/build-contract.sh soroban-explorer-contract
+
+      - name: Upload WASM build manifest
+        uses: actions/upload-artifact@v4
+        with:
+          name: soroban-explorer-wasm-manifest
+          path: |
+            target/wasm32-unknown-unknown/release/soroban-explorer-contract.wasm
+            target/wasm32-unknown-unknown/release/soroban-explorer-contract.wasm.build-manifest
+          if-no-files-found: error
 
       - name: Install cargo-llvm-cov
         run: cargo install cargo-llvm-cov --locked
@@ -124,6 +143,40 @@ jobs:
           name: ticket-coverage
           fail_ci_if_error: false
           token: ${{ secrets.CODECOV_TOKEN }}
+
+  # ── Dependency Policy ─────────────────────────────────────────────────────
+  dependency-policy:
+    name: Dependency Policy (Cargo + npm)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+
+      - name: Install cargo-deny
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny
+
+      - name: Check Cargo advisories, licenses, bans, and sources
+        run: cargo deny check advisories bans licenses sources
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install and audit repository tooling
+        run: npm ci && npm audit --audit-level=high
+
+      - name: Install and audit indexer dependencies
+        working-directory: indexer
+        run: npm ci && npm audit --audit-level=high
+
+      - name: Install and audit frontend dependencies
+        working-directory: frontend
+        run: npm ci && npm audit --audit-level=high
 
   # ── Migrations ────────────────────────────────────────────────────────────
   # Closes #425 — verify every SQL migration applies cleanly on a fresh
