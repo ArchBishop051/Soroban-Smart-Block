@@ -1,4 +1,5 @@
 import "dotenv/config";
+import { initRuntimeConfig } from "./runtimeConfig.js";
 import "./tracing.js";
 import { pathToFileURL } from "node:url";
 import { rpc as SorobanRpc } from "@stellar/stellar-sdk";
@@ -346,6 +347,7 @@ async function run() {
   warmCache().catch((e) => logger.warn({ err: e.message }, "cache warm failed"));
   seedBuiltinAbis().catch((e) => logger.warn({ err: e.message }, "builtin ABI seed failed"));
   startAbiSync();
+  initRuntimeConfig(pool).catch((err) => logger.error("[runtimeConfig] init failed:", err.message)); // hot-reloadable config (#894)
   startContractVerifier(); // periodically verify DB ABI hashes against on-chain registry
   startBurnDetector();
   startMetricsCollector(); // RPC latency probes
