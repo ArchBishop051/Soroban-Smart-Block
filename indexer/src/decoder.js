@@ -3,6 +3,7 @@ import { scValToNative } from "@stellar/stellar-sdk";
 import { db } from "./db.js";
 import { detectSac, detectSacAsset, sacLabel } from "./sac.js";
 import { extractRoleAssignment } from "./roleTracker.js";
+import { decodeOpenZeppelinEvent } from "./decoders/openzeppelin/index.js";
 import { decodeRwaEvent } from "./rwaDecoder.js";
 import { parseHeuristic } from "./heuristicParser.js";
 import { parseTTLHostFunction, formatTTLExtension } from "./ttlExtensionParser.js";
@@ -278,6 +279,32 @@ async function decodeEvent(ev, { currentAbi = false } = {}) {
         ...extractGasCosts(ev),
       };
     }
+  }
+
+  // OpenZeppelin Stellar Contracts events (#896): works without a registered
+  // ABI; roles and pause state feed the role and circuit-breaker widgets.
+  const oz = decodeOpenZeppelinEvent(topics, data);
+  if (oz) {
+    if (oz.role) {
+      db.upsertRole({ contract_id: contractId, ledger: ev.ledger, ...oz.role }).catch((err) =>
+        logger.error("[roleTracker] upsertRole failed:", err.message),
+      );
+    }
+    if (oz.pause) {
+      db.updateCircuitBreakerStatus(contractId, oz.pause.paused, ev.ledger, ev.txHash ?? null).catch((err) =>
+        logger.error("[circuitBreakerIndexer] Failed to update status:", err.message),
+      );
+    }
+    return {
+      contract_id: contractId,
+      function: oz.function,
+      ledger: ev.ledger,
+      tx_hash: ev.txHash,
+      description: oz.description,
+      raw_topics: topics.map((t) => stripNul(t)),
+      raw_data: safeStringify(data),
+      ...extractGasCosts(ev),
+    };
   }
 
   // Look up registered ABI for richer description
