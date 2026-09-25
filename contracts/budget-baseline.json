@@ -12,8 +12,8 @@
       "event_bytes": 0
     },
     "explorer::deregister_contract": {
-      "cpu_insns": 76928,
-      "mem_bytes": 9837,
+      "cpu_insns": 102932,
+      "mem_bytes": 13329,
       "event_bytes": 180
     },
     "explorer::event_count": {
@@ -97,12 +97,12 @@
       "event_bytes": 84
     },
     "explorer::update_contract": {
-      "cpu_insns": 164791,
+      "cpu_insns": 165083,
       "mem_bytes": 21059,
       "event_bytes": 352
     },
     "explorer::wasm": {
-      "wasm_bytes": 36205
+      "wasm_bytes": 36305
     },
     "ticket::get_ticket": {
       "cpu_insns": 43044,

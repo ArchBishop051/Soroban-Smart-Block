@@ -8,6 +8,12 @@ use soroban_sdk::{
     Bytes, BytesN, Env, String, Symbol, Vec,
 };
 
+mod state;
+
+#[cfg(kani)]
+#[path = "../proofs/state_proofs.rs"]
+mod state_proofs;
+
 // ── Error codes ──────────────────────────────────────────────────────────────
 
 #[allow(missing_docs)]
@@ -290,9 +296,6 @@ impl ExplorerContract {
         if caller != admin {
             panic_with_error!(&env, Error::Unauthorized);
         }
-        if new_max < MIN_MAX_EVENTS {
-            panic_with_error!(&env, Error::BelowFloor);
-        }
         let seq: u64 = env
             .storage()
             .instance()
@@ -303,8 +306,8 @@ impl ExplorerContract {
             .instance()
             .get(&DataKey::MaxEvents)
             .unwrap_or(DEFAULT_MAX_EVENTS);
-        if seq >= current_max as u64 {
-            panic_with_error!(&env, Error::InvalidInput);
+        if let Err(e) = state::check_resize(seq, current_max, new_max) {
+            panic_with_error!(&env, e);
         }
         env.storage().instance().set(&DataKey::MaxEvents, &new_max);
     }
@@ -321,7 +324,7 @@ impl ExplorerContract {
             .instance()
             .get(&DataKey::MaxEvents)
             .unwrap_or(DEFAULT_MAX_EVENTS);
-        (seq.min(max as u64), max)
+        (state::retained_count(seq, max), max)
     }
 
     // ── Pause / unpause ───────────────────────────────────────────────────────
@@ -371,13 +374,8 @@ impl ExplorerContract {
     ) {
         Self::bump_instance_ttl(&env);
         caller.require_auth();
-        if env
-            .storage()
-            .instance()
-            .get(&DataKey::Paused)
-            .unwrap_or(false)
-        {
-            panic_with_error!(&env, Error::ContractPaused);
+        if let Err(e) = state::ensure_writable(Self::is_paused(env.clone())) {
+            panic_with_error!(&env, e);
         }
         let admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
         if caller != admin {
@@ -430,13 +428,8 @@ impl ExplorerContract {
     pub fn update_contract(env: Env, caller: Address, contract_id: BytesN<32>, meta: ContractMeta) {
         Self::bump_instance_ttl(&env);
         caller.require_auth();
-        if env
-            .storage()
-            .instance()
-            .get(&DataKey::Paused)
-            .unwrap_or(false)
-        {
-            panic_with_error!(&env, Error::ContractPaused);
+        if let Err(e) = state::ensure_writable(Self::is_paused(env.clone())) {
+            panic_with_error!(&env, e);
         }
         let key = DataKey::Contract(contract_id.clone());
         let existing: ContractMeta = env
@@ -446,14 +439,13 @@ impl ExplorerContract {
             .unwrap_or_else(|| panic_with_error!(&env, Error::NotFound));
 
         let admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
-        if caller != existing.registered_by && caller != admin {
+        if !state::can_modify_entry(caller == admin, caller == existing.registered_by) {
             panic_with_error!(&env, Error::Unauthorized);
         }
 
         // Optimistic concurrency: submitted abi_version must be current + 1.
-        let expected = existing.abi_version + 1;
-        if meta.abi_version != expected {
-            panic_with_error!(&env, Error::Unauthorized);
+        if let Err(e) = state::next_abi_version(existing.abi_version, meta.abi_version) {
+            panic_with_error!(&env, e);
         }
         if let Err(e) = validate_meta(&meta) {
             panic_with_error!(&env, e);
@@ -565,13 +557,8 @@ impl ExplorerContract {
     pub fn deregister_contract(env: Env, caller: Address, contract_id: BytesN<32>) {
         Self::bump_instance_ttl(&env);
         caller.require_auth();
-        if env
-            .storage()
-            .instance()
-            .get(&DataKey::Paused)
-            .unwrap_or(false)
-        {
-            panic_with_error!(&env, Error::ContractPaused);
+        if let Err(e) = state::ensure_writable(Self::is_paused(env.clone())) {
+            panic_with_error!(&env, e);
         }
         let key = DataKey::Contract(contract_id.clone());
         let existing: ContractMeta = env
@@ -581,11 +568,21 @@ impl ExplorerContract {
             .unwrap_or_else(|| panic_with_error!(&env, Error::NotFound));
 
         let admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
-        if caller != existing.registered_by && caller != admin {
+        if !state::can_modify_entry(caller == admin, caller == existing.registered_by) {
             panic_with_error!(&env, Error::Unauthorized);
         }
 
         env.storage().persistent().remove(&key);
+        // Remove the version history too, so a later registration of the same
+        // id cannot expose the previous owner's ABIs.
+        for abi_version in state::versions_to_remove(existing.abi_version) {
+            env.storage()
+                .persistent()
+                .remove(&DataKey::ContractVersion(VersionKey {
+                    contract_id: contract_id.clone(),
+                    abi_version,
+                }));
+        }
         env.events().publish(
             (symbol_short!("c_dereg"), contract_id),
             (caller, env.ledger().sequence()),
@@ -602,13 +599,8 @@ impl ExplorerContract {
         if let Err(e) = validate_event_input(&env, &input) {
             panic_with_error!(&env, e);
         }
-        if env
-            .storage()
-            .instance()
-            .get(&DataKey::Paused)
-            .unwrap_or(false)
-        {
-            panic_with_error!(&env, Error::ContractPaused);
+        if let Err(e) = state::ensure_writable(Self::is_paused(env.clone())) {
+            panic_with_error!(&env, e);
         }
         let admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
         if caller != admin {
@@ -626,8 +618,9 @@ impl ExplorerContract {
             .get(&DataKey::MaxEvents)
             .unwrap_or(DEFAULT_MAX_EVENTS);
 
+        let next = state::reserve_seqs(seq, 1).unwrap_or_else(|e| panic_with_error!(&env, e));
         Self::store_event(&env, seq, max, input);
-        env.storage().instance().set(&DataKey::EventSeq, &(seq + 1));
+        env.storage().instance().set(&DataKey::EventSeq, &next);
     }
 
     /// Submit a batch of decoded events in one invocation (admin only).
@@ -647,13 +640,8 @@ impl ExplorerContract {
     pub fn submit_events(env: Env, caller: Address, inputs: Vec<EventInput>) -> Vec<u64> {
         Self::bump_instance_ttl(&env);
         caller.require_auth();
-        if env
-            .storage()
-            .instance()
-            .get(&DataKey::Paused)
-            .unwrap_or(false)
-        {
-            panic_with_error!(&env, Error::ContractPaused);
+        if let Err(e) = state::ensure_writable(Self::is_paused(env.clone())) {
+            panic_with_error!(&env, e);
         }
         let admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
         if caller != admin {
@@ -661,16 +649,13 @@ impl ExplorerContract {
         }
 
         let count = inputs.len();
-        if count == 0 {
-            panic_with_error!(&env, Error::EmptyBatch);
-        }
         let max: u32 = env
             .storage()
             .instance()
             .get(&DataKey::MaxEvents)
             .unwrap_or(DEFAULT_MAX_EVENTS);
-        if count > MAX_BATCH || count > max {
-            panic_with_error!(&env, Error::InvalidInput);
+        if let Err(e) = state::check_batch(count, max) {
+            panic_with_error!(&env, e);
         }
         for i in 0..count {
             if validate_event_input(&env, &inputs.get_unchecked(i)).is_err() {
@@ -686,14 +671,13 @@ impl ExplorerContract {
             .instance()
             .get(&DataKey::EventSeq)
             .unwrap_or(0);
+        let next = state::reserve_seqs(first, count).unwrap_or_else(|e| panic_with_error!(&env, e));
         let mut seqs: Vec<u64> = Vec::new(&env);
-        let mut seq = first;
-        for input in inputs.iter() {
+        for (seq, input) in (first..next).zip(inputs.iter()) {
             Self::store_event(&env, seq, max, input);
             seqs.push_back(seq);
-            seq += 1;
         }
-        env.storage().instance().set(&DataKey::EventSeq, &seq);
+        env.storage().instance().set(&DataKey::EventSeq, &next);
 
         env.events()
             .publish((symbol_short!("ev_batch"),), (first, count));
@@ -703,9 +687,7 @@ impl ExplorerContract {
     /// Writes one event into its ring-buffer slot and emits the per-event
     /// diagnostics (`ev_sub`, `cap_hit`, `decoded`). Does not touch `EventSeq`.
     fn store_event(env: &Env, seq: u64, max: u32, input: EventInput) {
-        let slot = seq % (max as u64);
-        let evicting = seq >= (max as u64);
-        let evicted_seq = if evicting { seq - (max as u64) } else { seq };
+        let slot = state::ring_slot(seq, max);
 
         let event = DecodedEvent {
             seq,
@@ -732,7 +714,7 @@ impl ExplorerContract {
             ),
             (seq, input.ledger),
         );
-        if evicting {
+        if let Some(evicted_seq) = state::evicted_seq(seq, max) {
             env.events()
                 .publish((symbol_short!("cap_hit"),), (evicted_seq, seq));
         }
@@ -750,7 +732,7 @@ impl ExplorerContract {
             .instance()
             .get(&DataKey::MaxEvents)
             .unwrap_or(DEFAULT_MAX_EVENTS);
-        let slot = seq % (max as u64);
+        let slot = state::ring_slot(seq, max);
         let stored: DecodedEvent = env
             .storage()
             .persistent()
@@ -775,7 +757,7 @@ impl ExplorerContract {
             .instance()
             .get(&DataKey::MaxEvents)
             .unwrap_or(DEFAULT_MAX_EVENTS);
-        seq.min(max as u64)
+        state::retained_count(seq, max)
     }
 
     /// Fetch a page of decoded events starting from `cursor`.
@@ -791,12 +773,12 @@ impl ExplorerContract {
             .instance()
             .get(&DataKey::MaxEvents)
             .unwrap_or(DEFAULT_MAX_EVENTS);
-        let oldest = total_seq.saturating_sub(max as u64);
+        let oldest = state::oldest_retained(total_seq, max);
         let start = cursor.max(oldest);
         let mut out: Vec<DecodedEvent> = Vec::new(&env);
         let mut seq = start;
         while out.len() < limit && seq < total_seq {
-            let slot = seq % (max as u64);
+            let slot = state::ring_slot(seq, max);
             if let Some(ev) = env
                 .storage()
                 .persistent()
