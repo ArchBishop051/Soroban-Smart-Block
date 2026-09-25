@@ -22,6 +22,20 @@ pub fn can_modify_entry(caller_is_admin: bool, caller_is_owner: bool) -> bool {
     caller_is_admin || caller_is_owner
 }
 
+/// I1 — once an entry has a verified owner (`claim_contract`), only that
+/// owner may update its ABI. `verified_owner` is `None` for unverified
+/// entries, otherwise whether the caller is the verified owner.
+pub fn can_update_entry(
+    caller_is_admin: bool,
+    caller_is_owner: bool,
+    verified_owner: Option<bool>,
+) -> bool {
+    match verified_owner {
+        Some(caller_is_verified_owner) => caller_is_verified_owner,
+        None => can_modify_entry(caller_is_admin, caller_is_owner),
+    }
+}
+
 /// I2 — ABI versions increase by exactly one per update (optimistic
 /// concurrency guard). Returns the version to store.
 pub fn next_abi_version(current: u32, submitted: u32) -> Result<u32, Error> {
@@ -106,6 +120,13 @@ mod tests {
         assert!(can_modify_entry(true, false));
         assert!(can_modify_entry(false, true));
         assert!(!can_modify_entry(false, false));
+    }
+
+    #[test]
+    fn verified_entries_only_updated_by_verified_owner() {
+        assert!(can_update_entry(true, false, None));
+        assert!(!can_update_entry(true, true, Some(false)));
+        assert!(can_update_entry(false, false, Some(true)));
     }
 
     #[test]

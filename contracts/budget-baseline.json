@@ -6,14 +6,24 @@
     "wasm_bytes": 10
   },
   "entries": {
-    "explorer::bump_contract_ttl": {
-      "cpu_insns": 62854,
-      "mem_bytes": 7380,
+    "explorer::attest_deployer": {
+      "cpu_insns": 73655,
+      "mem_bytes": 10983,
       "event_bytes": 0
     },
+    "explorer::bump_contract_ttl": {
+      "cpu_insns": 63178,
+      "mem_bytes": 7448,
+      "event_bytes": 0
+    },
+    "explorer::claim_contract": {
+      "cpu_insns": 151212,
+      "mem_bytes": 21628,
+      "event_bytes": 240
+    },
     "explorer::deregister_contract": {
-      "cpu_insns": 102932,
-      "mem_bytes": 13329,
+      "cpu_insns": 120999,
+      "mem_bytes": 18267,
       "event_bytes": 180
     },
     "explorer::event_count": {
@@ -22,13 +32,13 @@
       "event_bytes": 0
     },
     "explorer::get_contract": {
-      "cpu_insns": 46150,
-      "mem_bytes": 5396,
+      "cpu_insns": 46244,
+      "mem_bytes": 5464,
       "event_bytes": 0
     },
     "explorer::get_contract_version": {
-      "cpu_insns": 58201,
-      "mem_bytes": 6539,
+      "cpu_insns": 58295,
+      "mem_bytes": 6607,
       "event_bytes": 0
     },
     "explorer::get_event": {
@@ -42,8 +52,13 @@
       "event_bytes": 0
     },
     "explorer::get_latest_contract": {
-      "cpu_insns": 46155,
-      "mem_bytes": 5403,
+      "cpu_insns": 46249,
+      "mem_bytes": 5471,
+      "event_bytes": 0
+    },
+    "explorer::get_ownership": {
+      "cpu_insns": 36093,
+      "mem_bytes": 4713,
       "event_bytes": 0
     },
     "explorer::init": {
@@ -97,12 +112,12 @@
       "event_bytes": 84
     },
     "explorer::update_contract": {
-      "cpu_insns": 165083,
-      "mem_bytes": 21059,
+      "cpu_insns": 173342,
+      "mem_bytes": 22488,
       "event_bytes": 352
     },
     "explorer::wasm": {
-      "wasm_bytes": 36305
+      "wasm_bytes": 46516
     },
     "ticket::get_ticket": {
       "cpu_insns": 43044,

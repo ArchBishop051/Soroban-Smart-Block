@@ -154,6 +154,23 @@ fn measure_all() -> BTreeMap<&'static str, Cost> {
             client.get_latest_contract(&id);
         }),
     );
+    let deployer = Address::generate(&env);
+    out.insert(
+        "attest_deployer",
+        measure(&env, || client.attest_deployer(&admin, &id, &deployer)),
+    );
+    out.insert(
+        "claim_contract",
+        measure(&env, || {
+            client.claim_contract(&id, &deployer);
+        }),
+    );
+    out.insert(
+        "get_ownership",
+        measure(&env, || {
+            client.get_ownership(&id);
+        }),
+    );
     out.insert(
         "deregister_contract",
         measure(&env, || client.deregister_contract(&admin, &id)),

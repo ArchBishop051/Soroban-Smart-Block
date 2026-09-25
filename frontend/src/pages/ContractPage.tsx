@@ -42,6 +42,33 @@ function EmptyState({ title, message }: { title: string; message: string }) {
   );
 }
 
+const OWNERSHIP_METHOD_LABELS: Record<string, string> = {
+  TargetAdmin: "contract admin()",
+  TargetOwner: "contract owner()",
+  Deployer: "contract deployer",
+};
+
+/** Shown when the registry entry's owner proved ownership on-chain (#875). */
+function OwnershipBadge({ verified, method, owner }: { verified?: boolean; method?: string | null; owner?: string | null }) {
+  const label = verified ? `Ownership verified via ${OWNERSHIP_METHOD_LABELS[method ?? ""] ?? method}` : "Ownership unverified";
+  return (
+    <span
+      className="badge"
+      title={verified && owner ? `Owner: ${owner}` : "The registrant has not proven ownership of this contract on-chain"}
+      style={{
+        marginLeft: 8,
+        fontSize: 11,
+        padding: "2px 8px",
+        borderRadius: 12,
+        background: verified ? "rgba(34,197,94,0.15)" : "rgba(148,163,184,0.15)",
+        color: verified ? "#22c55e" : "var(--muted)",
+      }}
+    >
+      {verified ? "✔ " : ""}{label}
+    </span>
+  );
+}
+
 /** Blue checkmark shown next to contract name when DB ABI matches on-chain registry. */
 function VerifiedBadge({ ledger }: { ledger?: number | null }) {
   return (
@@ -248,6 +275,11 @@ export default function ContractPage() {
               <h2 style={{ margin: 0 }}>{meta.name || "Unnamed Contract"}</h2>
               {(meta as any).is_verified && <VerifiedBadge ledger={(meta as any).verified_ledger} />}{' '}
               <SourceVerifiedBadge contractId={id} />
+              <OwnershipBadge
+                verified={(meta as any).ownership_verified}
+                method={(meta as any).ownership_method}
+                owner={(meta as any).ownership_owner}
+              />
               {meta.protocol_type && (
                 <span style={{ marginLeft: 10 }}>
                   <ProtocolBadge type={meta.protocol_type} />

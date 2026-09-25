@@ -14,6 +14,20 @@ fn i1_only_admin_or_owner_can_modify() {
     assert_eq!(can_modify_entry(is_admin, is_owner), is_admin || is_owner);
 }
 
+/// I1 — a verified entry can only be updated by its verified owner, not by
+/// the admin or a previous (squatting) registrant.
+#[kani::proof]
+fn i1_verified_entry_only_updated_by_verified_owner() {
+    let is_admin: bool = kani::any();
+    let is_owner: bool = kani::any();
+    let verified: Option<bool> = if kani::any() { Some(kani::any()) } else { None };
+    let allowed = can_update_entry(is_admin, is_owner, verified);
+    match verified {
+        Some(is_verified_owner) => assert_eq!(allowed, is_verified_owner),
+        None => assert_eq!(allowed, is_admin || is_owner),
+    }
+}
+
 /// I2 — ABI versions increase by exactly one, including at `u32::MAX`.
 #[kani::proof]
 fn i2_abi_version_increments_by_one() {

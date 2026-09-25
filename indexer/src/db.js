@@ -1750,6 +1750,29 @@ export const db = {
     );
   },
 
+  /**
+   * Issue #875 — mirror the explorer contract's `get_ownership` result.
+   * @param {string} contractId
+   * @param {{ owner: string, method: string, ledger: number } | null} ownership
+   */
+  async setContractOwnership(contractId, ownership) {
+    await pool.query(
+      `UPDATE contracts
+       SET ownership_verified = $2,
+           ownership_owner = $3,
+           ownership_method = $4,
+           ownership_ledger = $5
+       WHERE id = $1`,
+      [
+        contractId,
+        ownership !== null,
+        ownership?.owner ?? null,
+        ownership?.method ?? null,
+        ownership?.ledger ?? null,
+      ],
+    );
+  },
+
   // ── Issue #517: ABI version history ───────────────────────────────────────
 
   /**
