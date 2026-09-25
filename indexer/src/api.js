@@ -23,6 +23,7 @@ import { getUptimeHistory } from "./uptimeRecorder.js";
 import { getDecodeStats } from "./decoder.js";
 // ── Auth & Rate Limiting ──────────────────────────────────────────────────────
 import { apiKeyAuthenticator } from "./auth/apiKeyAuth.js";
+import { scopeMiddleware, assertRoutesDeclareScopes } from "./auth/scopes.js";
 import { geoIpRateLimiter } from "./rateLimit/geoIpLimiter.js";
 import { concurrentRequestLimiter } from "./rateLimit/concurrentLimiter.js";
 import { tokenBucketMiddleware } from "./rateLimit/tokenBucket.js";
@@ -376,6 +377,8 @@ export function createApi({ logDestination, dbOverride } = {}) {
   );
   app.use(auditLoggerMiddleware);
   app.use(apiKeyAuthenticator);
+  // Scoped API tokens (#901): enforce each route's declared scopes.
+  app.use(scopeMiddleware);
   // RATE_LIMITING_DISABLED short-circuits the per-client throttles. Intended
   // only for load/perf harnesses (e.g. the k6 PR baseline job) that drive
   // thousands of requests/second from a single origin and would otherwise
@@ -1743,6 +1746,23 @@ export function createApi({ logDestination, dbOverride } = {}) {
     }
   });
 
+  // GET /api/keys/introspect — what the presented API key can do (#901).
+  app.get("/api/keys/introspect", (req, res) => {
+    const ctx = req.rateContext;
+    if (!ctx?.keyId && !ctx?.scopes) {
+      return res.status(401).json({ error: "Present an API key in the x-api-key header" });
+    }
+    res.set("Cache-Control", "no-store").json({
+      key_id: ctx.keyId,
+      name: ctx.keyName,
+      tier: ctx.tier,
+      scopes: ctx.scopes,
+      allowed_contract_ids: ctx.allowedContractIds ?? [],
+      allowed_origins: ctx.allowedOrigins ?? [],
+      expires_at: ctx.expiresAt ?? null,
+    });
+  });
+
   // GET /api/keys/verify?token= - Verify email and activate the key, return the full key once
   app.get("/api/keys/verify", async (req, res) => {
     try {
@@ -2395,6 +2415,9 @@ export function createApi({ logDestination, dbOverride } = {}) {
       res.status(500).json({ error: e.message });
     }
   });
+
+  // Every route must declare its scopes (#901) — fail fast on a missing entry.
+  assertRoutesDeclareScopes(app);
 
   // ── Start HTTP + WebSocket server ───────────────────────────────────────────
   const server = http.createServer(app);

@@ -208,10 +208,10 @@ export default function registerAdminRoutes(app) {
   // ── POST /api/admin/api-keys ───────────────────────────────────────────────
   router.post('/api-keys', async (req, res) => {
     try {
-      const result = await createKey(req.body);
+      const result = await createKey(req.body, { allowAdmin: true });
       res.status(201).json(result);
     } catch (e) {
-      const status = e.message.includes('required') || e.message.includes('must be') ? 400 : 500;
+      const status = /required|must be|scope/.test(e.message) ? 400 : 500;
       res.status(status).json({ error: e.message });
     }
   });
