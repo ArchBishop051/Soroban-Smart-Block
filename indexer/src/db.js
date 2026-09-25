@@ -136,6 +136,74 @@ export const db = {
    *               Omit (or pass 0) for the first page.
    * @returns {{ data: object[], next_cursor: number|null }}
    */
+  /**
+   * Run a compiled event filter (#902): read-only transaction with a
+   * statement timeout, refusing plans whose EXPLAIN cost exceeds `maxCost`.
+   * `where`/`params` come from filters/sql.js compileFilter (parameterized).
+   */
+  async queryEventsByFilter({ where, params, afterSeq = 0, limit = 25, maxCost, timeoutMs }) {
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN READ ONLY");
+      await client.query(`SET LOCAL statement_timeout = ${Math.max(1, Math.floor(Number(timeoutMs)) || 1000)}`);
+      const p = [...params];
+      let clause = where;
+      if (afterSeq > 0) {
+        p.push(afterSeq);
+        clause = `${where} AND seq < $${p.length}`;
+      }
+      p.push(limit + 1);
+      const sql = `SELECT * FROM events WHERE ${clause} ORDER BY seq DESC LIMIT $${p.length}`;
+      const { rows: plan } = await client.query(`EXPLAIN (FORMAT JSON) ${sql}`, p);
+      const cost = plan[0]["QUERY PLAN"][0].Plan["Total Cost"];
+      if (cost > maxCost) {
+        throw Object.assign(new Error(`Filter is too expensive for this tier (estimated cost ${Math.round(cost)} > ${maxCost}); narrow it by contract_id or ledger range`), { status: 422 });
+      }
+      const { rows } = await client.query(sql, p);
+      await client.query("COMMIT");
+      const hasMore = rows.length > limit;
+      const data = hasMore ? rows.slice(0, limit) : rows;
+      return { data, next_cursor: hasMore ? data[data.length - 1].seq : null, estimated_cost: cost };
+    } catch (err) {
+      await client.query("ROLLBACK").catch(() => {});
+      if (err.code === "57014") throw Object.assign(new Error("Filter query timed out; narrow it by contract_id or ledger range"), { status: 422 });
+      throw err;
+    } finally {
+      client.release();
+    }
+  },
+
+  // ── Saved queries (#902) ──────────────────────────────────────────────────
+
+  async createSavedQuery({ apiKeyId, name, filter }) {
+    const { rows } = await pool.query(
+      "INSERT INTO saved_queries (api_key_id, name, filter) VALUES ($1, $2, $3) RETURNING id, name, filter, created_at",
+      [apiKeyId, name, JSON.stringify(filter)],
+    );
+    return rows[0];
+  },
+
+  async listSavedQueries(apiKeyId) {
+    const { rows } = await pool.query(
+      "SELECT id, name, filter, created_at FROM saved_queries WHERE api_key_id = $1 ORDER BY created_at DESC",
+      [apiKeyId],
+    );
+    return rows;
+  },
+
+  async getSavedQuery(id, apiKeyId) {
+    const { rows } = await pool.query(
+      "SELECT id, name, filter, created_at FROM saved_queries WHERE id = $1 AND api_key_id = $2",
+      [id, apiKeyId],
+    );
+    return rows[0] ?? null;
+  },
+
+  async deleteSavedQuery(id, apiKeyId) {
+    const { rowCount } = await pool.query("DELETE FROM saved_queries WHERE id = $1 AND api_key_id = $2", [id, apiKeyId]);
+    return rowCount > 0;
+  },
+
   async getEventsCursor({ contract, fn, type, after_seq = 0, limit = 25 } = {}) {
     const conditions = [];
     const params = [];
@@ -1901,12 +1969,12 @@ export const db = {
   /** Number of consecutive delivery failures after which a subscription is auto-disabled. */
   WEBHOOK_MAX_CONSECUTIVE_FAILURES: 5,
 
-  async createWebhookSubscription({ api_key_id, url, contract_id, function_filter, wallet_address, secret }) {
+  async createWebhookSubscription({ api_key_id, url, contract_id, function_filter, wallet_address, secret, filter }) {
     const { rows } = await pool.query(
-      `INSERT INTO webhook_subscriptions (api_key_id, url, contract_id, function_filter, wallet_address, secret)
-       VALUES ($1, $2, $3, $4, $5, $6)
-       RETURNING id, api_key_id, url, contract_id, function_filter, wallet_address, active, failure_count, created_at, last_triggered_at`,
-      [api_key_id, url, contract_id ?? null, function_filter ?? null, wallet_address ?? null, secret],
+      `INSERT INTO webhook_subscriptions (api_key_id, url, contract_id, function_filter, wallet_address, secret, filter)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)
+       RETURNING id, api_key_id, url, contract_id, function_filter, wallet_address, filter, active, failure_count, created_at, last_triggered_at`,
+      [api_key_id, url, contract_id ?? null, function_filter ?? null, wallet_address ?? null, secret, filter ? JSON.stringify(filter) : null],
     );
     return rows[0];
   },

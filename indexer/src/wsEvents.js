@@ -15,6 +15,7 @@ import { EventEmitter } from "events";
 import { WebSocketServer } from "ws";
 import url from "url";
 import { NETWORK_NAMES, getIndexerNetwork } from "./networkConfig.js";
+import { toFilterAst, evaluateFilter } from "./filters/filter.js";
 
 const API_KEY = process.env.API_KEY;
 const bus = new EventEmitter();
@@ -98,6 +99,38 @@ export function attachWebSocketServer(httpServer) {
       ) || getIndexerNetwork();
     logger.info("[ws] Client connected");
 
+    // Optional per-connection event filter (filter DSL, #902). Set with
+    // ?filter= on connect or {"type":"subscribe","filter":...}; cleared with
+    // {"type":"unsubscribe"}. Only matching events are delivered.
+    let matches = null;
+    const setFilter = (input) => {
+      matches = input === undefined || input === null ? null : evaluateFilter(toFilterAst(input));
+    };
+    try {
+      setFilter(new url.URL(req.url || "", "http://localhost").searchParams.get("filter") ?? undefined);
+    } catch (err) {
+      ws.send(JSON.stringify({ type: "error", message: `invalid filter: ${err.message}` }));
+    }
+    ws.on("message", (raw) => {
+      let msg;
+      try {
+        msg = JSON.parse(String(raw));
+      } catch {
+        return;
+      }
+      try {
+        if (msg?.type === "subscribe") {
+          setFilter(msg.filter);
+          ws.send(JSON.stringify({ type: "subscribed", filter: msg.filter ?? null }));
+        } else if (msg?.type === "unsubscribe") {
+          setFilter(null);
+          ws.send(JSON.stringify({ type: "unsubscribed" }));
+        }
+      } catch (err) {
+        ws.send(JSON.stringify({ type: "error", message: `invalid filter: ${err.message}` }));
+      }
+    });
+
     // Event batching: accumulate events by ledger, flush on a timer
     const BATCH_TIMEOUT_MS = 50;
     const pendingEventsByLedger = new Map(); // ledger -> array of events
@@ -124,6 +157,7 @@ export function attachWebSocketServer(httpServer) {
 
     const handler = (event) => {
       if (ws.readyState !== ws.OPEN) return;
+      if (matches && !matches(event)) return;
 
       const ledger = event.ledger;
       if (!pendingEventsByLedger.has(ledger)) {
@@ -139,6 +173,7 @@ export function attachWebSocketServer(httpServer) {
 
     // Backward-compat handler for events without network field
     const legacyHandler = (event) => {
+      if (matches && !matches(event)) return;
       if (!event.network && ws.readyState === ws.OPEN) {
         ws.send(JSON.stringify({ type: "event", data: event }));
       }

@@ -14,6 +14,7 @@
  * new event is indexed.
  */
 
+import { toFilterAst, FilterError } from "../filters/filter.js";
 import { Router } from "express";
 import { db } from "../db.js";
 import { requireAuthenticatedKey } from "../auth/requireAuthenticatedKey.js";
@@ -30,7 +31,7 @@ function statusForError(message) {
 
 router.post("/", async (req, res) => {
   try {
-    const { url, contract_id, function_filter, wallet_address } = req.body ?? {};
+    const { url, contract_id, function_filter, wallet_address, filter, query_id } = req.body ?? {};
 
     if (!url || typeof url !== "string") {
       return res.status(400).json({ error: "url is required and must be a string" });
@@ -50,6 +51,21 @@ router.post("/", async (req, res) => {
       return res.status(400).json({ error: "wallet_address must be a valid Stellar account address (G...)" });
     }
 
+    // Filter DSL (#902): an inline filter or a saved query owned by this key.
+    let filterAst = null;
+    try {
+      if (query_id !== undefined && query_id !== null) {
+        const saved = await db.getSavedQuery(String(query_id), req.rateContext.keyId);
+        if (!saved) return res.status(400).json({ error: `saved query not found: ${query_id}` });
+        filterAst = saved.filter;
+      } else if (filter !== undefined && filter !== null) {
+        filterAst = toFilterAst(filter);
+      }
+    } catch (err) {
+      if (err instanceof FilterError) return res.status(400).json({ error: `invalid filter: ${err.message}` });
+      throw err;
+    }
+
     await assertSafeWebhookUrl(url);
     if (contract_id) {
       const contract = await db.getContractMeta(contract_id);
@@ -65,6 +81,7 @@ router.post("/", async (req, res) => {
       function_filter: function_filter || null,
       wallet_address: wallet_address || null,
       secret,
+      filter: filterAst,
     });
 
     // secret is only ever returned here, at creation time.
