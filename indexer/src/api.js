@@ -580,6 +580,19 @@ export function createApi({ logDestination, dbOverride } = {}) {
     },
   );
 
+  // GET /api/events/:seq/decoded-history — earlier outputs of this event
+  // replaced by decoder upgrades (#899). The current decoder_version is on
+  // the event itself.
+  app.get("/api/events/:seq/decoded-history", async (req, res) => {
+    try {
+      const seq = Number(req.params.seq);
+      if (!Number.isInteger(seq) || seq < 1) return res.status(400).json({ error: "Invalid seq" });
+      res.json({ seq, history: await db.getDecodedHistory(seq) });
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
   // GET /api/wallet/:address/smart-wallet — signers and policies of a
   // contract account, derived from its signer/policy events (#898).
   app.get("/api/wallet/:address/smart-wallet", async (req, res) => {

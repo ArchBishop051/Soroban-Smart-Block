@@ -5,6 +5,7 @@ import { detectSac, detectSacAsset, sacLabel } from "./sac.js";
 import { extractRoleAssignment } from "./roleTracker.js";
 import { decodeOpenZeppelinEvent } from "./decoders/openzeppelin/index.js";
 import { decodeSmartWalletEvent } from "./smartWallet.js";
+import { decoderTag } from "./decoderVersions.js";
 import { decodeRwaEvent } from "./rwaDecoder.js";
 import { parseHeuristic } from "./heuristicParser.js";
 import { parseTTLHostFunction, formatTTLExtension } from "./ttlExtensionParser.js";
@@ -236,6 +237,7 @@ async function decodeEvent(ev, { currentAbi = false } = {}) {
     const wrapUnwrap = nativeXlmDescription(fnName, topics.slice(1), data);
     if (wrapUnwrap) {
       return {
+        decoder_version: decoderTag("native-sac"),
         contract_id: contractId,
         function: wrapUnwrap.function,
         ledger: ev.ledger,
@@ -253,6 +255,7 @@ async function decodeEvent(ev, { currentAbi = false } = {}) {
     const description = stellarSwapDescription(fnName, topics.slice(1), data, ev.ledger);
     if (description) {
       return {
+        decoder_version: decoderTag("stellarswap"),
         contract_id: contractId,
         function: fnName,
         ledger: ev.ledger,
@@ -270,6 +273,7 @@ async function decodeEvent(ev, { currentAbi = false } = {}) {
     const description = blendDescription(fnName, topics.slice(1), data, ev.ledger);
     if (description) {
       return {
+        decoder_version: decoderTag("blend"),
         contract_id: contractId,
         function: fnName,
         ledger: ev.ledger,
@@ -286,6 +290,7 @@ async function decodeEvent(ev, { currentAbi = false } = {}) {
   const walletEvent = decodeSmartWalletEvent(topics, data);
   if (walletEvent) {
     return {
+      decoder_version: decoderTag("smart-wallet"),
       contract_id: contractId,
       function: `${walletEvent.subject}_${walletEvent.action}`,
       ledger: ev.ledger,
@@ -312,6 +317,7 @@ async function decodeEvent(ev, { currentAbi = false } = {}) {
       );
     }
     return {
+      decoder_version: decoderTag("openzeppelin"),
       contract_id: contractId,
       function: oz.function,
       ledger: ev.ledger,
@@ -415,6 +421,7 @@ async function decodeEvent(ev, { currentAbi = false } = {}) {
     }).catch((err) => logger.error("[roleTracker] upsertRole failed:", err.message));
   }
 
+  decoded.decoder_version = decoderTag("abi");
   return decoded;
 }
 
@@ -467,6 +474,7 @@ export async function decodeClassicOperation(ev) {
     raw_topics: [op.type, op.from, op.to].filter((t) => typeof t === "string"),
     raw_data: safeStringify(op),
     type: "classic",
+    decoder_version: decoderTag("classic"),
   };
 }
 

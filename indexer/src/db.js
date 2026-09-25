@@ -136,6 +136,55 @@ export const db = {
    *               Omit (or pass 0) for the first page.
    * @returns {{ data: object[], next_cursor: number|null }}
    */
+  // ── Decoder versioning (#899) ─────────────────────────────────────────────
+
+  /** Rows decoded by a version that is no longer current (re-decode candidates). */
+  async getOutdatedDecodedEvents(currentTags, limit) {
+    const { rows } = await pool.query(
+      `SELECT * FROM events
+       WHERE decoder_version IS NOT NULL AND decoder_retired = FALSE
+         AND NOT (decoder_version = ANY($1::text[]))
+       ORDER BY seq ASC LIMIT $2`,
+      [currentTags, limit],
+    );
+    return rows;
+  },
+
+  /** Keep the previous output in decoded_history, then store the new decode. */
+  async replaceDecodedOutput(row, decoded) {
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query(
+        `INSERT INTO decoded_history (event_seq, decoder_version, function, description, raw_topics, raw_data)
+         VALUES ($1, $2, $3, $4, $5, $6)`,
+        [row.seq, row.decoder_version, row.function, row.description, JSON.stringify(row.raw_topics), row.raw_data],
+      );
+      await client.query(
+        `UPDATE events SET function = $2, description = $3, decoder_version = $4 WHERE seq = $1`,
+        [row.seq, decoded.function, decoded.description, decoded.decoder_version],
+      );
+      await client.query("COMMIT");
+    } catch (err) {
+      await client.query("ROLLBACK").catch(() => {});
+      throw err;
+    } finally {
+      client.release();
+    }
+  },
+
+  async markDecoderRetired(seq) {
+    await pool.query("UPDATE events SET decoder_retired = TRUE WHERE seq = $1", [seq]);
+  },
+
+  async getDecodedHistory(seq) {
+    const { rows } = await pool.query(
+      "SELECT decoder_version, function, description, replaced_at FROM decoded_history WHERE event_seq = $1 ORDER BY replaced_at DESC",
+      [seq],
+    );
+    return rows;
+  },
+
   /** Signer/policy events of a smart wallet contract, oldest first (#898). */
   async getSmartWalletEvents(contractId, limit = 2000) {
     const { rows } = await pool.query(
@@ -210,8 +259,9 @@ export const db = {
       `INSERT INTO events
          (contract_id, function, ledger, tx_hash, description, raw_topics, raw_data,
           cpu_instructions, mem_bytes, fee_charged, is_high_bloat_risk, upgrade_info, storage_tiers, is_clawback,
-          footprint_contention, ttl_extension, fee_bump, archival_info, zk_host_calls, abi_version, slippage_bps)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)
+          footprint_contention, ttl_extension, fee_bump, archival_info, zk_host_calls, abi_version, slippage_bps,
+          decoder_version)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)
        ON CONFLICT (contract_id, ledger, tx_hash) DO NOTHING`,
       [
         ev.contract_id,
@@ -235,6 +285,7 @@ export const db = {
         ev.zk_host_calls ? JSON.stringify(ev.zk_host_calls) : null,
         ev.abi_version ?? 0,
         ev.slippage_bps ?? null,
+        ev.decoder_version ?? null,
       ],
     );
   },
