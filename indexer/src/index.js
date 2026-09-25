@@ -52,6 +52,7 @@ import { processRetries as dlqProcessRetries, enqueue as dlqEnqueue, getDlqDepth
 import { recordLedger as gapRecordLedger } from "./predictiveGapDetector.js";
 import { deliverWebhooksForEvent, retryWebhookDelivery } from "./webhookDelivery.js";
 import { runIntegrityChecks } from "./routes/admin.js";
+import { EventMmr, hashLeaf } from "./mmr.js";
 
 const RPC_URL = config.SOROBAN_RPC_URL;
 const START_LEDGER = config.START_LEDGER;
@@ -60,6 +61,7 @@ const REORG_CHECK_INTERVAL = config.REORG_CHECK_INTERVAL;
 // Max events per RPC page — Soroban caps at 200
 const PAGE_LIMIT = 200;
 const MAX_GAP_RETRIES = 3;
+const eventMmr = new EventMmr();
 
 const rpc = new SorobanRpc.Server(RPC_URL, { allowHttp: true });
 
@@ -212,6 +214,15 @@ export async function processSingleEvent(rawSorobanEvent, context = undefined) {
   decoded.fee_bump = feeBump;
   decoded.archival_info = archivalInfo;
   await db.upsertEventValidated(decoded);
+  const mmrRoot = eventMmr.append(hashLeaf(JSON.stringify([
+    decoded.seq ?? null,
+    decoded.contract_id,
+    decoded.function,
+    decoded.ledger,
+    decoded.description,
+    decoded.raw_data,
+  ])));
+  await db.appendMmrNode({ level: 0, nodeIndex: Number(decoded.seq ?? 0), hash: mmrRoot.root, leafCount: mmrRoot.leafCount });
   // Bust wallet event caches (#534) — any new event may reference a wallet address.
   cacheInvalidate("wallet:events:*").catch(() => {});
   // Notify matching webhook subscriptions (non-blocking; failures retry via the DLQ).

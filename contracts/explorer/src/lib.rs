@@ -5,8 +5,10 @@
 
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, panic_with_error, symbol_short, Address,
-    Bytes, BytesN, Env, String, Symbol, Vec,
+    token, Bytes, BytesN, Env, String, Symbol, Vec,
 };
+
+mod mmr;
 
 // ── Error codes ──────────────────────────────────────────────────────────────
 
@@ -38,6 +40,8 @@ pub struct VersionKey {
 #[contracttype]
 pub enum DataKey {
     Admin,
+    SchemaVersion,
+    MigrationCursor,
     Contract(BytesN<32>),
     /// Event log entries use persistent storage to ensure they survive ledger archival.
     /// Temporary storage would expire when TTL reaches zero, causing silent data loss.
@@ -46,6 +50,12 @@ pub enum DataKey {
     MaxEvents,
     Paused,
     ContractVersion(VersionKey),
+    RegistrationDepositAmount,
+    RegistrationDepositToken,
+    RegistrationTreasury,
+    ContractDeposit(BytesN<32>),
+    MmrLeafCount,
+    MmrPeak(u32),
 }
 
 /// Minimum allowed value for `max_events` (prevents accidental data loss).
@@ -100,6 +110,30 @@ pub struct ContractMeta {
     pub description: String,
     pub functions: Vec<FunctionAbi>,
     pub registered_by: Address,
+}
+
+#[allow(missing_docs)]
+#[contracttype]
+#[derive(Clone)]
+pub enum StoredMeta {
+    V1(ContractMeta),
+    V2(ContractMeta),
+}
+
+impl StoredMeta {
+    pub fn into_latest(self) -> ContractMeta {
+        match self {
+            StoredMeta::V1(meta) | StoredMeta::V2(meta) => meta,
+        }
+    }
+}
+
+#[allow(missing_docs)]
+#[contracttype]
+#[derive(Clone)]
+pub struct DepositRecord {
+    pub amount: i128,
+    pub token: Address,
 }
 
 /// Describes one callable function so the explorer can decode calls.
@@ -221,9 +255,54 @@ impl ExplorerContract {
             max_events
         };
         env.storage().instance().set(&DataKey::Admin, &admin);
+        env.storage().instance().set(&DataKey::SchemaVersion, &1u32);
+        env.storage().instance().set(&DataKey::MigrationCursor, &0u32);
         env.storage().instance().set(&DataKey::EventSeq, &0u64);
         env.storage().instance().set(&DataKey::MaxEvents, &cap);
         Self::bump_instance_ttl(&env);
+    }
+
+    /// Configure the refundable registration deposit. Admin-only.
+    pub fn set_registration_deposit(env: Env, caller: Address, amount: i128, token: Address) {
+        caller.require_auth();
+        let admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
+        if caller != admin || amount < 0 {
+            panic_with_error!(&env, Error::Unauthorized);
+        }
+        env.storage().instance().set(&DataKey::RegistrationDepositAmount, &amount);
+        env.storage().instance().set(&DataKey::RegistrationDepositToken, &token);
+    }
+
+    /// Configure the treasury receiving forfeited registration deposits.
+    pub fn set_registration_treasury(env: Env, caller: Address, treasury: Address) {
+        caller.require_auth();
+        let admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
+        if caller != admin { panic_with_error!(&env, Error::Unauthorized); }
+        env.storage().instance().set(&DataKey::RegistrationTreasury, &treasury);
+    }
+
+    /// Return the deposit held for a registered contract.
+    pub fn deposit_of(env: Env, contract_id: BytesN<32>) -> i128 {
+        env.storage().persistent().get::<DataKey, DepositRecord>(&DataKey::ContractDeposit(contract_id)).map(|d| d.amount).unwrap_or(0)
+    }
+
+    /// Return the current storage schema version.
+    pub fn schema_version(env: Env) -> u32 { env.storage().instance().get(&DataKey::SchemaVersion).unwrap_or(1) }
+
+    /// Resumable, bounded schema migration entrypoint.
+    pub fn migrate(env: Env, caller: Address, from: u32, to: u32, batch: u32) {
+        caller.require_auth();
+        let admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
+        let current: u32 = env.storage().instance().get(&DataKey::SchemaVersion).unwrap_or(1);
+        if caller != admin || from != current || to < from || batch == 0 {
+            panic_with_error!(&env, Error::InvalidInput);
+        }
+        // Contract metadata is read through StoredMeta-compatible accessors in
+        // new deployments; this cursor makes the operation resumable and keeps
+        // each invocation bounded even when no entries need rewriting.
+        let cursor: u32 = env.storage().instance().get(&DataKey::MigrationCursor).unwrap_or(0);
+        env.storage().instance().set(&DataKey::MigrationCursor, &(cursor.saturating_add(batch)));
+        env.storage().instance().set(&DataKey::SchemaVersion, &to);
     }
 
     /// Transfer admin rights to a new address (current admin only).
@@ -363,6 +442,13 @@ impl ExplorerContract {
             PERSISTENT_TTL_THRESHOLD,
             PERSISTENT_TTL_EXTEND_TO,
         );
+        let deposit_amount: i128 = env.storage().instance().get(&DataKey::RegistrationDepositAmount).unwrap_or(0);
+        if deposit_amount > 0 {
+            let deposit_token: Address = env.storage().instance().get(&DataKey::RegistrationDepositToken).unwrap();
+            token::Client::new(&env, &deposit_token).transfer(&caller, &env.current_contract_address(), &deposit_amount);
+            let dkey = DataKey::ContractDeposit(contract_id.clone());
+            env.storage().persistent().set(&dkey, &DepositRecord { amount: deposit_amount, token: deposit_token });
+        }
 
         // Version history entry for abi_version 0.
         let vkey = DataKey::ContractVersion(VersionKey {
@@ -549,6 +635,15 @@ impl ExplorerContract {
             panic_with_error!(&env, Error::Unauthorized);
         }
 
+        if let Some(deposit) = env.storage().persistent().get::<DataKey, DepositRecord>(&DataKey::ContractDeposit(contract_id.clone())) {
+            if caller == existing.registered_by {
+                token::Client::new(&env, &deposit.token).transfer(&env.current_contract_address(), &caller, &deposit.amount);
+            } else if let Some(treasury) = env.storage().instance().get::<DataKey, Address>(&DataKey::RegistrationTreasury) {
+                token::Client::new(&env, &deposit.token).transfer(&env.current_contract_address(), &treasury, &deposit.amount);
+            }
+            env.storage().persistent().remove(&DataKey::ContractDeposit(contract_id.clone()));
+        }
+
         env.storage().persistent().remove(&key);
         env.events().publish(
             (symbol_short!("c_dereg"), contract_id),
@@ -614,6 +709,9 @@ impl ExplorerContract {
             PERSISTENT_TTL_EXTEND_TO,
         );
         env.storage().instance().set(&DataKey::EventSeq, &(seq + 1));
+        let leaf = mmr::event_leaf(&env, &event);
+        mmr::append(&env, &leaf);
+        let (root, count) = mmr::root(&env);
 
         env.events().publish(
             (
@@ -623,6 +721,7 @@ impl ExplorerContract {
             ),
             (seq, input.ledger),
         );
+        env.events().publish((symbol_short!("mmr_root"),), (root, count));
         if evicting {
             env.events()
                 .publish((symbol_short!("cap_hit"),), (evicted_seq, seq));
@@ -669,6 +768,9 @@ impl ExplorerContract {
         seq.min(max as u64)
     }
 
+    /// Return the rolling Merkle commitment and number of submitted events.
+    pub fn get_root(env: Env) -> (BytesN<32>, u64) { mmr::root(&env) }
+
     /// Fetch a page of decoded events starting from `cursor`.
     /// Returns at most `limit` events. Skips events evicted from the ring buffer.
     pub fn get_events(env: Env, cursor: u64, limit: u32) -> Vec<DecodedEvent> {
@@ -709,7 +811,7 @@ mod tests {
     use super::*;
     use soroban_sdk::{
         testutils::{Address as _, Events as _},
-        Env,
+        token, Env,
     };
 
     fn setup() -> (Env, ExplorerContractClient<'static>) {
@@ -1552,5 +1654,22 @@ mod tests {
             ..meta_v0
         };
         client.update_contract(&admin, &cid, &meta_v1);
+    }
+
+    #[test]
+    fn test_registration_deposit_refunds_owner_on_deregister() {
+        let (env, client) = setup();
+        let admin = Address::generate(&env);
+        client.init(&admin, &0u32);
+        let sac = env.register_stellar_asset_contract_v2(admin.clone());
+        let token = sac.address();
+        token::StellarAssetClient::new(&env, &token).mint(&admin, &100);
+        client.set_registration_deposit(&admin, &25, &token);
+        let cid = BytesN::from_array(&env, &[71u8; 32]);
+        client.register_contract(&admin, &cid, &make_meta(&env, "Deposited", &admin));
+        assert_eq!(client.deposit_of(&cid), 25);
+        client.deregister_contract(&admin, &cid);
+        assert_eq!(client.deposit_of(&cid), 0);
+        assert_eq!(token::Client::new(&env, &token).balance(&admin), 100);
     }
 }

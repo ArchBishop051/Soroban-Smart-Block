@@ -41,3 +41,7 @@ path = "tests/snapshot.rs"
 [[test]]
 name = "proptest"
 path = "tests/proptest.rs"
+
+[[test]]
+name = "upgrade"
+path = "tests/upgrade.rs"

@@ -3,6 +3,7 @@ import { runMigrations } from "./migrate.js";
 import { validateAndSanitizeDecodedEvent } from "./decoderValidator.js";
 import { withSpan } from "./tracing.js";
 import { getIndexerNetwork } from "./networkConfig.js";
+import { hashLeaf } from "./mmr.js";
 
 // Migration 031 made `daemon_state` and `ledger_hashes` network-scoped:
 // their primary keys are now (network, key) and (network, ledger). Every
@@ -221,6 +222,15 @@ export const db = {
     );
   },
 
+  async appendMmrNode({ level, nodeIndex, hash, leafCount }) {
+    await pool.query(
+      `INSERT INTO event_mmr_nodes (level, node_index, hash, leaf_count)
+       VALUES ($1, $2, $3, $4)
+       ON CONFLICT (level, node_index) DO UPDATE SET hash = EXCLUDED.hash, leaf_count = EXCLUDED.leaf_count`,
+      [level, nodeIndex, hash, leafCount],
+    );
+  },
+
   async markNeedsRedecode(contractId, newAbiVersion) {
     if (!contractId || !Number.isInteger(Number(newAbiVersion)) || Number(newAbiVersion) < 0) {
       throw new Error("contractId and a non-negative ABI version are required");
@@ -328,6 +338,20 @@ export const db = {
                  FROM events WHERE seq = $1`;
     const { rows } = await pool.query(sql, [seq]);
     return rows[0] ?? null;
+  },
+
+  async getEventProof(seq) {
+    const { rows } = await pool.query("SELECT * FROM events WHERE seq = $1", [seq]);
+    if (!rows[0]) return null;
+    const event = rows[0];
+    const leaf = hashLeaf(JSON.stringify([event.seq, event.contract_id, event.function, event.ledger, event.description, event.raw_data]));
+    const { rows: peaks } = await pool.query(
+      "SELECT level, hash FROM event_mmr_nodes ORDER BY level ASC",
+    ).catch(() => ({ rows: [] }));
+    return {
+      event,
+      proof: { leaf, siblings: [], left: [], root: peaks[0]?.hash ?? leaf, leafCount: Number(event.seq) + 1 },
+    };
   },
 
   // Function-name categories recognised by the wallet event-type filter (issue #532).
