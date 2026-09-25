@@ -339,6 +339,10 @@ export function createApi({ logDestination, dbOverride } = {}) {
   app.use(tracingMiddleware);
   app.use(createHttpLogger(logDestination));
   app.use(metricsMiddleware);
+  app.use((req, res, next) => {
+    res.setHeader("X-Data-Freshness", db.getLastWriteLsn?.() || "primary");
+    next();
+  });
 
   // ── CSRF token endpoint ────────────────────────────────────────────────────
   // Must be registered BEFORE verifyCsrf so it is exempt from CSRF checking
@@ -648,6 +652,19 @@ export function createApi({ logDestination, dbOverride } = {}) {
   });
 
   // Transaction status server-sent events endpoint
+  app.get("/api/tx/:hash", async (req, res) => {
+    try {
+      const transaction = await db.getTransaction(req.params.hash);
+      if (!transaction) return res.status(404).json({ error: "Transaction not found" });
+      res.json(transaction);
+    } catch (error) { res.status(500).json({ error: error.message }); }
+  });
+
+  app.get("/api/accounts/:id/transactions", async (req, res) => {
+    try { res.json(await db.getAccountTransactions(req.params.id, req.query.limit)); }
+    catch (error) { res.status(500).json({ error: error.message }); }
+  });
+
   app.get("/api/transactions/status", async (req, res) => {
     try {
       const txHashes = parseTxHashes(req.query.txHashes);

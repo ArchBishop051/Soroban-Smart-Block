@@ -250,7 +250,7 @@ export default function ContractPage() {
               <SourceVerifiedBadge contractId={id} />
               {meta.protocol_type && (
                 <span style={{ marginLeft: 10 }}>
-                  <ProtocolBadge type={meta.protocol_type} />
+                  <ProtocolBadge type={meta.protocol_type} confidence={(meta as any).protocol_confidence} inferred={Boolean((meta as any).protocol_type_inferred)} />
                 </span>
               )}
             </div>

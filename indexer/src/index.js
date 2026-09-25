@@ -22,6 +22,7 @@ import { startMetricsCollector } from "./rpcMetrics.js";
 import { startPruner } from "./pruner.js";
 import { extractStateDiffs } from "./stateDiffIndexer.js";
 import { parseFeeBump } from "./feeBumpParser.js";
+import { extractTransactionRecord } from "./transactions.js";
 import { detectEvictions } from "./archivalEvictionDetector.js";
 import { parseAndDescribeRestore } from "./restoreFootprintParser.js";
 import { publish, publishTransactionStatus } from "./wsEvents.js";
@@ -145,11 +146,12 @@ export async function loadTransactionContext(
     },
   } = {},
 ) {
-  const context = { feeBump: null, archivalInfo: null };
+  const context = { feeBump: null, archivalInfo: null, transaction: null };
   if (!txHash) return context;
 
   try {
     const txResult = await fetchTransaction(txHash);
+    context.transaction = txResult;
     if (txResult?.envelopeXdr) {
       context.feeBump = parseFeeBumpEnvelope(txResult.envelopeXdr);
       const restore = parseRestoreEnvelope(txResult.envelopeXdr, txResult.resultMetaXdr ?? null);
@@ -211,6 +213,20 @@ export async function processSingleEvent(rawSorobanEvent, context = undefined) {
   decoded.storage_tiers = classifyStorageWrites(rawSorobanEvent);
   decoded.fee_bump = feeBump;
   decoded.archival_info = archivalInfo;
+  if (context?.transaction && rawSorobanEvent.txHash) {
+    const tx = context.transaction;
+    db.upsertTransaction(await extractTransactionRecord({
+      hash: rawSorobanEvent.txHash,
+      ledger: tx.ledger ?? rawSorobanEvent.ledger,
+      source: tx.sourceAccount ?? tx.source_account,
+      status: tx.status,
+      resultCode: tx.resultCode ?? tx.result_code,
+      envelopeXdr: tx.envelopeXdr,
+      resultMetaXdr: tx.resultMetaXdr,
+      fee: tx.feeBreakdown ?? tx.fee,
+      diagnostics: tx.resultMetaXdr,
+    })).catch((err) => logger.warn({ err: err.message }, "transaction indexing failed"));
+  }
   await db.upsertEventValidated(decoded);
   // Bust wallet event caches (#534) — any new event may reference a wallet address.
   cacheInvalidate("wallet:events:*").catch(() => {});

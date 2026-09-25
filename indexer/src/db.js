@@ -17,6 +17,10 @@ import { getIndexerNetwork } from "./networkConfig.js";
 pg.types.setTypeParser(20, (val) => parseInt(val, 10));
 
 const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL });
+const replicaPools = String(process.env.READ_REPLICA_DATABASE_URLS || process.env.DATABASE_READ_REPLICA_URLS || "")
+  .split(",").map((url) => url.trim()).filter(Boolean).map((connectionString) => new pg.Pool({ connectionString }));
+const replicaState = replicaPools.map((pool, index) => ({ pool, index, healthy: true, lagMs: 0, lastCheck: 0, replayLsn: null }));
+let lastWriteLsn = null;
 
 // Wrap every query in an OTel span (issue #755) so a request's trace shows
 // DB timing alongside its RPC and cache hops. Only instruments the
@@ -32,7 +36,42 @@ pool.query = (text, params) =>
 /** Exported for pool metric collection — do not use for queries outside db.js. */
 export { pool };
 
+export function getReplicaState() { return replicaState.map(({ pool: _pool, ...state }) => ({ ...state })); }
+
+export async function getReadPool(requiredLsn = null) {
+  for (const replica of replicaState) {
+    try {
+      const { rows } = await replica.pool.query("SELECT EXTRACT(EPOCH FROM (NOW() - pg_last_xact_replay_timestamp())) * 1000 AS lag_ms, pg_last_wal_replay_lsn() AS replay_lsn");
+      replica.lagMs = Number(rows[0]?.lag_ms) || 0;
+      replica.replayLsn = rows[0]?.replay_lsn ?? null;
+      replica.lastCheck = Date.now();
+      replica.healthy = replica.lagMs <= Number(process.env.REPLICA_MAX_LAG_MS || 5000) && (!requiredLsn || !replica.replayLsn || String(replica.replayLsn) >= String(requiredLsn));
+    } catch { replica.healthy = false; }
+    if (replica.healthy) return replica.pool;
+  }
+  return pool;
+}
+
+export async function queryRead(text, params, options = {}) { return (await getReadPool(options.requiredLsn)).query(text, params); }
+export function noteWriteLsn(lsn) { lastWriteLsn = lsn; return lastWriteLsn; }
+export function getLastWriteLsn() { return lastWriteLsn; }
+
 export const db = {
+  query: (text, params) => pool.query(text, params),
+  queryRead,
+  getReplicaState,
+  getLastWriteLsn,
+  async getReplayRows(from, to) {
+    const { rows } = await queryRead("SELECT * FROM events WHERE ledger BETWEEN $1 AND $2 ORDER BY ledger, seq", [from, to]);
+    return rows;
+  },
+  async upsertTransaction(record) {
+    const { rows } = await pool.query(`INSERT INTO transactions (hash, ledger, source, status, result_code, operation_count, footprint_read_bytes, footprint_write_bytes, fee_payer, inner_source, inclusion_fee, resource_fee, refundable_fee_charged, refund_amount, rent_fee, charged_fee, failure_reason) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17) ON CONFLICT (hash) DO UPDATE SET ledger=EXCLUDED.ledger,status=EXCLUDED.status,result_code=EXCLUDED.result_code,charged_fee=EXCLUDED.charged_fee,failure_reason=EXCLUDED.failure_reason RETURNING *`, [record.hash, record.ledger, record.source, record.status, record.result_code, record.operation_count, record.footprint_read_bytes, record.footprint_write_bytes, record.fee_payer, record.inner_source, record.inclusion_fee, record.resource_fee, record.refundable_fee_charged, record.refund_amount, record.rent_fee, record.charged_fee, record.failure_reason]);
+    try { const lsn = await pool.query("SELECT pg_current_wal_lsn() AS lsn"); noteWriteLsn(lsn.rows[0]?.lsn); } catch { /* non-Postgres test doubles */ }
+    return rows[0];
+  },
+  async getTransaction(hash) { const { rows } = await queryRead("SELECT * FROM transactions WHERE hash = $1", [hash], { requiredLsn: lastWriteLsn }); return rows[0] ?? null; },
+  async getAccountTransactions(account, limit = 50) { const { rows } = await queryRead("SELECT * FROM transactions WHERE source = $1 OR fee_payer = $1 ORDER BY ledger DESC LIMIT $2", [account, Math.min(Number(limit) || 50, 100)], { requiredLsn: lastWriteLsn }); return rows; },
   /** Run all pending SQL migrations from indexer/migrations/. */
   async init() {
     await runMigrations(pool);
