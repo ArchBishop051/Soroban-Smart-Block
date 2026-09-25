@@ -70,6 +70,8 @@ export interface HeuristicParam {
 }
 
 export interface DecodedEvent {
+  /** Canonical, chain-derived event ID (Soroban RPC format, #892). */
+  event_id?: string | null;
   seq: number;
   contract_id: string;
   function: string;
@@ -694,7 +696,8 @@ export const api = {
     if (params.type) q.set("type", params.type);
     return get<EventsPage>(`/events?${q}`);
   },
-  event: (seq: number) => get<DecodedEvent>(`/events/${seq}`),
+  // Accepts the canonical event ID or a legacy numeric seq (redirected by the API).
+  event: (id: string | number) => get<DecodedEvent>(`/events/${encodeURIComponent(String(id))}`),
   asset: (issuer: string, code: string) => get<AssetInfo>(`/assets/${issuer}/${code}`),
   search: (q: string, limit = 10) => {
     const params = new URLSearchParams();

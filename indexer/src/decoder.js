@@ -10,6 +10,7 @@ import { parseZkHostFunctions, computeZkCostDelta } from "./zkHostFunctions.js";
 import { resolveAsset } from "./horizonClient.js";
 import config from "./config.js";
 import { decoderSuccessTotal, decoderFailureTotal } from "./metrics.js";
+import { eventIdFromRpc } from "./eventId.js";
 
 // Classic operation types decoded from Horizon alongside Soroban events.
 const PATH_PAYMENT_TYPES = new Set(["path_payment_strict_send", "path_payment_strict_receive"]);
@@ -208,6 +209,9 @@ export async function decode(ev, opts = {}) {
   try {
     const decoded = await decodeEvent(ev, opts);
     _recordDecodeOutcome(true);
+    // Canonical, chain-derived event ID (#892).
+    const eventId = decoded ? eventIdFromRpc(ev) : null;
+    if (eventId) decoded.event_id = eventId;
     return decoded;
   } catch (err) {
     _recordDecodeOutcome(false);

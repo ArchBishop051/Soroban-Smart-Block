@@ -121,6 +121,7 @@ function truncate(str) {
 function buildPayload(decoded) {
   return JSON.stringify({
     seq: decoded.seq ?? null,
+    event_id: decoded.event_id ?? null,
     contract_id: decoded.contract_id,
     function: decoded.function,
     ledger: decoded.ledger,

@@ -192,8 +192,9 @@ export const db = {
       `INSERT INTO events
          (contract_id, function, ledger, tx_hash, description, raw_topics, raw_data,
           cpu_instructions, mem_bytes, fee_charged, is_high_bloat_risk, upgrade_info, storage_tiers, is_clawback,
-          footprint_contention, ttl_extension, fee_bump, archival_info, zk_host_calls, abi_version, slippage_bps)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)
+          footprint_contention, ttl_extension, fee_bump, archival_info, zk_host_calls, abi_version, slippage_bps,
+          event_id)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)
        ON CONFLICT (contract_id, ledger, tx_hash) DO NOTHING`,
       [
         ev.contract_id,
@@ -217,6 +218,7 @@ export const db = {
         ev.zk_host_calls ? JSON.stringify(ev.zk_host_calls) : null,
         ev.abi_version ?? 0,
         ev.slippage_bps ?? null,
+        ev.event_id ?? null,
       ],
     );
   },
@@ -321,6 +323,16 @@ export const db = {
       params,
     );
     return rows;
+  },
+
+  /** Look up an event by its canonical ID on a network (#892). */
+  async getEventByEventId(eventId, network = getIndexerNetwork()) {
+    const { rows } = await pool.query(
+      `SELECT *, CASE WHEN contract_id IS NULL OR contract_id = '' THEN 'classic' ELSE 'soroban' END AS type
+       FROM events WHERE network = $1 AND event_id = $2`,
+      [network, eventId],
+    );
+    return rows[0] ?? null;
   },
 
   async getEvent(seq) {

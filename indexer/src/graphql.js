@@ -22,6 +22,7 @@ import config from "./config.js";
 
 export const typeDefs = `
   type Event {
+    event_id: String
     seq: Int
     contract_id: String
     function: String

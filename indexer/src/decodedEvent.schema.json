@@ -83,6 +83,10 @@
     "zk_host_calls": {
       "type": "object"
     },
+    "event_id": {
+      "type": "string",
+      "pattern": "^\\d{19}-\\d{10}$"
+    },
     "heuristic_params": {
       "type": "array"
     },
