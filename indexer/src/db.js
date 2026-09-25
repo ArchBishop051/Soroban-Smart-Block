@@ -101,6 +101,108 @@ export const db = {
   },
 
   /** Atomically purge orphaned data and persist the daemon rewind cursor. */
+  // ── Query jobs (#906) ─────────────────────────────────────────────────────
+
+  async createQueryJob(job) {
+    const { rows } = await pool.query(
+      `INSERT INTO query_jobs (id, api_key_id, tier, type, params, format, idempotency_key)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)
+       ON CONFLICT (api_key_id, idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING
+       RETURNING *`,
+      [job.id, job.apiKeyId, job.tier, job.type, job.params, job.format, job.idempotencyKey ?? null],
+    );
+    return rows[0] ?? null;
+  },
+
+  async getQueryJob(id) {
+    const { rows } = await pool.query("SELECT * FROM query_jobs WHERE id = $1", [id]);
+    return rows[0] ?? null;
+  },
+
+  async getQueryJobByIdempotencyKey(apiKeyId, key) {
+    const { rows } = await pool.query(
+      "SELECT * FROM query_jobs WHERE api_key_id = $1 AND idempotency_key = $2",
+      [apiKeyId, key],
+    );
+    return rows[0] ?? null;
+  },
+
+  async countActiveQueryJobs(apiKeyId) {
+    const { rows } = await pool.query(
+      "SELECT COUNT(*)::INT AS n FROM query_jobs WHERE api_key_id = $1 AND status IN ('queued', 'running')",
+      [apiKeyId],
+    );
+    return rows[0].n;
+  },
+
+  async updateQueryJob(id, fields) {
+    const keys = Object.keys(fields);
+    if (!keys.length) return;
+    await pool.query(
+      `UPDATE query_jobs SET ${keys.map((k, i) => `${k} = $${i + 2}`).join(", ")} WHERE id = $1`,
+      [id, ...keys.map((k) => fields[k])],
+    );
+  },
+
+  async listQueryJobsByStatus(status) {
+    const { rows } = await pool.query("SELECT id FROM query_jobs WHERE status = $1 ORDER BY created_at", [status]);
+    return rows;
+  },
+
+  async listExpiredQueryJobs() {
+    const { rows } = await pool.query(
+      "SELECT id, result_path FROM query_jobs WHERE expires_at IS NOT NULL AND expires_at < now() AND status <> 'expired'",
+    );
+    return rows;
+  },
+
+  async isApiKeyActive(apiKeyId) {
+    const { rows } = await pool.query(
+      "SELECT 1 FROM api_keys WHERE id = $1 AND revoked = FALSE AND (expires_at IS NULL OR expires_at > now())",
+      [apiKeyId],
+    );
+    return rows.length > 0;
+  },
+
+  /**
+   * Stream events matching `filter` in `batchSize` pages from a single
+   * REPEATABLE READ transaction, so the whole export is one consistent
+   * snapshot even while the indexer keeps writing.
+   */
+  async *iterateEventsSnapshot({ contract, fromLedger, toLedger }, batchSize = 5_000) {
+    const client = await pool.connect();
+    let committed = false;
+    try {
+      await client.query("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY");
+      let lastSeq = 0;
+      while (true) {
+        const { rows } = await client.query(
+          `SELECT e.seq, e.ledger, e.contract_id, c.name AS contract_name, e.function,
+                  e.description, e.tx_hash, e.created_at
+           FROM events e LEFT JOIN contracts c ON c.id = e.contract_id
+           WHERE e.seq > $1
+             AND ($2::TEXT IS NULL OR e.contract_id = $2)
+             AND ($3::BIGINT IS NULL OR e.ledger >= $3)
+             AND ($4::BIGINT IS NULL OR e.ledger <= $4)
+           ORDER BY e.seq
+           LIMIT $5`,
+          [lastSeq, contract ?? null, fromLedger ?? null, toLedger ?? null, batchSize],
+        );
+        if (!rows.length) break;
+        yield rows;
+        lastSeq = rows[rows.length - 1].seq;
+        if (rows.length < batchSize) break;
+      }
+      await client.query("COMMIT");
+      committed = true;
+    } finally {
+      // Also runs when the consumer stops early (cancel / quota): never hand a
+      // client with an open transaction back to the pool.
+      if (!committed) await client.query("ROLLBACK").catch(() => {});
+      client.release();
+    }
+  },
+
   /** Events at or after `forkLedger` (seq + contract), for CDN purging on reorg. */
   async getEventsFromLedger(forkLedger, limit = 10_000) {
     const { rows } = await pool.query(

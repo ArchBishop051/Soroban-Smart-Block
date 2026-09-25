@@ -12,6 +12,7 @@ import { decode, getDecodeStats } from "./decoder.js";
 import { startAbiSync } from "./githubAbiSync.js";
 import { seedBuiltinAbis } from "./abiSeeder.js";
 import { startContractVerifier } from "./contractVerifier.js";
+import { startQueryJobMaintenance } from "./jobs/queryJobs.js";
 import { withRetry } from "./rpcRetry.js";
 import { isHighBloatRisk } from "./bloatDetector.js";
 import { detectUpgrade } from "./upgradeDetector.js";
@@ -354,6 +355,7 @@ async function run() {
   seedBuiltinAbis().catch((e) => logger.warn({ err: e.message }, "builtin ABI seed failed"));
   startAbiSync();
   startContractVerifier(); // periodically verify DB ABI hashes against on-chain registry
+  startQueryJobMaintenance().catch((err) => logger.error("[jobs] startup failed:", err.message)); // async query jobs (#906)
   startBurnDetector();
   startMetricsCollector(); // RPC latency probes
   startNodeRecoveryPoll(); // re-check unhealthy multi-node RPC failover nodes

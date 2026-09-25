@@ -17,6 +17,12 @@ export {
 } from "./errors.js";
 
 export type {
+  // Query jobs
+  QueryJob,
+  QueryJobRequest,
+  QueryJobResult,
+  QueryJobStatus,
+
   // Core entities
   DecodedEvent,
   Contract,

@@ -538,7 +538,7 @@ const EDGE_FALLBACK_TTL_SECONDS = 5;
 const PRIVATE_PREFIXES = [
   "/api/admin", "/api/dashboard", "/api/webhooks", "/api/keys", "/api/csrf-token",
   "/api/sandbox", "/api/transactions", "/api/health", "/api/metrics", "/api/rpc-",
-  "/api/setup", "/api/alerts", "/api/cache", "/api/billing", "/api/auth",
+  "/api/setup", "/api/alerts", "/api/cache", "/api/billing", "/api/auth", "/api/jobs",
 ];
 
 /**

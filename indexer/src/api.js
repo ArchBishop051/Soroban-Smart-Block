@@ -60,6 +60,14 @@ import { getActiveAlerts } from "./alertManager.js";
 import { randomUUID } from "crypto";
 import Ajv from "ajv";
 import { isPurgeHealthy } from "./cdnPurge.js";
+import {
+  submitJob,
+  cancelJob,
+  jobView,
+  validateJobRequest,
+  signedResultUrl,
+  verifyResultUrl,
+} from "./jobs/queryJobs.js";
 import { loadSigningKeys, publishedKeys, signEnvelope, wantsSignedResponse, SIGNED_MEDIA_TYPE } from "./signing.js";
 import addFormats from "ajv-formats";
 
@@ -2246,6 +2254,84 @@ export function createApi({ logDestination, dbOverride } = {}) {
     } catch (e) {
       res.status(500).json({ error: e.message });
     }
+  });
+
+  // ── Asynchronous query jobs (#906) ──────────────────────────────────────────
+  // Heavy exports run as background jobs: submit → poll → download via a
+  // short-lived signed URL. Jobs belong to the submitting API key.
+  const requireJobKey = (req, res) => {
+    const keyId = req.rateContext?.keyId;
+    if (!keyId) res.status(401).json({ error: "An API key is required for query jobs" });
+    return keyId;
+  };
+  const loadOwnJob = async (req, res) => {
+    const keyId = requireJobKey(req, res);
+    if (!keyId) return null;
+    const job = await db.getQueryJob(req.params.id).catch(() => null);
+    if (!job || job.api_key_id !== keyId) {
+      res.status(404).json({ error: "Job not found" });
+      return null;
+    }
+    return job;
+  };
+
+  app.post("/api/jobs", async (req, res) => {
+    const keyId = requireJobKey(req, res);
+    if (!keyId) return;
+    const error = validateJobRequest(req.body);
+    if (error) return res.status(400).json({ error });
+    try {
+      const { job, created } = await submitJob({
+        apiKeyId: keyId,
+        tier: req.rateContext.tier,
+        type: req.body.type,
+        params: req.body.params ?? {},
+        format: req.body.format ?? "ndjson",
+        idempotencyKey: req.get("Idempotency-Key") || undefined,
+      });
+      res.status(created ? 202 : 200).location(`/api/jobs/${job.id}`).json(jobView(job));
+    } catch (e) {
+      res.status(e.status ?? 500).json({ error: e.message });
+    }
+  });
+
+  app.get("/api/jobs/:id", async (req, res) => {
+    const job = await loadOwnJob(req, res);
+    if (job) res.json(jobView(job));
+  });
+
+  app.delete("/api/jobs/:id", async (req, res) => {
+    const job = await loadOwnJob(req, res);
+    if (job) res.json(jobView(await cancelJob(job.id)));
+  });
+
+  app.get("/api/jobs/:id/result", async (req, res) => {
+    const job = await loadOwnJob(req, res);
+    if (!job) return;
+    if (job.status !== "succeeded" || !job.result_path) {
+      return res.status(409).json({ error: `Job is ${job.status}; no result available`, status: job.status });
+    }
+    res.json({ ...signedResultUrl(job.id), partial: job.partial, rows: Number(job.rows_written) });
+  });
+
+  // Signed-URL download: the signature is the credential, but the owning key
+  // must still be valid, so revoking a key makes its results inaccessible.
+  app.get("/api/jobs/:id/download", async (req, res) => {
+    if (!verifyResultUrl(req.params.id, req.query.expires, req.query.sig)) {
+      return res.status(403).json({ error: "Invalid or expired download URL" });
+    }
+    const job = await db.getQueryJob(req.params.id).catch(() => null);
+    if (!job || job.status !== "succeeded" || !job.result_path || !fs.existsSync(job.result_path)) {
+      return res.status(404).json({ error: "Result not found" });
+    }
+    if (!(await db.isApiKeyActive(job.api_key_id))) {
+      return res.status(403).json({ error: "The API key that owns this job is no longer active" });
+    }
+    const csv = job.format === "csv";
+    res.setHeader("Content-Type", csv ? "text/csv" : "application/x-ndjson");
+    res.setHeader("Content-Disposition", `attachment; filename="${job.id}.${csv ? "csv" : "ndjson"}"`);
+    if (job.partial) res.setHeader("X-Result-Partial", "true");
+    fs.createReadStream(job.result_path).pipe(res);
   });
 
   // GET /api/export/contracts?format=csv|json
