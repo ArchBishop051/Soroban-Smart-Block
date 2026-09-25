@@ -12,8 +12,10 @@
  *   npx soroban-explorer contract <id>
  *   npx soroban-explorer search <query>
  *   npx soroban-explorer tail [--contract <id>]
+ *   npx soroban-explorer verify <file.json> [--keys <file-or-url>]
  */
 
+import crypto from "crypto";
 import http from "http";
 import https from "https";
 import fs from "fs/promises";
@@ -41,6 +43,7 @@ Commands:
   contract   Show contract metadata and registered functions
   search     Search across contracts, events, and wallets
   tail       Stream live events to the terminal
+  verify     Verify a signed response (?signed=1) saved to a file (supports --keys)
   help       Show this help
 
 Global options:
@@ -83,7 +86,7 @@ function parseArgs(argv) {
       i++;
     } else if (
       (arg === "--base-url" || arg === "--api-key" || arg === "--contract" ||
-       arg === "--fn" || arg === "--limit" || arg === "--type") &&
+       arg === "--fn" || arg === "--limit" || arg === "--type" || arg === "--keys") &&
       i + 1 < argv.length
     ) {
       flags[arg.slice(2).replace(/-([a-z])/g, (_, c) => c.toUpperCase())] = argv[i + 1];
@@ -445,6 +448,60 @@ async function cmdTail(baseUrl, apiKey, flags) {
   await poll();
 }
 
+// ── Signed response verification (#904) ─────────────────────────────────
+
+/** RFC 8785 JSON Canonicalization Scheme (matches indexer/src/signing.js). */
+function canonicalize(value) {
+  if (value === null || typeof value === "boolean" || typeof value === "string") return JSON.stringify(value);
+  if (typeof value === "number") {
+    if (!Number.isFinite(value)) throw new TypeError("JCS: non-finite numbers are not allowed");
+    return JSON.stringify(value);
+  }
+  if (Array.isArray(value)) return `[${value.map((v) => (v === undefined ? "null" : canonicalize(v))).join(",")}]`;
+  if (typeof value === "object") {
+    const keys = Object.keys(value).filter((k) => value[k] !== undefined).sort();
+    return `{${keys.map((k) => `${JSON.stringify(k)}:${canonicalize(value[k])}`).join(",")}}`;
+  }
+  throw new TypeError(`JCS: unsupported type ${typeof value}`);
+}
+
+async function loadKeys(source, baseUrl) {
+  const url = source || `${baseUrl.replace(/\/+$/, "")}/.well-known/explorer-keys.json`;
+  if (/^https?:\/\//.test(url)) {
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`failed to fetch keys from ${url}: HTTP ${res.status}`);
+    return (await res.json()).keys;
+  }
+  return JSON.parse(await fs.readFile(url, "utf-8")).keys;
+}
+
+async function cmdVerify(baseUrl, flags, positional) {
+  const file = positional[1];
+  if (!file) {
+    console.error("Error: usage: soroban-explorer verify <file.json> [--keys <file-or-url>]");
+    process.exit(1);
+  }
+  const { signature, ...unsigned } = JSON.parse(await fs.readFile(file, "utf-8"));
+  const keys = await loadKeys(flags.keys, baseUrl);
+  const key = keys.find((k) => k.key_id === unsigned.key_id);
+  if (!key) {
+    console.error(`INVALID: unknown signing key "${unsigned.key_id}"`);
+    process.exit(1);
+  }
+  const publicKey = crypto.createPublicKey({
+    key: Buffer.concat([Buffer.from("302a300506032b6570032100", "hex"), Buffer.from(key.public_key, "base64")]),
+    format: "der",
+    type: "spki",
+  });
+  const ok = crypto.verify(null, Buffer.from(canonicalize(unsigned)), publicKey, Buffer.from(String(signature), "base64url"));
+  if (!ok) {
+    console.error("INVALID: signature does not match the payload");
+    process.exit(1);
+  }
+  const retired = key.status === "retired" ? ` (${YELLOW}signed with retired key${RESET})` : "";
+  console.log(`${GREEN}VALID${RESET}: key ${key.key_id}, ledger ${unsigned.ledger}, issued ${unsigned.issued_at}${retired}`);
+}
+
 // ── Main ──��──────────────────────────────────────────────────────────────
 
 async function main() {
@@ -483,6 +540,9 @@ async function main() {
         break;
       case "tail":
         await cmdTail(baseUrl, apiKey, flags);
+        break;
+      case "verify":
+        await cmdVerify(baseUrl, flags, positional);
         break;
       default:
         console.error(`Unknown command: ${command}`);

@@ -58,6 +58,7 @@ import { getHealthStatus, getLivenessStatus, getReadinessStatus } from "./health
 import { getActiveAlerts } from "./alertManager.js";
 import { randomUUID } from "crypto";
 import Ajv from "ajv";
+import { loadSigningKeys, publishedKeys, signEnvelope, wantsSignedResponse, SIGNED_MEDIA_TYPE } from "./signing.js";
 import addFormats from "ajv-formats";
 
 // ── AJV schema validator for POST /api/contracts ──────────────────────────────
@@ -290,6 +291,37 @@ export function createApi({ logDestination, dbOverride } = {}) {
     res.setHeader("X-Frame-Options", "DENY");
     res.setHeader("Permissions-Policy", "camera=(), microphone=()");
     next();
+  });
+
+  // ── Verifiable responses (#904) ────────────────────────────────────────────
+  // `?signed=1` or `Accept: application/vnd.soroban-explorer.signed+json`
+  // wraps successful JSON bodies in an Ed25519-signed envelope bound to the
+  // last indexed ledger. See signing.js.
+  const signingKeys = loadSigningKeys();
+  app.use((req, res, next) => {
+    if (!wantsSignedResponse(req)) return next();
+    res.vary("Accept");
+    if (!signingKeys.active) {
+      return res.status(501).json({ error: "Response signing is not configured" });
+    }
+    const sendJson = res.json.bind(res);
+    res.json = (body) => {
+      if (res.statusCode >= 400) return sendJson(body);
+      Promise.resolve(db.getLastIndexedLedger?.())
+        .catch(() => null)
+        .then((ledger) => {
+          res.set("Content-Type", `${SIGNED_MEDIA_TYPE}; charset=utf-8`);
+          sendJson(signEnvelope(body, ledger ?? null, signingKeys));
+        })
+        .catch(next);
+      return res;
+    };
+    next();
+  });
+
+  app.get("/.well-known/explorer-keys.json", (_req, res) => {
+    res.set("Cache-Control", "public, max-age=300");
+    res.json(publishedKeys(signingKeys));
   });
   // Report-only CSP: does not block anything (safe alongside the enforced
   // policy above), but lets us observe what a tighter policy would break

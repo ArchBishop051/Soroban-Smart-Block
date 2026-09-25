@@ -11,6 +11,9 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import crypto from "node:crypto";
+import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -119,6 +122,28 @@ describe("soroban-explorer CLI", () => {
       const result = runCli(["--base-url", "https://example.com", "events"]);
       // Will fail connecting to example.com but not with argument error
       assert.ok(!result.stderr.includes("Unknown option"));
+    });
+  });
+  describe("verify", () => {
+    it("accepts a valid signed response and rejects a tampered one", () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cli-verify-"));
+      const { privateKey, publicKey } = crypto.generateKeyPairSync("ed25519");
+      const unsigned = { issued_at: "2026-01-01T00:00:00.000Z", key_id: "k1", ledger: 9, payload: { data: [{ seq: 1 }] } };
+      // Keys are already in JCS order and the values need no escaping.
+      const signature = crypto.sign(null, Buffer.from(JSON.stringify(unsigned)), privateKey).toString("base64url");
+      const keysFile = path.join(dir, "keys.json");
+      fs.writeFileSync(keysFile, JSON.stringify({
+        keys: [{ key_id: "k1", alg: "Ed25519", status: "active", public_key: publicKey.export({ format: "der", type: "spki" }).subarray(-32).toString("base64") }],
+      }));
+      const good = path.join(dir, "good.json");
+      const bad = path.join(dir, "bad.json");
+      fs.writeFileSync(good, JSON.stringify({ ...unsigned, signature }));
+      fs.writeFileSync(bad, JSON.stringify({ ...unsigned, ledger: 10, signature }));
+
+      assert.equal(runCli(["verify", good, "--keys", keysFile]).status, 0);
+      const tampered = runCli(["verify", bad, "--keys", keysFile]);
+      assert.equal(tampered.status, 1);
+      assert.ok(tampered.stderr.includes("INVALID"));
     });
   });
 });
