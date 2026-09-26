@@ -38,6 +38,13 @@ export default function Nav() {
     e.preventDefault();
     const v = q.trim();
     if (!v) return;
+    if (/^[a-fA-F0-9]{64}$/.test(v)) {
+      addRecentSearch(v, "all");
+      nav(`/tx/${v}`);
+      setQ("");
+      setSearchFocused(false);
+      return;
+    }
     let kind: string | undefined;
     if (v.startsWith("G") && v.length === 56) kind = "wallet";
     else if (v.startsWith("M") && v.length === 56) kind = "wallet";
