@@ -897,6 +897,16 @@ export function createApi({ logDestination, dbOverride } = {}) {
     },
   );
 
+  app.get("/api/events/:seq/proof", async (req, res) => {
+    try {
+      const proof = await db.getEventProof(Number(req.params.seq));
+      if (!proof) return res.status(404).json({ error: "Not found" });
+      res.json(proof);
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
   // GET /api/events/:seq/zk-costs
   // Returns the ZK host function call list and cost delta for a single event.
   app.get("/api/events/:seq/zk-costs", async (req, res) => {
