@@ -1,10 +1,4 @@
-import {
-  SorobanExplorerError,
-  NotFoundError,
-  RateLimitError,
-  ValidationError,
-  UnauthorizedError,
-} from "./errors.js";
+import { SorobanExplorerError, NotFoundError, RateLimitError, ValidationError, UnauthorizedError } from "./errors.js";
 import { subscribeEvents } from "./ws.js";
 import type {
   DecodedEvent,
@@ -93,9 +87,7 @@ export class SorobanExplorerClient {
     this._fetch = options.fetch ?? globalThis.fetch;
 
     if (!this._fetch) {
-      throw new Error(
-        "No fetch implementation available. Pass a custom fetch function or use Node.js >= 18.",
-      );
+      throw new Error("No fetch implementation available. Pass a custom fetch function or use Node.js >= 18.");
     }
   }
 
@@ -119,9 +111,7 @@ export class SorobanExplorerClient {
     if (!response.ok) {
       const body = await response.json().catch(() => ({ error: response.statusText }));
       const message =
-        (body as Record<string, unknown>).error ??
-        (body as Record<string, unknown>).detail ??
-        response.statusText;
+        (body as Record<string, unknown>).error ?? (body as Record<string, unknown>).detail ?? response.statusText;
 
       switch (response.status) {
         case 401:
@@ -159,8 +149,12 @@ export class SorobanExplorerClient {
       contract: filter?.contract,
       fn: filter?.fn,
       type: filter?.type,
+      cursor: filter?.cursor,
+      after: filter?.after,
+      before: filter?.before,
       after_seq: filter?.after_seq,
       limit: filter?.limit,
+      count: filter?.count,
     });
     return this.request<CursorPage<DecodedEvent>>(`/api/events${query}`);
   }
@@ -172,13 +166,17 @@ export class SorobanExplorerClient {
 
   // ── Contracts ──────────────────────────────────────────────────────────────
 
-  /** List registered contracts with offset-based pagination. */
+  /** List registered contracts with keyset or offset-based pagination. */
   async getContracts(filter?: ContractsFilter): Promise<PaginatedResponse<Contract>> {
     const query = buildQuery({
+      cursor: filter?.cursor,
+      after: filter?.after,
+      before: filter?.before,
       page: filter?.page,
       limit: filter?.limit,
       type: filter?.type,
       q: filter?.q,
+      count: filter?.count,
     });
     return this.request<PaginatedResponse<Contract>>(`/api/contracts${query}`);
   }
@@ -188,18 +186,17 @@ export class SorobanExplorerClient {
     return this.request<ContractMeta>(`/api/contracts/${encodeURIComponent(id)}`);
   }
 
-  /** Get events for a specific contract (offset-based pagination). */
-  async getContractEvents(
-    id: string,
-    filter?: ContractEventsFilter,
-  ): Promise<ContractEventsResponse> {
+  /** Get events for a specific contract with keyset or offset-based pagination. */
+  async getContractEvents(id: string, filter?: ContractEventsFilter): Promise<ContractEventsResponse> {
     const query = buildQuery({
+      cursor: filter?.cursor,
+      after: filter?.after,
+      before: filter?.before,
       page: filter?.page,
       limit: filter?.limit,
+      count: filter?.count,
     });
-    return this.request<ContractEventsResponse>(
-      `/api/contracts/${encodeURIComponent(id)}/events${query}`,
-    );
+    return this.request<ContractEventsResponse>(`/api/contracts/${encodeURIComponent(id)}/events${query}`);
   }
 
   /** Get aggregate statistics for a contract (event counts, callers, 30-day sparkline). */
@@ -209,9 +206,7 @@ export class SorobanExplorerClient {
 
   /** Get ABI version history for a contract. */
   async getContractAbiHistory(id: string): Promise<AbiHistoryResponse> {
-    return this.request<AbiHistoryResponse>(
-      `/api/contracts/${encodeURIComponent(id)}/abi-history`,
-    );
+    return this.request<AbiHistoryResponse>(`/api/contracts/${encodeURIComponent(id)}/abi-history`);
   }
 
   /** Get WASM upgrade lineage for a contract. */
@@ -227,16 +222,12 @@ export class SorobanExplorerClient {
   /** Get the sub-invocation call graph for a contract. */
   async getContractCallGraph(id: string, limit?: number): Promise<CallGraph> {
     const query = buildQuery({ limit });
-    return this.request<CallGraph>(
-      `/api/contracts/${encodeURIComponent(id)}/call-graph${query}`,
-    );
+    return this.request<CallGraph>(`/api/contracts/${encodeURIComponent(id)}/call-graph${query}`);
   }
 
   /** Get storage tier write counts for a contract. */
   async getContractStorageTiers(id: string): Promise<ContractStorageTiers> {
-    return this.request<ContractStorageTiers>(
-      `/api/contracts/${encodeURIComponent(id)}/storage-tiers`,
-    );
+    return this.request<ContractStorageTiers>(`/api/contracts/${encodeURIComponent(id)}/storage-tiers`);
   }
 
   // ── Wallet ─────────────────────────────────────────────────────────────────
@@ -253,25 +244,18 @@ export class SorobanExplorerClient {
    * });
    * ```
    */
-  async getWalletEvents(
-    address: string,
-    filter?: WalletEventsFilter,
-  ): Promise<WalletResponse> {
+  async getWalletEvents(address: string, filter?: WalletEventsFilter): Promise<WalletResponse> {
     const query = buildQuery({
       fn: filter?.fn,
       from: filter?.from,
       to: filter?.to,
     });
-    return this.request<WalletResponse>(
-      `/api/wallet/${encodeURIComponent(address)}${query}`,
-    );
+    return this.request<WalletResponse>(`/api/wallet/${encodeURIComponent(address)}${query}`);
   }
 
   /** Get classic XLM + SEP-41/classic asset balances for a wallet. */
   async getWalletBalances(address: string): Promise<BalancesResponse> {
-    return this.request<BalancesResponse>(
-      `/api/wallet/${encodeURIComponent(address)}/balances`,
-    );
+    return this.request<BalancesResponse>(`/api/wallet/${encodeURIComponent(address)}/balances`);
   }
 
   // ── Search ─────────────────────────────────────────────────────────────────
@@ -286,16 +270,12 @@ export class SorobanExplorerClient {
 
   /** Get sorted list of token holders for a contract. */
   async getTokenHolders(contractId: string): Promise<TokenHoldersResponse> {
-    return this.request<TokenHoldersResponse>(
-      `/api/tokens/${encodeURIComponent(contractId)}/holders`,
-    );
+    return this.request<TokenHoldersResponse>(`/api/tokens/${encodeURIComponent(contractId)}/holders`);
   }
 
   /** Get 24-hour rolling transfer volume for a token contract. */
   async getTokenVolume(contractId: string): Promise<TokenVolume> {
-    return this.request<TokenVolume>(
-      `/api/tokens/${encodeURIComponent(contractId)}/volume`,
-    );
+    return this.request<TokenVolume>(`/api/tokens/${encodeURIComponent(contractId)}/volume`);
   }
 
   // ── Global ─────────────────────────────────────────────────────────────────
@@ -332,10 +312,6 @@ export class SorobanExplorerClient {
     options: Omit<SubscribeOptions, "apiKey">,
     callback: (message: WebSocketMessage) => void,
   ): Subscription {
-    return subscribeEvents(
-      this.baseUrl,
-      { ...options, apiKey: this.apiKey },
-      callback,
-    );
+    return subscribeEvents(this.baseUrl, { ...options, apiKey: this.apiKey }, callback);
   }
 }
