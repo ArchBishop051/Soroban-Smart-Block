@@ -38,6 +38,22 @@ function withTraceHeaders(init: RequestInit = {}): RequestInit {
   return { ...init, headers };
 }
 
+export interface LineageStep {
+  action: string;
+  lineage?: "legacy";
+  lineage_id?: number;
+  run_type?: string;
+  code_version?: string;
+  decoder_versions?: Record<string, string>;
+  created_at?: string;
+}
+
+export interface EventLineage {
+  event_seq: number;
+  lineage: "legacy" | "tracked";
+  chain: LineageStep[];
+}
+
 export interface SpecType {
   kind: "struct" | "enum" | "union" | "error_enum";
   name: string;
@@ -814,6 +830,7 @@ export const api = {
     params.set("limit", String(limit));
     return get<SearchResponse>(`/search?${params}`);
   },
+  lineage: (seq: number) => get<EventLineage>(`/events/${seq}/lineage`),
   zkCosts: (seq: number) => get<{ calls: ZkHostCall[]; delta: ZkCostDelta | null }>(`/events/${seq}/zk-costs`),
   /** Powers the home page's compact stats bar — polled every 10s. */
   health: () => get<HealthResponse>("/health"),

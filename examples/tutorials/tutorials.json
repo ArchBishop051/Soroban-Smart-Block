@@ -1,0 +1,19 @@
+[
+  { "dir": "01-index-contract-events", "doc": "tutorial-01-index-contract-events", "title": "Index your own contract's events", "ci": true,
+    "expect": ["✔ indexer is up", "✔ fetched \\d+ recent event\\(s\\)"] },
+  { "dir": "02-register-abi", "doc": "tutorial-02-register-abi", "title": "Register an ABI and see decoded output", "ci": true,
+    "expect": ["✔ (registered ABI|ABI already registered) for C", "✔ ABI lists functions: transfer, mint"] },
+  { "dir": "03-live-events", "doc": "tutorial-03-live-events", "title": "Subscribe to live events", "ci": true,
+    "env": { "LISTEN_SECONDS": "3" },
+    "expect": ["✔ connected to the live event stream", "✔ received \\d+ live event\\(s\\) in 3s"] },
+  { "dir": "04-webhook-consumer", "doc": "tutorial-04-webhook-consumer", "title": "Build a webhook consumer with signature verification", "ci": true,
+    "expect": ["✔ webhook consumer listening on :\\d+", "✔ genuine delivery accepted", "✔ tampered delivery rejected"] },
+  { "dir": "05-filter-dsl", "doc": "tutorial-05-filter-dsl", "title": "Query with the filter DSL", "ci": true,
+    "expect": ["✔ server-side fn=transfer returned \\d+ matching event\\(s\\)", "✔ DSL \"!fn:approve seq>=1\" kept \\d+/\\d+ event\\(s\\)"] },
+  { "dir": "06-verify-inclusion-proof", "doc": "tutorial-06-verify-inclusion-proof", "title": "Verify an event inclusion proof", "ci": false,
+    "reason": "Explorer inclusion proofs are still in progress; the interim RPC cross-check needs indexed events on the network.",
+    "expect": ["✔ transaction .* succeeded on-chain"] },
+  { "dir": "07-decoder-plugin", "doc": "tutorial-07-decoder-plugin", "title": "Write a decoder plugin", "ci": false,
+    "reason": "The indexer cannot load external decoder plugins yet.",
+    "expect": ["✔ plugin \"lottery\" matches only its own events"] }
+]

@@ -12,6 +12,7 @@ initSentry();
 startProfiling();
 import { startApi } from "./api.js";
 import { db, pool } from "./db.js";
+import { startLineageBatch } from "./lineage.js";
 import { decode, getDecodeStats } from "./decoder.js";
 import { startAbiSync } from "./githubAbiSync.js";
 import { seedBuiltinAbis } from "./abiSeeder.js";
@@ -198,7 +199,7 @@ export async function loadTransactionContext(
  * @param {{ feeBump: object | null, archivalInfo: object | null }} context
  * @returns {Promise<object>} the decoded event that was persisted
  */
-export async function processSingleEvent(rawSorobanEvent, context = undefined) {
+export async function processSingleEvent(rawSorobanEvent, context = undefined, lineageBatchId = null) {
   const { feeBump, archivalInfo } = context ?? (await loadTransactionContext(rawSorobanEvent.txHash));
   await observeProtocolVersion(protocolVersionFromLedger(rawSorobanEvent));
   const decodeStart = Date.now();
@@ -247,6 +248,7 @@ export async function processSingleEvent(rawSorobanEvent, context = undefined) {
       diagnostics: tx.resultMetaXdr,
     })).catch((err) => logger.warn({ err: err.message }, "transaction indexing failed"));
   }
+  decoded.lineage_batch_id = lineageBatchId;
   await db.upsertEventValidated(decoded);
   // The event row is committed before it is exposed to consumers. The outbox
   // relay provides durable retries and stable event IDs for deduplication.
@@ -291,7 +293,7 @@ export async function processSingleEvent(rawSorobanEvent, context = undefined) {
   return decoded;
 }
 
-export async function processEventBatch(batch, contextByTx = new Map()) {
+export async function processEventBatch(batch, contextByTx = new Map(), lineageBatchId = null) {
   if (!Array.isArray(batch) || batch.length === 0) return [];
 
   const resolved = await Promise.all(
@@ -318,6 +320,7 @@ export async function processEventBatch(batch, contextByTx = new Map()) {
       decoded.storage_tiers = classifyStorageWrites(rawSorobanEvent);
       decoded.fee_bump = feeBump;
       decoded.archival_info = archivalInfo;
+      decoded.lineage_batch_id = lineageBatchId;
       return { rawSorobanEvent, decoded, contractMeta };
     }),
   );
@@ -429,12 +432,22 @@ export async function indexLedger(
       }),
     );
 
+    // One lineage batch per RPC page (#945); lineage failures never block ingest.
+    const lineage = res.events.length
+      ? await startLineageBatch({
+          runType: "live",
+          source: RPC_URL,
+          ledgerFrom: Math.min(...res.events.map((e) => e.ledger)),
+          ledgerTo: Math.max(...res.events.map((e) => e.ledger)),
+        }).catch((err) => logger.error("[lineage] batch start failed:", err.message))
+      : null;
+
     const ingestPipeline = createIngestPipeline({
       concurrency: INGEST_CONCURRENCY,
       batchSize: INGEST_BATCH_SIZE,
       maxQueue: INGEST_MAX_QUEUE,
       processBatch: async (batch) => {
-        await processEventBatch(batch, transactionContextCache);
+        await processEventBatch(batch, transactionContextCache, lineage?.id ?? null);
       },
     });
 

@@ -66,6 +66,7 @@ import { abuseDetector } from "./rateLimit/abuseDetector.js";
 import { rateLimitHeaderWriter } from "./rateLimit/headers.js";
 import { auditLoggerMiddleware, ensureAuditPartitions } from "./audit/auditLogger.js";
 import registerAdminRoutes from "./routes/admin.js";
+import { getEventLineage } from "./lineage.js";
 import registerWebhookRoutes from "./routes/webhooks.js";
 import registerDashboardRoutes from "./routes/dashboard.js";
 import { stripeWebhookRouter } from "./billing/stripeWebhook.js";
@@ -973,6 +974,20 @@ export function createApi({ logDestination, dbOverride } = {}) {
       const proof = await db.getEventProof(Number(req.params.seq));
       if (!proof) return res.status(404).json({ error: "Not found" });
       res.json(proof);
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // GET /api/events/:seq/lineage — public provenance summary (#945).
+  // The full chain (run IDs, provider sources, ledger ranges) is admin-only.
+  app.get("/api/events/:seq/lineage", async (req, res) => {
+    try {
+      const seq = Number(req.params.seq);
+      if (!Number.isSafeInteger(seq) || seq < 1) return res.status(400).json({ error: "Invalid event id" });
+      const lineage = await getEventLineage(seq, { full: false });
+      if (!lineage) return res.status(404).json({ error: "Not found" });
+      res.json(lineage);
     } catch (e) {
       res.status(500).json({ error: e.message });
     }
