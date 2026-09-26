@@ -58,6 +58,21 @@ jobs:
         run: npx playwright install --with-deps
         working-directory: e2e
 
+  future-protocol:
+    name: Future protocol compatibility
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Pull next protocol quickstart image
+        run: docker pull stellar/quickstart:future
+      - uses: actions/setup-node@v4
+        with: { node-version: 20 }
+      - run: npm ci
+        working-directory: indexer
+      - name: Run protocol fixture suite
+        run: npm test -- --runInBand protocolReadiness rpcVerifier
+        working-directory: indexer
+
   # ── Spike Test ────────────────────────────────────────────────────────────
   spike-test:
     name: k6 Spike Test (0→2000 req/s)
@@ -305,11 +320,50 @@ jobs:
           retention-days: 30
 
   # ── Report Summary ─────────────────────────────────────────────────────────
+  # ── Formal verification (#874) ────────────────────────────────────────────
+  # Kani proofs of the registry invariants in contracts/explorer/INVARIANTS.md.
+  # Runs nightly (too slow for PRs); a failure opens an issue automatically.
+  kani-proofs:
+    name: Kani proofs (explorer invariants)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run Kani proofs
+        id: kani
+        uses: model-checking/kani-github-action@v1
+        with:
+          working-directory: contracts/explorer
+          args: --lib --output-format terse
+
+      - name: Upload proof results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kani-proof-results
+          path: contracts/explorer/target/kani
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: Open issue on proof failure
+        if: failure() && github.event_name == 'schedule'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          gh issue create \
+            --title "Kani proof failure ($(date -u +%Y-%m-%d))" \
+            --body "A registry invariant proof failed in the nightly run: $RUN_URL. See contracts/explorer/INVARIANTS.md."
+
   report:
     name: E2E Results Summary
     runs-on: ubuntu-latest
     if: always()
-    needs: [spike-test, soak-test, integration-test, synthetic]
+    needs: [spike-test, soak-test, integration-test, synthetic, future-protocol]
     steps:
       - name: Check test results
         run: |
@@ -321,6 +375,7 @@ jobs:
           echo "| Soak Test | ${{ needs.soak-test.result }} |"
           echo "| API Integration | ${{ needs.integration-test.result }} |"
           echo "| Synthetic | ${{ needs.synthetic.result }} |"
+          echo "| Future protocol | ${{ needs.future-protocol.result }} |"
 
       - name: Slack notification on failure
         if: failure()

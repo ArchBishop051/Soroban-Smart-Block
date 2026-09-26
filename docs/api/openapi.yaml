@@ -63,6 +63,34 @@ security:
   - BearerAuth: []
 
 paths:
+  /api/tx/{hash}:
+    get:
+      summary: Get an indexed Soroban transaction, including failed transactions and fee breakdown
+      parameters:
+        - in: path
+          name: hash
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Transaction record
+          content: { application/json: { schema: { $ref: '#/components/schemas/Transaction' } } }
+        '404': { description: Transaction not found }
+  /api/accounts/{id}/transactions:
+    get:
+      summary: List transactions sent or fee-paid by an account
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+        - in: query
+          name: limit
+          schema: { type: integer, maximum: 100, default: 50 }
+      responses:
+        '200':
+          description: Transaction records
+          content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/Transaction' } } } }
   /health:
     get:
       summary: Comprehensive health check endpoint
@@ -238,13 +266,31 @@ paths:
             enum: [soroban, classic]
             example: "soroban"
           description: Filter by transaction type
+        - name: cursor
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Opaque signed keyset cursor
+        - name: after
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Opaque signed keyset cursor for forward pagination
+        - name: before
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Opaque signed keyset cursor for backward pagination
         - name: after_seq
           in: query
           required: false
           schema:
             type: integer
             example: 42
-          description: Event seq cursor (`next_cursor` from the previous page); omit for the first page
+          description: Legacy event seq cursor; omit for the first page
         - name: limit
           in: query
           required: false
@@ -254,10 +300,26 @@ paths:
             maximum: 200
             example: 25
           description: Max number of items to return (max 200)
+        - name: count
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [exact, estimate]
+            default: estimate
+          description: Total count calculation strategy (exact COUNT or reltuples estimate)
       responses:
         "200":
-          description: Paginated events with next_cursor
+          description: Paginated events with next_cursor and page_info
           headers:
+            Deprecation:
+              schema:
+                type: string
+              description: Present if deprecated offset/page parameter is used
+            Link:
+              schema:
+                type: string
+              description: Deprecation documentation link
             X-RateLimit-Limit:
               $ref: "#/components/headers/X-RateLimit-Limit"
             X-RateLimit-Remaining:
@@ -305,6 +367,72 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+
+  /api/events/stream:
+    get:
+      summary: Resume the live event feed over Server-Sent Events
+      description: >-
+        Starts live when no cursor is supplied. With a cursor, replays persisted
+        events before resuming live delivery. Resume with Last-Event-ID or
+        after_seq; reconnect with the last received event id after backpressure.
+      parameters:
+        - name: after_seq
+          in: query
+          schema:
+            type: integer
+            minimum: 0
+        - name: network
+          in: query
+          schema:
+            type: string
+            enum: [testnet, mainnet, futurenet]
+      responses:
+        "200":
+          description: Resumable event stream
+          content:
+            text/event-stream:
+              schema:
+                type: string
+        "422":
+          description: Invalid cursor
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /graphql:
+    post:
+      summary: Query events, contracts, wallets, and sub-invocations
+      description: Queries are limited to depth 4, complexity 1000, and 100 records per list field.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [query]
+              properties:
+                query:
+                  type: string
+                variables:
+                  type: object
+                operationName:
+                  type: string
+      responses:
+        "200":
+          description: GraphQL response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        "400":
+          description: Invalid or over-budget query
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
 
   /api/v1/events:
     get:
@@ -687,14 +815,37 @@ paths:
   /api/contracts:
     get:
       summary: List registered contracts
-      description: Returns a paginated list of registered contracts. Supports filtering by protocol type.
+      description: >-
+        Returns a cursor-paginated list. Pass next_cursor as after for the next
+        page. Numbered pages beyond page 1 are rejected. Private contracts are
+        visible only to their registering API-key owner.
       parameters:
+        - name: cursor
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Opaque signed keyset cursor
+        - name: after
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Opaque signed keyset cursor for forward pagination
+        - name: before
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Opaque signed keyset cursor for backward pagination
         - name: page
           in: query
+          description: Opaque cursor from the previous response
           schema:
             type: integer
             minimum: 1
             default: 1
+          description: Legacy page number (deprecated)
         - name: limit
           in: query
           schema:
@@ -708,9 +859,30 @@ paths:
           schema:
             type: string
             enum: [token, dex, lending, nft, bridge, other]
+        - name: q
+          in: query
+          description: Search term matching name or description
+          schema:
+            type: string
+        - name: count
+          in: query
+          description: Total count calculation strategy (exact COUNT or reltuples estimate)
+          schema:
+            type: string
+            enum: [exact, estimate]
+            default: estimate
       responses:
         "200":
           description: Paginated contract list
+          headers:
+            Deprecation:
+              schema:
+                type: string
+              description: Present if deprecated page/offset parameter is used
+            Link:
+              schema:
+                type: string
+              description: Deprecation documentation link
           content:
             application/json:
               schema:
@@ -749,6 +921,12 @@ paths:
                   ok:
                     type: boolean
                     example: true
+          links:
+            GetRegisteredContract:
+              operationRef: "#/paths/~1api~1contracts~1{id}/get"
+              description: Fetch the contract that was just registered (stateful API fuzzing, #907).
+              parameters:
+                id: "$request.body#/id"
         "400":
           description: >-
             Invalid input. Body-schema failures (AJV) return `{ errors: [...] }`
@@ -816,7 +994,9 @@ paths:
   /api/wallet/{address}:
     get:
       summary: Get events involving a wallet address
-      description: Returns a list of events associated with a specific Stellar/Soroban wallet address.
+      description: >-
+        Returns a cursor-paginated event history for a Stellar/Soroban wallet.
+        Pass next_cursor as after_seq to continue.
       parameters:
         - name: address
           in: path
@@ -836,6 +1016,28 @@ paths:
             (transfer/swap/mint/burn/stake match by prefix, e.g. "swap" also
             matches "swap_exact_tokens_for_tokens"; "other" matches any
             function outside those categories). Omit to return all events.
+        - name: after_seq
+          in: query
+          schema:
+            type: integer
+            minimum: 0
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 25
+        - name: from
+          in: query
+          schema:
+            type: string
+            format: date
+        - name: to
+          in: query
+          schema:
+            type: string
+            format: date
       responses:
         "200":
           description: Events matching the wallet address (empty array if none)
@@ -843,12 +1045,15 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [events, horizon_account]
+                required: [events, next_cursor, horizon_account]
                 properties:
                   events:
                     type: array
                     items:
                       $ref: "#/components/schemas/DecodedEvent"
+                  next_cursor:
+                    type: integer
+                    nullable: true
                   horizon_account:
                     $ref: "#/components/schemas/HorizonAccount"
         "400":
@@ -1204,7 +1409,7 @@ paths:
   /api/contracts/{id}/events:
     get:
       summary: List events for a specific contract
-      description: Returns paginated decoded events emitted by the given contract.
+      description: Returns decoded events using a stable sequence cursor. Page jumps are not supported.
       parameters:
         - name: id
           in: path
@@ -1212,31 +1417,80 @@ paths:
           schema:
             type: string
             example: "CC4VM2DTTR4QO4J4E5K2YUXM"
+        - name: cursor
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Opaque signed keyset cursor
+        - name: after
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Opaque signed keyset cursor for forward pagination
+        - name: before
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Opaque signed keyset cursor for backward pagination
         - name: page
           in: query
+          description: Sequence cursor returned as next_cursor on the previous page
           schema:
             type: integer
             default: 1
             minimum: 1
+          description: Legacy page number (deprecated)
         - name: limit
           in: query
           schema:
             type: integer
             default: 25
             maximum: 100
+        - name: count
+          in: query
+          description: Total count calculation strategy (exact COUNT or reltuples estimate)
+          schema:
+            type: string
+            enum: [exact, estimate]
+            default: estimate
       responses:
         "200":
           description: Paginated events for the contract
+          headers:
+            Deprecation:
+              schema:
+                type: string
+              description: Present if deprecated page/offset parameter is used
+            Link:
+              schema:
+                type: string
+              description: Deprecation documentation link
           content:
             application/json:
               schema:
                 type: object
-                required: [events, pagination]
+                required: [events]
                 properties:
                   events:
                     type: array
                     items:
                       $ref: "#/components/schemas/DecodedEvent"
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/DecodedEvent"
+                  page_info:
+                    $ref: "#/components/schemas/KeysetPageInfo"
+                  next_cursor:
+                    type: string
+                    nullable: true
+                  total:
+                    type: integer
+                  count_is_estimate:
+                    type: boolean
                   pagination:
                     type: object
                     properties:
@@ -1244,8 +1498,8 @@ paths:
                         type: integer
                       limit:
                         type: integer
-                      total:
-                        type: integer
+                      has_next:
+                        type: boolean
               examples:
                 success:
                   summary: First page of events
@@ -1714,7 +1968,7 @@ paths:
                 $ref: "#/components/schemas/ErrorResponse"
     post:
       summary: Add a multi-signature source verification for a contract
-      description: Submits a new WASM source verification record signed by a verifier.
+      description: Submits a new WASM source verification record. The API verifies a Stellar Ed25519 signature over `soroban-source-verification:v1:<wasm_hash>:<compiler_hash>` before storing it.
       security:
         - ApiKeyAuth: []
         - BearerAuth: []
@@ -1735,16 +1989,19 @@ paths:
               properties:
                 wasm_hash:
                   type: string
-                  example: "abc123def456"
+                  pattern: "^[a-f0-9]{64}$"
+                  example: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
                 signer:
                   type: string
                   example: "GABC..."
                 signature:
                   type: string
+                  description: Base64-encoded 64-byte Stellar Ed25519 signature.
                   example: "base64-signature"
                 compiler_hash:
                   type: string
-                  example: "sha256-of-compiler-binary"
+                  pattern: "^[a-f0-9]{64}$"
+                  example: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
       responses:
         "201":
           description: Verification record stored
@@ -1757,7 +2014,7 @@ paths:
                     type: boolean
                     example: true
         "400":
-          description: Missing required field
+          description: Missing required field or invalid signature
           content:
             application/json:
               schema:
@@ -2328,6 +2585,24 @@ paths:
       summary: List sandbox sessions
       description: Returns a paginated list of all sandbox sessions ordered by most recently updated.
       parameters:
+        - name: cursor
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Opaque signed keyset cursor
+        - name: after
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Opaque signed keyset cursor for forward pagination
+        - name: before
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Opaque signed keyset cursor for backward pagination
         - name: limit
           in: query
           schema:
@@ -2339,21 +2614,49 @@ paths:
           schema:
             type: integer
             default: 0
+          description: Legacy offset (deprecated)
+        - name: count
+          in: query
+          description: Total count calculation strategy (exact COUNT or reltuples estimate)
+          schema:
+            type: string
+            enum: [exact, estimate]
+            default: estimate
       responses:
         "200":
           description: Paginated sandbox list
+          headers:
+            Deprecation:
+              schema:
+                type: string
+              description: Present if deprecated offset/page parameter is used
+            Link:
+              schema:
+                type: string
+              description: Deprecation documentation link
           content:
             application/json:
               schema:
                 type: object
-                required: [sandboxes, total]
+                required: [sandboxes]
                 properties:
                   sandboxes:
                     type: array
                     items:
                       $ref: "#/components/schemas/SandboxSummary"
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/SandboxSummary"
+                  page_info:
+                    $ref: "#/components/schemas/KeysetPageInfo"
+                  next_cursor:
+                    type: string
+                    nullable: true
                   total:
                     type: integer
+                  count_is_estimate:
+                    type: boolean
         "500":
           description: Internal server error
           content:
@@ -3197,34 +3500,69 @@ paths:
           schema:
             type: string
             format: date-time
+        - name: cursor
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Opaque signed keyset cursor
+        - name: after
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Opaque signed keyset cursor for forward pagination
+        - name: before
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Opaque signed keyset cursor for backward pagination
         - name: limit
           in: query
           schema:
             type: integer
             default: 100
             maximum: 1000
-        - name: offset
+        - name: after
           in: query
+          description: Opaque timestamp/id cursor from the previous response
           schema:
             type: integer
             default: 0
+          description: Legacy offset (deprecated)
       responses:
         "200":
           description: Audit log entries
+          headers:
+            Deprecation:
+              schema:
+                type: string
+              description: Present if deprecated offset/page parameter is used
+            Link:
+              schema:
+                type: string
+              description: Deprecation documentation link
           content:
             application/json:
               schema:
                 type: object
-                required: [data, limit, offset]
+                required: [data, limit]
                 properties:
                   data:
                     type: array
                     items:
                       $ref: "#/components/schemas/AuditLogEntry"
+                  page_info:
+                    $ref: "#/components/schemas/KeysetPageInfo"
+                  next_cursor:
+                    type: string
+                    nullable: true
                   limit:
                     type: integer
-                  offset:
-                    type: integer
+                  next_cursor:
+                    type: string
+                    nullable: true
         "401":
           description: Missing or invalid admin token
           content:
@@ -3282,23 +3620,35 @@ paths:
             type: integer
             default: 1000
             maximum: 1000
-        - name: offset
+        - name: after
           in: query
+          description: Opaque timestamp/id cursor from the previous response
           schema:
-            type: integer
-            default: 0
+            type: string
       responses:
         "200":
-          description: File download (CSV or JSON)
+          description: File download (CSV or JSON); X-Next-Cursor is set when more rows remain
+          headers:
+            X-Next-Cursor:
+              description: Pass as after to continue the export
+              schema:
+                type: string
           content:
             text/csv:
               schema:
                 type: string
             application/json:
               schema:
-                type: array
-                items:
-                  $ref: "#/components/schemas/AuditLogEntry"
+                type: object
+                required: [data, next_cursor]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/AuditLogEntry"
+                  next_cursor:
+                    type: string
+                    nullable: true
         "401":
           description: Missing or invalid admin token
           content:
@@ -3727,6 +4077,12 @@ paths:
           schema:
             type: string
             enum: [soroban, classic]
+        - name: after_seq
+          in: query
+          description: Event sequence cursor from the previous export response header
+          schema:
+            type: integer
+            minimum: 0
         - name: limit
           in: query
           schema:
@@ -3735,7 +4091,12 @@ paths:
             maximum: 10000
       responses:
         "200":
-          description: File download (CSV or JSON)
+          description: File download (CSV or JSON); X-Next-Cursor is set when more rows remain
+          headers:
+            X-Next-Cursor:
+              description: Pass as after_seq to continue the export
+              schema:
+                type: string
           content:
             text/csv:
               schema:
@@ -3754,7 +4115,20 @@ paths:
 
   /api/export/contracts:
     get:
-      summary: Export all registered contracts as CSV or JSON
+      summary: Export registered contracts as CSV or JSON
+      parameters:
+        - name: after
+          in: query
+          description: Opaque cursor from the previous export response header
+          schema:
+            type: string
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 10000
+            default: 1000
       parameters:
         - name: format
           in: query
@@ -3764,7 +4138,12 @@ paths:
             default: csv
       responses:
         "200":
-          description: File download (CSV or JSON)
+          description: File download (CSV or JSON); X-Next-Cursor is set when more rows remain
+          headers:
+            X-Next-Cursor:
+              description: Pass as after to continue the export
+              schema:
+                type: string
           content:
             text/csv:
               schema:
@@ -3922,6 +4301,25 @@ components:
         Compatible with standard authenticator apps (30s step, 6 digits, SHA-1).
 
   schemas:
+    Transaction:
+      type: object
+      required: [hash, ledger, status, charged_fee]
+      properties:
+        hash: { type: string }
+        ledger: { type: integer, format: int64 }
+        source: { type: string, nullable: true }
+        fee_payer: { type: string, nullable: true }
+        inner_source: { type: string, nullable: true }
+        status: { type: string, enum: [success, failed, pending, unknown] }
+        result_code: { type: string, nullable: true }
+        operation_count: { type: integer }
+        inclusion_fee: { type: number }
+        resource_fee: { type: number }
+        refundable_fee_charged: { type: number }
+        refund_amount: { type: number }
+        rent_fee: { type: number }
+        charged_fee: { type: number }
+        failure_reason: { type: string, nullable: true }
     HealthStatus:
       type: object
       required: [status, timestamp, dependencies, alerts, dlq]
@@ -4867,19 +5265,55 @@ components:
             DEX swap slippage in basis points (1% = 100 bps), computed as
             |amount_out - min_amount_out| / min_amount_out. Present only for
             swap events where min_amount_out is known.
+        decode_status:
+          type: string
+          enum: [verified, unverified, heuristic]
+          description: Trust level assigned by ABI shape validation.
+        decode_warnings:
+          type: array
+          items:
+            type: string
+          description: Machine-readable reasons the ABI validation gate did not pass.
+
+    KeysetPageInfo:
+      type: object
+      required: [has_next, has_previous]
+      properties:
+        has_next:
+          type: boolean
+          description: True if there are more items in the forward direction
+        has_previous:
+          type: boolean
+          description: True if there are more items in the backward direction
+        start_cursor:
+          type: string
+          nullable: true
+          description: Opaque cursor for backward pagination before the first row
+        end_cursor:
+          type: string
+          nullable: true
+          description: Opaque cursor for forward pagination after the last row
 
     CursorPaginatedEvents:
       type: object
-      required: [data, next_cursor]
+      required: [data]
       properties:
         data:
           type: array
           items:
             $ref: "#/components/schemas/DecodedEvent"
+        page_info:
+          $ref: "#/components/schemas/KeysetPageInfo"
         next_cursor:
-          type: integer
+          type: string
           nullable: true
-          example: 42
+          description: Opaque signed cursor for the next page
+        total:
+          type: integer
+          description: Total event count
+        count_is_estimate:
+          type: boolean
+          description: True when total count is approximate (reltuples/planner)
 
     SearchResponse:
       type: object
@@ -5043,12 +5477,25 @@ components:
 
     ContractsListResponse:
       type: object
-      required: [contracts, pagination]
+      required: [contracts]
       properties:
         contracts:
           type: array
           items:
             $ref: "#/components/schemas/ContractMeta"
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/ContractMeta"
+        page_info:
+          $ref: "#/components/schemas/KeysetPageInfo"
+        next_cursor:
+          type: string
+          nullable: true
+        total:
+          type: integer
+        count_is_estimate:
+          type: boolean
         pagination:
           type: object
           properties:
@@ -5056,10 +5503,8 @@ components:
               type: integer
             limit:
               type: integer
-            total:
-              type: integer
-            total_pages:
-              type: integer
+            has_next:
+              type: boolean
 
     ContractRegistration:
       type: object
@@ -5082,6 +5527,10 @@ components:
           type: string
           enum: [token, dex, lending, nft, bridge, other]
           description: Optional explicit protocol type; auto-tagged from functions if omitted
+        is_private:
+          type: boolean
+          default: false
+          description: Restrict ABI metadata to the registering API-key owner
 
     FunctionSpec:
       type: object

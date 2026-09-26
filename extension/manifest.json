@@ -1,0 +1,12 @@
+{
+  "manifest_version": 3,
+  "name": "Soroban Explorer Quick Jump",
+  "version": "0.1.0",
+  "description": "Jump directly to a Stellar wallet or contract in the Soroban Explorer.",
+  "permissions": ["activeTab", "storage", "scripting"],
+  "host_permissions": ["<all_urls>"],
+  "action": {
+    "default_title": "Open in Soroban Explorer",
+    "default_popup": "popup.html"
+  }
+}

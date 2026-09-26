@@ -6,6 +6,7 @@
  */
 import { useQuery } from "@tanstack/react-query";
 import { api, type DailyEventCount } from "../api";
+import { useTranslation } from "../i18n";
 
 /** Selectable trailing-day presets for the event-volume trend (#799). */
 export type StatsRange = 30 | 90 | 365;
@@ -47,6 +48,7 @@ function bucketWeekly(data: DailyEventCount[]): Bar[] {
 }
 
 function Bars({ bars, ariaLabel }: { bars: Bar[]; ariaLabel: string }) {
+  const { t } = useTranslation();
   const max = Math.max(...bars.map((b) => b.count), 1);
   const barW = CHART_W / bars.length - BAR_GAP;
 
@@ -72,10 +74,10 @@ function Bars({ bars, ariaLabel }: { bars: Bar[]; ariaLabel: string }) {
             fill="var(--accent, #58a6ff)"
             rx={1}
             role="img"
-            aria-label={`${b.label}: ${b.count} event${b.count === 1 ? "" : "s"}`}
+            aria-label={t(b.count === 1 ? "chart.dataPointOne" : "chart.dataPointMany", { label: b.label, count: b.count })}
           >
             <title>
-              {b.label}: {b.count} event{b.count === 1 ? "" : "s"}
+              {t(b.count === 1 ? "chart.dataPointOne" : "chart.dataPointMany", { label: b.label, count: b.count })}
             </title>
           </rect>
         );
@@ -91,8 +93,9 @@ function RangeSelector({
   range: StatsRange;
   onRangeChange: (range: StatsRange) => void;
 }) {
+  const { t } = useTranslation();
   return (
-    <div role="group" aria-label="Event volume time range" style={{ display: "flex", gap: 6 }}>
+    <div role="group" aria-label={t("chart.rangeLabel")} style={{ display: "flex", gap: 6 }}>
       {STATS_RANGE_OPTIONS.map((opt) => {
         const active = opt.days === range;
         return (
@@ -128,13 +131,14 @@ export default function InvocationFrequencyChart({
   range?: StatsRange;
   onRangeChange?: (range: StatsRange) => void;
 }) {
+  const { t } = useTranslation();
   const { data, isLoading, isError } = useQuery({
     queryKey: ["contract-stats", contractId, range],
     queryFn: () => api.contractStats(contractId, range),
     enabled: !!contractId,
   });
 
-  if (isLoading) return <p style={{ color: "var(--muted)", fontSize: 13 }}>Loading activity…</p>;
+  if (isLoading) return <p style={{ color: "var(--muted)", fontSize: 13 }}>{t("chart.loadingStats")}</p>;
   if (isError || !data) return null;
 
   const days = data.events_per_day;
@@ -164,7 +168,7 @@ export default function InvocationFrequencyChart({
             margin: 0,
           }}
         >
-          Event Volume Trend (Last {range} Days)
+          {t("chart.trendTitle", { range })}
         </h3>
         {onRangeChange && <RangeSelector range={range} onRangeChange={onRangeChange} />}
       </div>
@@ -172,7 +176,7 @@ export default function InvocationFrequencyChart({
         <>
           <Bars
             bars={bars}
-            ariaLabel={`Invocation frequency for the last ${range} days`}
+            ariaLabel={t("chart.frequencyLabel", { range })}
           />
           <div
             style={{
@@ -186,9 +190,19 @@ export default function InvocationFrequencyChart({
             <span>{bars[0].label}</span>
             <span>{bars[bars.length - 1].label}</span>
           </div>
+          <details style={{ marginTop: 8, fontSize: 12 }}>
+            <summary style={{ cursor: "pointer", color: "var(--accent)" }}>{t("chart.dataAlternative")}</summary>
+            <ul style={{ margin: "6px 0 0 20px", color: "var(--muted)" }}>
+              {bars.map((bar, index) => (
+                <li key={`${bar.label}-${index}`}>
+                  {t(bar.count === 1 ? "chart.dataPointOne" : "chart.dataPointMany", { label: bar.label, count: bar.count })}
+                </li>
+              ))}
+            </ul>
+          </details>
         </>
       ) : (
-        <p style={{ color: "var(--muted)", fontSize: 13, margin: 0 }}>No activity in the last {range} days</p>
+        <p style={{ color: "var(--muted)", fontSize: 13, margin: 0 }}>{t("chart.noActivity", { range })}</p>
       )}
     </div>
   );

@@ -64,4 +64,40 @@ describe("Concurrent event upserts (#587)", () => {
       await pool.query("DELETE FROM events WHERE contract_id = $1", [contractId]);
     }
   });
+
+  it("deduplicates retries by RPC event identity without merging events in one transaction", async () => {
+    const contractId = `TEST_RPC_ID_${Date.now()}`;
+    const ledger = 123457;
+    const txHash = `tx_rpc_${Date.now()}`;
+    const buildEvent = (eventId) => ({
+      contract_id: contractId,
+      function: "transfer",
+      ledger,
+      tx_hash: txHash,
+      description: "RPC event identity test",
+      raw_topics: ["transfer"],
+      raw_data: "{}",
+      ingestion_id: `testnet:${ledger}:${eventId}`,
+    });
+
+    try {
+      await Promise.all(
+        Array.from({ length: 10 }, () =>
+          db.upsertEventValidated(buildEvent("event-1"), silentLogger),
+        ),
+      );
+      await db.upsertEventValidated(buildEvent("event-2"), silentLogger);
+
+      const { rows } = await pool.query(
+        "SELECT ingestion_id FROM events WHERE contract_id = $1 AND ledger = $2 AND tx_hash = $3 ORDER BY ingestion_id",
+        [contractId, ledger, txHash],
+      );
+      assert.deepEqual(rows.map((row) => row.ingestion_id), [
+        `testnet:${ledger}:event-1`,
+        `testnet:${ledger}:event-2`,
+      ]);
+    } finally {
+      await pool.query("DELETE FROM events WHERE contract_id = $1", [contractId]);
+    }
+  });
 });

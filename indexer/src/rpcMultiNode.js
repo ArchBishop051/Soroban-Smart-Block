@@ -13,6 +13,8 @@ import { logger } from "./logger.js";
 
 import { rpc as SorobanRpc } from "@stellar/stellar-sdk";
 import config from "./config.js";
+import { verifyRpcRange } from "./rpcVerifier.js";
+import * as alertManager from "./alertManager.js";
 
 const RPC_URLS = config.SOROBAN_RPC_URLS.length > 0 
   ? config.SOROBAN_RPC_URLS 
@@ -33,6 +35,7 @@ const nodes = RPC_URLS.map((url) => ({
   // Sliding-window call outcomes/latencies backing getProviderStats() below.
   _outcomes: [],
   _latencies: [],
+  disagreements: 0,
 }));
 
 /** Record the outcome of a single call for uptime/latency/error-rate stats. */
@@ -111,6 +114,12 @@ async function callWithFailover(method, ...args) {
   throw new Error("[rpc-multi] all RPC nodes failed");
 }
 
+async function getEventsVerified(request) {
+  const mode = config.RPC_VERIFICATION_MODE ?? "off";
+  const result = await verifyRpcRange({ mode, samplePercent: config.RPC_VERIFICATION_SAMPLE_PERCENT, quorum: config.RPC_VERIFICATION_QUORUM, request, providers: nodes.filter((node) => node.healthy).map((node) => async (req) => node.server.getEvents(req)), onDisagreement: async (detail) => { nodes.forEach((node) => { node.disagreements += 1; }); await alertManager.fireAlert("RPC_PROVIDER_DISAGREEMENT", `RPC providers disagreed for a ledger range: ${JSON.stringify(detail)}`); } });
+  return result.events;
+}
+
 // Periodically re-check unhealthy nodes so they can recover. Only started by
 // the indexer daemon (src/index.js) — importing this module for its exports
 // (e.g. in tests) must not have the side effect of scheduling network calls.
@@ -141,16 +150,18 @@ export const multiNodeRpc = new Proxy(
   {},
   {
     get(_, method) {
+      if (method === "getEvents" && config.RPC_VERIFICATION_MODE !== "off") return (request) => getEventsVerified(request);
       return (...args) => callWithFailover(method, ...args);
     },
   },
 );
 
 export function getRpcNodeStatus() {
-  return nodes.map(({ url, healthy, latestLedger }) => ({
+  return nodes.map(({ url, healthy, latestLedger, disagreements }) => ({
     url,
     healthy,
     latestLedger,
+    disagreements,
   }));
 }
 
@@ -185,6 +196,7 @@ export function getProviderStats() {
       errorRate,
       latestLedger: node.latestLedger,
       healthScore,
+      disagreements: node.disagreements,
     };
   });
 }

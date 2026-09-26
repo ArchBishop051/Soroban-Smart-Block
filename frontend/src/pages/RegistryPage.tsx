@@ -6,7 +6,7 @@
  * - Filter dropdown: All / Verified / DEX / Lending / NFT (?type=)
  * - Skeleton loader while fetching
  * - Empty state with link to register form
- * - Pagination (page-based, Load more style kept for compat)
+ * - Cursor pagination that remains stable as contracts are added
  */
 import { useEffect, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
@@ -83,6 +83,7 @@ export default function RegistryPage() {
   const [inputValue, setInputValue] = useState(() => searchParams.get("q") ?? "");
   const [filterType, setFilterType] = useState(() => searchParams.get("type") ?? "all");
   const [page, setPage] = useState(1);
+  const [cursors, setCursors] = useState<string[]>([]);
 
   // Committed query — updated after debounce
   const [query, setQuery] = useState(() => searchParams.get("q") ?? "");
@@ -96,6 +97,7 @@ export default function RegistryPage() {
     debounceTimer.current = setTimeout(() => {
       setQuery(inputValue);
       setPage(1);
+      setCursors([]);
     }, 300);
     return () => {
       if (debounceTimer.current) clearTimeout(debounceTimer.current);
@@ -111,14 +113,15 @@ export default function RegistryPage() {
   }, [query, filterType, setSearchParams]);
 
   const { data, isLoading, isError, error } = useQuery<ContractsListResponse>({
-    queryKey: ["contracts", "search", query, filterType, page, limit],
+    queryKey: ["contracts", "search", query, filterType, cursors[page - 1] ?? "", limit],
     queryFn: () =>
-      api.listContractsSearch({ q: query || undefined, type: filterType, page, limit }),
+      api.listContractsSearch({ q: query || undefined, type: filterType, after: cursors[page - 1], limit }),
     placeholderData: keepPreviousData,
   });
 
   const contracts = data?.contracts ?? [];
   const pagination = data?.pagination;
+  const nextCursor = data?.next_cursor ?? null;
 
   // Virtualize the row list so large pages (or a future higher page size)
   // stay smooth on scroll (#751).
@@ -161,6 +164,7 @@ export default function RegistryPage() {
   function handleFilterChange(e: React.ChangeEvent<HTMLSelectElement>) {
     setFilterType(e.target.value);
     setPage(1);
+    setCursors([]);
   }
 
   return (
@@ -328,17 +332,21 @@ export default function RegistryPage() {
       </div>
 
       {/* Pagination */}
-      {pagination && pagination.total_pages > 1 && (
+      {pagination && (page > 1 || pagination.has_next) && (
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
           <button disabled={page <= 1} onClick={() => setPage((p) => p - 1)}>
             ← Prev
           </button>
           <span style={{ color: "var(--muted)" }}>
-            Page {page} of {pagination.total_pages} ({pagination.total} total)
+            Page {page}
           </span>
           <button
-            disabled={page >= pagination.total_pages}
-            onClick={() => setPage((p) => p + 1)}
+            disabled={!nextCursor}
+            onClick={() => {
+              if (!nextCursor) return;
+              setCursors((current) => [...current.slice(0, page), nextCursor]);
+              setPage((p) => p + 1);
+            }}
           >
             Next →
           </button>

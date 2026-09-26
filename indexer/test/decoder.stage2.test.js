@@ -132,6 +132,20 @@ describe("decoder stage2 — transfer description", () => {
   });
 });
 
+describe("decoder stage2 — nested payload description", () => {
+  it("renders nested maps, vectors, and bigint values without object coercion", () => {
+    const route = new Map([
+      ["hops", [{ pool: { asset_in: "USDC", asset_out: "XLM", amount: 125n } }]],
+    ]);
+    const desc = buildDescription("execute_route", [route], null, "Router");
+
+    assert.match(desc, /hops: \[/);
+    assert.match(desc, /asset_in: USDC/);
+    assert.match(desc, /amount: 125/);
+    assert.doesNotMatch(desc, /\[object Object\]/);
+  });
+});
+
 describe("decoder stage2 — mint description", () => {
   const desc = buildDescription(
     MINT_EVENT.fn,

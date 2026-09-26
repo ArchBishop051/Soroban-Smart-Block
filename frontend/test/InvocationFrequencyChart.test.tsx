@@ -88,6 +88,8 @@ describe("InvocationFrequencyChart", () => {
     const svg = await screen.findByRole("img", { name: /invocation frequency/i });
     const bars = svg.querySelectorAll("rect");
     expect(bars).toHaveLength(30);
+    expect(bars[0].getAttribute("aria-label")).toMatch(/: 0 events$/);
+    expect(screen.getByText("Chart data")).toBeDefined();
 
     // Every bar must carry a date + count aria-label (acceptance criterion).
     bars.forEach((bar) => {
