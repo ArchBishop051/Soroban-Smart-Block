@@ -3,9 +3,11 @@ import "./tracing.js";
 import { pathToFileURL } from "node:url";
 import { rpc as SorobanRpc } from "@stellar/stellar-sdk";
 import { initSentry } from "./sentry.js";
+import { startProfiling } from "./profiling.js";
 import config from "./config.js";
 
 initSentry();
+startProfiling();
 import { startApi } from "./api.js";
 import { db, pool } from "./db.js";
 import { decode, getDecodeStats } from "./decoder.js";
@@ -90,9 +92,7 @@ async function indexWasmUploads(txHashes, ledger) {
       // SDK v12 returns envelopeXdr as a parsed xdr.TransactionEnvelope; older
       // paths may hand us a base64 string — support both.
       const envelope =
-        typeof tx.envelopeXdr === "string"
-          ? xdr.TransactionEnvelope.fromXDR(tx.envelopeXdr, "base64")
-          : tx.envelopeXdr;
+        typeof tx.envelopeXdr === "string" ? xdr.TransactionEnvelope.fromXDR(tx.envelopeXdr, "base64") : tx.envelopeXdr;
       // Select the correct union arm — calling the wrong accessor throws "Bad union switch"
       const envType = envelope.switch().name;
       const innerTx =
@@ -157,8 +157,7 @@ export async function loadTransactionContext(
     }
 
     try {
-      const status =
-        txResult?.status === "SUCCESS" ? "success" : txResult?.status === "FAILED" ? "failed" : "pending";
+      const status = txResult?.status === "SUCCESS" ? "success" : txResult?.status === "FAILED" ? "failed" : "pending";
       publishStatus({
         tx_hash: txHash,
         status,
@@ -215,9 +214,7 @@ export async function processSingleEvent(rawSorobanEvent, context = undefined) {
   // Bust wallet event caches (#534) — any new event may reference a wallet address.
   cacheInvalidate("wallet:events:*").catch(() => {});
   // Notify matching webhook subscriptions (non-blocking; failures retry via the DLQ).
-  deliverWebhooksForEvent(decoded).catch((err) =>
-    logger.error("[webhookDelivery] dispatch failed:", err.message),
-  );
+  deliverWebhooksForEvent(decoded).catch((err) => logger.error("[webhookDelivery] dispatch failed:", err.message));
 
   // Persist per-key state diffs for the timeline.
   const diffs = extractStateDiffs(rawSorobanEvent, decoded);
@@ -229,9 +226,7 @@ export async function processSingleEvent(rawSorobanEvent, context = undefined) {
     await db
       .insertArchivalEvictions(evictions)
       .catch((err) => logger.error("[archivalEviction] insert failed:", err.message));
-    logger.info(
-      `[${rawSorobanEvent.ledger}] EVICTED ${evictions.length} key(s) in tx ${rawSorobanEvent.txHash}`,
-    );
+    logger.info(`[${rawSorobanEvent.ledger}] EVICTED ${evictions.length} key(s) in tx ${rawSorobanEvent.txHash}`);
   }
 
   publish(decoded); // push to WS clients
@@ -355,11 +350,11 @@ async function run() {
   startReDecodeWorker(); // low-priority ABI refresh for superseded events
 
   // ── Auth & Rate Limiting cron jobs ─────────────────────────────────────────
-  startUsageFlushCron();       // flush Redis usage counters → DB every minute
+  startUsageFlushCron(); // flush Redis usage counters → DB every minute
   startRetentionCleanupCron(); // nightly usage data retention cleanup
-  startAuditPartitionCron();   // monthly audit log partition management
-  startAuditFlush();           // drain queued audit log entries every 500ms
-  startUptimeRecorder();       // sample /health every 5 minutes for the status page
+  startAuditPartitionCron(); // monthly audit log partition management
+  startAuditFlush(); // drain queued audit log entries every 500ms
+  startUptimeRecorder(); // sample /health every 5 minutes for the status page
 
   // Bootstrap vault indexer: initial ratio snapshot for all registered vaults
   refreshAllVaults().catch(() => {});
@@ -394,7 +389,9 @@ async function run() {
       // ── drain gap queue first ──────────────────────────────────────
       while (_gapQueue.length > 0 && !shutdown) {
         const gap = _gapQueue[0];
-        logger.info(`[gap] re-indexing ledgers ${gap.from} → ${gap.to} (attempt ${gap.retries + 1}/${MAX_GAP_RETRIES})`);
+        logger.info(
+          `[gap] re-indexing ledgers ${gap.from} → ${gap.to} (attempt ${gap.retries + 1}/${MAX_GAP_RETRIES})`,
+        );
         let gapOk = true;
         for (let ledger = gap.from; ledger <= gap.to; ledger++) {
           if (shutdown) break;
@@ -438,7 +435,7 @@ async function run() {
       const latestLedgerHash = latest.latestLedgerHash;
       alertManager.recordPoll();
       gapRecordLedger(polledFrom);
-      const lagSeconds = Math.floor((Date.now() - (polledFrom * 5000)) / 1000); // approximate lag
+      const lagSeconds = Math.floor((Date.now() - polledFrom * 5000) / 1000); // approximate lag
       const ledgerLag = Math.max(0, latestLedger - polledFrom);
       updateIndexerStatus(polledFrom, lagSeconds, ledgerLag);
       indexerLagLedgers.set(ledgerLag);
