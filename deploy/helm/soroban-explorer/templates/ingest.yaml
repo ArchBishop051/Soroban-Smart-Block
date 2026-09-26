@@ -1,0 +1,56 @@
+{{- if .Values.ingest.enabled }}
+{{- $name := printf "%s-ingest" (include "se.name" .) }}
+# Ingest cannot be split by traffic: a single leader-elected writer runs the
+# stable image, and a shadow canary runs the new image read-only.
+apiVersion: argoproj.io/v1alpha1
+kind: Rollout
+metadata:
+  name: {{ $name }}
+  labels: {{- include "se.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: {{ $name }}}
+  strategy:
+    {{- if and .Values.canary.enabled .Values.ingest.shadowCanary }}
+    blueGreen:
+      activeService: {{ $name }}
+      previewService: {{ $name }}-shadow
+      autoPromotionEnabled: true   # promote only after ingest-slo passes
+      # The preview (shadow) ReplicaSet gets INGEST_DRY_RUN=true: it decodes and
+      # compares against the stable writer but never writes to Postgres.
+      previewMetadata:
+        labels: {shadow: "true"}
+      prePromotionAnalysis:
+        templates: [{templateName: ingest-slo}]
+        args: [{name: shadow-selector, value: 'app="{{ $name }}",shadow="true"'}]
+    {{- else }}
+    blueGreen:
+      activeService: {{ $name }}
+    {{- end }}
+  template:
+    metadata:
+      labels: {app: {{ $name }}, role: ingest}
+    spec:
+      containers:
+        - name: ingest
+          image: "{{ .Values.image.registry }}/indexer:{{ .Values.image.tag }}"
+          env:
+            {{- include "se.dbEnv" . | nindent 12 }}
+            - name: INDEXER_ROLE
+              value: ingest
+            - name: INGEST_DRY_RUN
+              valueFrom:
+                fieldRef: {fieldPath: "metadata.labels['shadow']"}
+          ports: [{containerPort: 3001, name: http}]
+---
+{{- range $svc := list $name (printf "%s-shadow" $name) }}
+apiVersion: v1
+kind: Service
+metadata: {name: {{ $svc }}}
+spec:
+  selector: {app: {{ $name }}}
+  ports: [{port: 80, targetPort: http, name: http}]
+---
+{{- end }}
+{{- end }}

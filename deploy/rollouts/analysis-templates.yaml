@@ -1,0 +1,103 @@
+# Argo Rollouts AnalysisTemplates used at every canary step (see
+# deploy/helm/soroban-explorer/templates/_helpers.tpl). Each metric compares
+# the canary against the stable baseline and requires a minimum sample size so
+# low-traffic periods cannot pass a step on too little data.
+apiVersion: argoproj.io/v1alpha1
+kind: AnalysisTemplate
+metadata:
+  name: http-slo
+spec:
+  args:
+    - name: service
+    - name: canary-service
+    - name: prometheus
+      value: http://prometheus.monitoring:9090
+    - name: min-samples
+      value: "200"
+  metrics:
+    - name: sample-size
+      interval: 1m
+      # Below the minimum the result is inconclusive, which pauses the rollout
+      # instead of passing (or failing) the step on too little data.
+      successCondition: result[0] >= {{args.min-samples}}
+      failureCondition: "false"
+      provider:
+        prometheus:
+          address: "{{args.prometheus}}"
+          query: sum(increase(http_requests_total{service="{{args.canary-service}}"}[5m]))
+    - name: error-rate
+      interval: 1m
+      failureLimit: 1
+      # A canary returning 5% 500s fails this on the first (5%) step.
+      successCondition: result[0] <= 0.01
+      provider:
+        prometheus:
+          address: "{{args.prometheus}}"
+          query: sum(rate(http_requests_total{service="{{args.canary-service}}",status=~"5.."}[2m])) / clamp_min(sum(rate(http_requests_total{service="{{args.canary-service}}"}[2m])), 1)
+    - name: p99-latency
+      interval: 1m
+      failureLimit: 2
+      successCondition: result[0] <= 1.5
+      provider:
+        prometheus:
+          address: "{{args.prometheus}}"
+          query: histogram_quantile(0.99, sum by (le) (rate(http_request_duration_seconds_bucket{service="{{args.canary-service}}"}[5m])))
+    - name: new-issue-rate
+      interval: 2m
+      failureLimit: 1
+      successCondition: result[0] <= 0
+      provider:
+        prometheus:
+          address: "{{args.prometheus}}"
+          query: sum(increase(error_tracking_new_issues_total{service="{{args.canary-service}}"}[5m])) or vector(0)
+---
+apiVersion: argoproj.io/v1alpha1
+kind: AnalysisTemplate
+metadata:
+  name: ingest-slo
+spec:
+  args:
+    - name: shadow-selector
+    - name: prometheus
+      value: http://prometheus.monitoring:9090
+  metrics:
+    - name: ingest-lag
+      interval: 1m
+      count: 15
+      failureLimit: 2
+      successCondition: result[0] <= 30
+      provider:
+        prometheus:
+          address: "{{args.prometheus}}"
+          query: max(indexer_ledger_lag{ {{args.shadow-selector}} })
+    - name: decode-failure-rate
+      interval: 1m
+      count: 15
+      failureLimit: 1
+      successCondition: result[0] <= 0.02
+      provider:
+        prometheus:
+          address: "{{args.prometheus}}"
+          query: sum(rate(indexer_decode_failures_total{ {{args.shadow-selector}} }[5m])) / clamp_min(sum(rate(indexer_events_decoded_total{ {{args.shadow-selector}} }[5m])), 1)
+    - name: shadow-mismatch
+      interval: 1m
+      count: 15
+      failureLimit: 1
+      successCondition: result[0] == 0
+      provider:
+        prometheus:
+          address: "{{args.prometheus}}"
+          query: sum(increase(indexer_shadow_mismatch_total{ {{args.shadow-selector}} }[5m])) or vector(0)
+---
+# Posts failing metrics to Slack when a rollout aborts.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: argo-rollouts-notification-configmap
+data:
+  trigger.on-rollout-aborted: |
+    - send: [rollout-aborted]
+  template.rollout-aborted: |
+    message: |
+      :rotating_light: Canary for {{.rollout.metadata.name}} aborted and rolled back.
+      Reason (failing metrics): {{.rollout.status.message}}

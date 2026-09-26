@@ -38,6 +38,22 @@ function withTraceHeaders(init: RequestInit = {}): RequestInit {
   return { ...init, headers };
 }
 
+export interface LineageStep {
+  action: string;
+  lineage?: "legacy";
+  lineage_id?: number;
+  run_type?: string;
+  code_version?: string;
+  decoder_versions?: Record<string, string>;
+  created_at?: string;
+}
+
+export interface EventLineage {
+  event_seq: number;
+  lineage: "legacy" | "tracked";
+  chain: LineageStep[];
+}
+
 export interface SpecType {
   kind: "struct" | "enum" | "union" | "error_enum";
   name: string;
@@ -170,6 +186,23 @@ export interface DecodedEvent {
   decode_status?: "verified" | "unverified" | "heuristic";
   decode_warnings?: string[];
 }
+
+// Event filter DSL types
+export type EventFilterOperator = "and" | "or" | "not";
+export type EventConditionOperator = "eq" | "ne" | "gt" | "lt" | "gte" | "lte" | "contains" | "starts_with" | "ends_with" | "in";
+
+export interface EventCondition {
+  field: string;
+  operator: EventConditionOperator;
+  value: any;
+}
+
+export interface EventFilterGroup {
+  operator: EventFilterOperator;
+  conditions: (EventFilter | EventCondition)[];
+}
+
+export type EventFilter = EventCondition | EventFilterGroup;
 
 export interface SourceFile {
   path: string;
@@ -501,6 +534,29 @@ export interface TxStatusResponse {
   error?: string | null;
 }
 
+export interface TransactionDetails extends TxStatusResponse {
+  latest_ledger?: number;
+  oldest_ledger?: number;
+  created_at?: number;
+  application_order?: number;
+  fee_bump?: boolean;
+  fee_source?: string | null;
+  envelope_xdr?: string | null;
+  result_xdr?: string | null;
+  result_meta_xdr?: string | null;
+  diagnostic_events_xdr?: string[];
+  events: DecodedEvent[];
+  invocations: SubInvocation[];
+}
+
+export interface AnalyticsSqlResult {
+  rows: Record<string, unknown>[];
+  row_count: number;
+  truncated: boolean;
+  duration_ms: number;
+  plan_cost: number;
+}
+
 // Live TTL status for contract instance and code entries
 export interface ContractTTL {
   contract_id: string;
@@ -774,6 +830,7 @@ export const api = {
     params.set("limit", String(limit));
     return get<SearchResponse>(`/search?${params}`);
   },
+  lineage: (seq: number) => get<EventLineage>(`/events/${seq}/lineage`),
   zkCosts: (seq: number) => get<{ calls: ZkHostCall[]; delta: ZkCostDelta | null }>(`/events/${seq}/zk-costs`),
   /** Powers the home page's compact stats bar — polled every 10s. */
   health: () => get<HealthResponse>("/health"),
@@ -871,6 +928,29 @@ export const api = {
 
   // transaction status (polling fallback; SSE via useTxStatus hook)
   txStatus: (txHash: string) => get<TxStatusResponse>(`/transactions/${txHash}/status`),
+  transaction: (txHash: string) => get<TransactionDetails>(`/transactions/${txHash}`),
+  runAnalyticsQuery: (query: string) =>
+    mutationFetch(`${BASE}/sql`, {
+      method: "POST",
+      body: JSON.stringify({ query, format: "json" }),
+    }).then(async (response) => {
+      if (!response.ok) {
+        const body = await response.json().catch(() => ({}));
+        throw new Error(body.error ?? `API ${response.status}`);
+      }
+      return response.json() as Promise<AnalyticsSqlResult>;
+    }),
+  exportAnalyticsCsv: async (query: string) => {
+    const response = await mutationFetch(`${BASE}/sql`, {
+      method: "POST",
+      body: JSON.stringify({ query, format: "csv" }),
+    });
+    if (!response.ok) {
+      const body = await response.json().catch(() => ({}));
+      throw new Error(body.error ?? `API ${response.status}`);
+    }
+    return response.blob();
+  },
 
   // Circuit breaker status
   circuitBreakerStatus: (id: string) => get<CircuitBreakerStatus>(`/contracts/${id}/circuit-breaker`),

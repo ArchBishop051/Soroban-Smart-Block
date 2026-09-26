@@ -274,6 +274,90 @@ jobs:
           path: e2e/test-results/
           retention-days: 30
 
+  # ── Workload Scenarios (#946) ─────────────────────────────────────────────
+  workload-scenarios:
+    name: Local-Network Workload Scenarios
+    runs-on: ubuntu-latest
+    needs: setup
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: soroban
+          POSTGRES_PASSWORD: soroban_secret
+          POSTGRES_DB: soroban_explorer
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - uses: stellar/stellar-cli@v23.1.4
+
+      - name: Start stellar/quickstart (local)
+        run: |
+          docker run -d --name quickstart -p 8000:8000 stellar/quickstart:testing --local --enable-soroban-rpc
+          for i in $(seq 1 60); do
+            curl -sf -X POST -H 'Content-Type: application/json' \
+              -d '{"jsonrpc":"2.0","id":1,"method":"getHealth"}' http://localhost:8000/soroban/rpc | grep -q healthy && exit 0
+            sleep 5
+          done
+          docker logs quickstart; exit 1
+
+      - name: Build fleet contracts
+        run: |
+          cargo build --target wasm32-unknown-unknown --release -p soroban-explorer-contract
+          (cd contracts/ticket && cargo build --target wasm32-unknown-unknown --release)
+
+      - name: Install dependencies
+        run: |
+          cd indexer && npm ci
+          cd ../e2e && npm ci
+
+      - name: Start indexer against local network
+        run: |
+          npm start > indexer.log 2>&1 &
+          sleep 10
+          curl -f http://localhost:3001/health
+        working-directory: indexer
+        env:
+          DATABASE_URL: postgres://soroban:soroban_secret@localhost:5432/soroban_explorer
+          SOROBAN_RPC_URL: http://localhost:8000/soroban/rpc
+          START_LEDGER: 1
+          NODE_ENV: test
+
+      - name: Run workload and assert against manifest
+        run: make e2e-scenarios
+        timeout-minutes: 15
+        working-directory: e2e
+        env:
+          INDEXER_URL: http://localhost:3001
+          WORKLOAD_SEED: 42
+
+      - name: Upload manifest and logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: workload-scenarios
+          path: |
+            e2e/workloads/manifest.json
+            indexer/indexer.log
+          retention-days: 30
+
   # ── Synthetic Monitoring ───────────────────────────────────────────────────
   synthetic:
     name: Synthetic Event Monitoring (Production)

@@ -46,6 +46,10 @@ export default function SearchPage() {
     e.preventDefault();
     const value = q.trim();
     if (!value) return;
+    if (/^[a-fA-F0-9]{64}$/.test(value)) {
+      navigate(`/tx/${value}`);
+      return;
+    }
 
     const next = new URLSearchParams();
     next.set("q", value);

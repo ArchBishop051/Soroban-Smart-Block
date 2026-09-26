@@ -1,0 +1,38 @@
+{{- $name := printf "%s-frontend" (include "se.name" .) }}
+apiVersion: argoproj.io/v1alpha1
+kind: Rollout
+metadata:
+  name: {{ $name }}
+  labels: {{- include "se.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.frontend.replicas }}
+  revisionHistoryLimit: 5
+  selector:
+    matchLabels: {app: {{ $name }}}
+  strategy: {{- include "se.strategy" (dict "name" $name "root" .) | nindent 4 }}
+  template:
+    metadata:
+      labels: {app: {{ $name }}, role: frontend}
+    spec:
+      containers:
+        - name: frontend
+          image: "{{ .Values.image.registry }}/frontend:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports: [{containerPort: {{ .Values.frontend.port }}, name: http}]
+          readinessProbe:
+            httpGet: {path: /, port: http}
+          livenessProbe:
+            httpGet: {path: /, port: http}
+            initialDelaySeconds: 20
+---
+{{- range $svc := list $name (printf "%s-canary" $name) }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $svc }}
+  labels: {{- include "se.labels" $ | nindent 4 }}
+spec:
+  selector: {app: {{ $name }}}
+  ports: [{port: 80, targetPort: http, name: http}]
+---
+{{- end }}

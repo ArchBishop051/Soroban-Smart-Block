@@ -19,7 +19,7 @@ on:
       - "v*"
 
 concurrency:
-  group: deploy-${{ github.ref }}
+  group: ${{ (startsWith(github.ref, 'refs/heads/release/') || github.event.inputs.environment == 'staging') && 'staging-deploy-lock' || format('deploy-{0}', github.ref) }}
   cancel-in-progress: false
 
 env:
@@ -52,6 +52,22 @@ jobs:
           fi
           echo "environment=$ENV" >> "$GITHUB_OUTPUT"
           echo "image_tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      # Error-budget policy (#943): block feature deploys when the budget is
+      # exhausted. Reliability fixes bypass with "[reliability]" in the commit.
+      - name: Error budget freeze check
+        env:
+          PROMETHEUS_URL: ${{ secrets.PROMETHEUS_URL }}
+          COMMIT_MSG: ${{ github.event.head_commit.message }}
+        run: |
+          if [[ -z "$PROMETHEUS_URL" ]]; then echo "PROMETHEUS_URL not set; skipping"; exit 0; fi
+          if [[ "$COMMIT_MSG" == *"[reliability]"* ]]; then echo "Reliability fix; bypassing freeze"; exit 0; fi
+          REMAINING=$(curl -fsS "$PROMETHEUS_URL/api/v1/query" --data-urlencode 'query=min(slo:api_error_budget:remaining)' | jq -r '.data.result[0].value[1] // "1"')
+          echo "Error budget remaining: $REMAINING"
+          if awk "BEGIN{exit !($REMAINING <= 0)}"; then
+            echo "::error::Error budget exhausted — feature deploys are frozen (docs/guides/slo-policy.md)"
+            exit 1
+          fi
 
   # ── 1. Build & Push Docker Images ────────────────────────────────────────────
   build-images:
@@ -206,7 +222,7 @@ jobs:
           sleep 10
           curl -sf "${{ vars.APP_URL }}/api/health"
 
-  # ── 3b. Deploy to staging (blue-green) ───────────────────────────────────────
+  # ── 3b. Deploy to staging (canary) ───────────────────────────────────────
   deploy-staging:
     name: Deploy — staging
     runs-on: ubuntu-latest
@@ -221,15 +237,37 @@ jobs:
       - name: Health check (baseline blue)
         run: curl -sf "${{ vars.APP_URL }}/api/health"
 
-      - name: Deploy green environment
+      - uses: azure/setup-helm@v4
+
+      - name: Install Argo Rollouts kubectl plugin
         run: |
-          echo "Starting blue-green deploy for staging"
-          echo "IMAGE_TAG=${{ needs.resolve-env.outputs.image_tag }}"
-          # In a real deployment:
-          # 1. Start green containers alongside blue
-          # 2. Run health checks on green
-          # 3. Swap load balancer to green
-          # 4. Remove blue containers
+          curl -sLo kubectl-argo-rollouts https://github.com/argoproj/argo-rollouts/releases/download/v1.7.2/kubectl-argo-rollouts-linux-amd64
+          sudo install kubectl-argo-rollouts /usr/local/bin/
+
+      - name: Configure kubeconfig
+        run: echo "${{ secrets.KUBECONFIG }}" | base64 -d > "$RUNNER_TEMP/kubeconfig"
+
+      # Progressive delivery: 5% -> 25% -> 50% -> 100% with SLO analysis at
+      # each step (deploy/rollouts/analysis-templates.yaml). A failed analysis
+      # aborts the rollout and Argo reverts traffic to the stable ReplicaSet.
+      - name: Canary rollout
+        env:
+          KUBECONFIG: ${{ runner.temp }}/kubeconfig
+          NS: soroban-explorer-${{ needs.resolve-env.outputs.environment }}
+        run: |
+          kubectl apply -n "$NS" -f deploy/rollouts/
+          helm upgrade --install explorer deploy/helm/soroban-explorer -n "$NS" \
+            --set image.tag=${{ needs.resolve-env.outputs.image_tag }} \
+            --set ingress.host=${{ vars.APP_HOST }}
+          for r in explorer-api explorer-frontend explorer-ingest; do
+            kubectl argo rollouts status "$r" -n "$NS" --timeout 60m
+          done
+
+      - name: Report failing analysis
+        if: failure()
+        env:
+          KUBECONFIG: ${{ runner.temp }}/kubeconfig
+        run: kubectl get analysisrun -n soroban-explorer-${{ needs.resolve-env.outputs.environment }} -o wide | tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: Post-deploy health check (green)
         run: |
@@ -252,32 +290,38 @@ jobs:
       - name: Health check (baseline)
         run: curl -sf "${{ vars.APP_URL }}/api/health"
 
-      - name: Canary deploy — 10% traffic
-        run: |
-          echo "Shifting 10% traffic to new deployment..."
-          echo "IMAGE_TAG=${{ needs.resolve-env.outputs.image_tag }}"
-          # In a real deployment: configure load balancer weights
+      - uses: azure/setup-helm@v4
 
-      - name: Monitor canary (5 min)
+      - name: Install Argo Rollouts kubectl plugin
         run: |
-          echo "Monitoring canary at 10% for 5 minutes..."
-          for i in $(seq 1 10); do
-            curl -sf "${{ vars.APP_URL }}/api/health"
-            sleep 30
+          curl -sLo kubectl-argo-rollouts https://github.com/argoproj/argo-rollouts/releases/download/v1.7.2/kubectl-argo-rollouts-linux-amd64
+          sudo install kubectl-argo-rollouts /usr/local/bin/
+
+      - name: Configure kubeconfig
+        run: echo "${{ secrets.KUBECONFIG }}" | base64 -d > "$RUNNER_TEMP/kubeconfig"
+
+      # Progressive delivery: 5% -> 25% -> 50% -> 100% with SLO analysis at
+      # each step (deploy/rollouts/analysis-templates.yaml). A failed analysis
+      # aborts the rollout and Argo reverts traffic to the stable ReplicaSet.
+      - name: Canary rollout
+        env:
+          KUBECONFIG: ${{ runner.temp }}/kubeconfig
+          NS: soroban-explorer-${{ needs.resolve-env.outputs.environment }}
+        run: |
+          kubectl apply -n "$NS" -f deploy/rollouts/
+          helm upgrade --install explorer deploy/helm/soroban-explorer -n "$NS" \
+            --set image.tag=${{ needs.resolve-env.outputs.image_tag }} \
+            --set ingress.host=${{ vars.APP_HOST }}
+          for r in explorer-api explorer-frontend explorer-ingest; do
+            kubectl argo rollouts status "$r" -n "$NS" --timeout 60m
           done
 
-      - name: Canary deploy — 50% traffic
-        run: echo "Shifting to 50% traffic..."
+      - name: Report failing analysis
+        if: failure()
+        env:
+          KUBECONFIG: ${{ runner.temp }}/kubeconfig
+        run: kubectl get analysisrun -n soroban-explorer-${{ needs.resolve-env.outputs.environment }} -o wide | tee -a "$GITHUB_STEP_SUMMARY"
 
-      - name: Monitor at 50% (5 min)
-        run: |
-          for i in $(seq 1 10); do
-            curl -sf "${{ vars.APP_URL }}/api/health"
-            sleep 30
-          done
-
-      - name: Full rollout — 100% traffic
-        run: echo "Full rollout complete."
 
   # ── 4. Post-deployment Smoke Tests ───────────────────────────────────────────
   smoke-tests:

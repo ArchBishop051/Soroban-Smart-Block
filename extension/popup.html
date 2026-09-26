@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Soroban Explorer Quick Jump</title>
+    <style>
+      body { font-family: sans-serif; width: 320px; padding: 12px; box-sizing: border-box; }
+      input, button { width: 100%; box-sizing: border-box; margin-top: 8px; }
+      button { cursor: pointer; }
+      .meta { font-size: 11px; color: #666; margin-top: 8px; }
+    </style>
+  </head>
+  <body>
+    <label for="value">Stellar address / contract ID</label>
+    <input id="value" type="text" placeholder="G..., M..., or C..." />
+    <button id="jump">Open Explorer</button>
+    <div class="meta" id="status"></div>
+    <script src="popup.js"></script>
+  </body>
+</html>

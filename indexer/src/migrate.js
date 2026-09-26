@@ -26,6 +26,52 @@ const MIGRATIONS_DIR = path.resolve(
   "../migrations",
 );
 
+// Known grandfathered duplicate prefixes that cannot be renamed without
+// re-running against existing databases.
+const LEGACY_PREFIX_COUNTS = {
+  "021": 2,
+  "028": 4,
+  "029": 2,
+  "030": 2,
+  "031": 2,
+};
+
+/**
+ * Validates that no new migrations share a numeric prefix.
+ */
+export async function validateMigrationPrefixes() {
+  const files = await readdir(MIGRATIONS_DIR);
+  const prefixMap = new Map();
+
+  for (const file of files) {
+    const match = file.match(/^(\d+)/);
+    if (!match) continue;
+    if (!/\.(sql|js)$/.test(file)) continue;
+
+    const prefix = match[1];
+    if (!prefixMap.has(prefix)) {
+      prefixMap.set(prefix, []);
+    }
+    prefixMap.get(prefix).push(file);
+  }
+
+  const duplicates = [];
+  for (const [prefix, fileList] of prefixMap.entries()) {
+    const allowed = LEGACY_PREFIX_COUNTS[prefix] ?? 1;
+    if (fileList.length > allowed) {
+      duplicates.push(
+        `prefix ${prefix} has ${fileList.length} files (max allowed: ${allowed}): ${fileList.join(", ")}`,
+      );
+    }
+  }
+
+  if (duplicates.length > 0) {
+    throw new Error(
+      `Duplicate migration prefix detected:\n  ${duplicates.join("\n  ")}`,
+    );
+  }
+}
+
 // `CREATE INDEX CONCURRENTLY` cannot run inside a transaction block (and
 // Postgres rejects it if it isn't the sole statement in its query message —
 // the simple query protocol treats multiple ;-separated statements as one
@@ -121,6 +167,8 @@ export async function executePhase(pool, phase, file) {
  * @param {import('pg').Pool} pool
  */
 export async function runMigrations(pool) {
+  await validateMigrationPrefixes();
+
   // Ensure the tracking table exists (bootstraps itself on first run)
   await pool.query(`
     CREATE TABLE IF NOT EXISTS schema_migrations (

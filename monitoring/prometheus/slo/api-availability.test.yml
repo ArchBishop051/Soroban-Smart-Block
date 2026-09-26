@@ -1,0 +1,49 @@
+# Run: promtool test rules monitoring/prometheus/slo/api-availability.test.yml
+rule_files:
+  - api-availability.yml
+
+evaluation_interval: 1m
+
+tests:
+  # Fast burn: 5% errors at 10 req/s.
+  - interval: 1m
+    input_series:
+      - series: 'api_request_duration_seconds_count{status="200"}'
+        values: '0+570x120'
+      - series: 'api_request_duration_seconds_count{status="500"}'
+        values: '0+30x120'
+    alert_rule_test:
+      - eval_time: 60m
+        alertname: ApiAvailabilityFastBurn
+        exp_alerts:
+          - exp_labels: { severity: page, slo: api-availability }
+            exp_annotations: { summary: "API availability error budget burning fast (14.4x)" }
+
+  # Slow burn: 1% errors sustained for 6h -> ticket but no page.
+  - interval: 1m
+    input_series:
+      - series: 'api_request_duration_seconds_count{status="200"}'
+        values: '0+594x400'
+      - series: 'api_request_duration_seconds_count{status="500"}'
+        values: '0+6x400'
+    alert_rule_test:
+      - eval_time: 6h
+        alertname: ApiAvailabilitySlowBurn
+        exp_alerts:
+          - exp_labels: { severity: ticket, slo: api-availability }
+            exp_annotations: { summary: "API availability error budget burning steadily (6x)" }
+      - eval_time: 6h
+        alertname: ApiAvailabilityFastBurn
+        exp_alerts: []
+
+  # Low traffic: 1 failure out of 3 requests must not alert.
+  - interval: 1m
+    input_series:
+      - series: 'api_request_duration_seconds_count{status="200"}'
+        values: '0 1 2 2'
+      - series: 'api_request_duration_seconds_count{status="500"}'
+        values: '0 0 0 1'
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: ApiAvailabilityFastBurn
+        exp_alerts: []
