@@ -5,9 +5,11 @@ import "./tracing.js";
 import { pathToFileURL } from "node:url";
 import { rpc as SorobanRpc } from "@stellar/stellar-sdk";
 import { initSentry } from "./sentry.js";
+import { startProfiling } from "./profiling.js";
 import config from "./config.js";
 
 initSentry();
+startProfiling();
 import { startApi } from "./api.js";
 import { db, pool } from "./db.js";
 import { decode, getDecodeStats } from "./decoder.js";
@@ -102,9 +104,7 @@ async function indexWasmUploads(txHashes, ledger) {
       // SDK v12 returns envelopeXdr as a parsed xdr.TransactionEnvelope; older
       // paths may hand us a base64 string — support both.
       const envelope =
-        typeof tx.envelopeXdr === "string"
-          ? xdr.TransactionEnvelope.fromXDR(tx.envelopeXdr, "base64")
-          : tx.envelopeXdr;
+        typeof tx.envelopeXdr === "string" ? xdr.TransactionEnvelope.fromXDR(tx.envelopeXdr, "base64") : tx.envelopeXdr;
       // Select the correct union arm — calling the wrong accessor throws "Bad union switch"
       const envType = envelope.switch().name;
       const innerTx =
@@ -170,8 +170,7 @@ export async function loadTransactionContext(
     }
 
     try {
-      const status =
-        txResult?.status === "SUCCESS" ? "success" : txResult?.status === "FAILED" ? "failed" : "pending";
+      const status = txResult?.status === "SUCCESS" ? "success" : txResult?.status === "FAILED" ? "failed" : "pending";
       publishStatus({
         tx_hash: txHash,
         status,
@@ -276,9 +275,7 @@ export async function processSingleEvent(rawSorobanEvent, context = undefined) {
     await db
       .insertArchivalEvictions(evictions)
       .catch((err) => logger.error("[archivalEviction] insert failed:", err.message));
-    logger.info(
-      `[${rawSorobanEvent.ledger}] EVICTED ${evictions.length} key(s) in tx ${rawSorobanEvent.txHash}`,
-    );
+    logger.info(`[${rawSorobanEvent.ledger}] EVICTED ${evictions.length} key(s) in tx ${rawSorobanEvent.txHash}`);
   }
 
   handleVaultEvent(decoded); // vault ratio update (async, non-blocking)
@@ -529,11 +526,11 @@ async function run() {
   startOutboxRelay(); // post-commit WS/SSE/webhook fan-out
 
   // ── Auth & Rate Limiting cron jobs ─────────────────────────────────────────
-  startUsageFlushCron();       // flush Redis usage counters → DB every minute
+  startUsageFlushCron(); // flush Redis usage counters → DB every minute
   startRetentionCleanupCron(); // nightly usage data retention cleanup
-  startAuditPartitionCron();   // monthly audit log partition management
-  startAuditFlush();           // drain queued audit log entries every 500ms
-  startUptimeRecorder();       // sample /health every 5 minutes for the status page
+  startAuditPartitionCron(); // monthly audit log partition management
+  startAuditFlush(); // drain queued audit log entries every 500ms
+  startUptimeRecorder(); // sample /health every 5 minutes for the status page
 
   // Bootstrap vault indexer: initial ratio snapshot for all registered vaults
   refreshAllVaults().catch(() => {});
@@ -576,7 +573,9 @@ async function run() {
       while (_gapQueue.length > 0 && !shutdown) {
         assertLeadership();
         const gap = _gapQueue[0];
-        logger.info(`[gap] re-indexing ledgers ${gap.from} → ${gap.to} (attempt ${gap.retries + 1}/${MAX_GAP_RETRIES})`);
+        logger.info(
+          `[gap] re-indexing ledgers ${gap.from} → ${gap.to} (attempt ${gap.retries + 1}/${MAX_GAP_RETRIES})`,
+        );
         let gapOk = true;
         for (let ledger = gap.from; ledger <= gap.to; ledger++) {
           if (shutdown) break;
@@ -624,7 +623,7 @@ async function run() {
       const latestLedgerHash = latest.latestLedgerHash;
       alertManager.recordPoll();
       gapRecordLedger(polledFrom);
-      const lagSeconds = Math.floor((Date.now() - (polledFrom * 5000)) / 1000); // approximate lag
+      const lagSeconds = Math.floor((Date.now() - polledFrom * 5000) / 1000); // approximate lag
       const ledgerLag = Math.max(0, latestLedger - polledFrom);
       updateIndexerStatus(polledFrom, lagSeconds, ledgerLag);
       indexerLagLedgers.set(ledgerLag);
