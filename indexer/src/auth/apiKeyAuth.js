@@ -22,6 +22,7 @@ import { LRUCache } from "lru-cache";
 import { LEGACY_SCOPES } from "./scopes.js";
 import { pool } from "../db.js";
 import { ipMatchesCidr, ipInCidrList, getClientIp } from "../admin/ipUtils.js";
+import { requestContext } from "../logger.js";
 
 // ── In-memory LRU cache ───────────────────────────────────────────────────────
 // Caches resolved key records keyed by the raw API key string.
@@ -231,6 +232,9 @@ async function apiKeyAuthenticator(req, res, next) {
     }
 
     // 3. Validate the cached record.
+
+    const context = requestContext.getStore();
+    if (context) context.apiKeyId = keyRecord.id;
 
     // Revoked check with rotation grace allowance.
     // Accept the key if it is not revoked OR the rotation_grace_until is

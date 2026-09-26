@@ -1,24 +1,20 @@
 import { logger } from "./logger.js";
-/**
- * GraphQL Interface for Contract Events
- *
- * Mounts a /graphql endpoint on the Express app using a minimal hand-rolled
- * resolver so no heavy framework dependency is required.  The schema supports
- * flexible field selection and filtering by contractId, function name, ledger
- * range, and pagination — all backed by the existing `db.getEvents` layer.
- *
- * Security features:
- * - Query depth limiting to prevent excessive nesting
- * - Query complexity calculation and limiting
- * - Introspection blocking in production (unless authenticated)
- *
- * POST /graphql   { query: "{ events(contract: \"C…\") { seq ledger function } }" }
- */
-
+import {
+  buildSchema,
+  execute as executeGraphQL,
+  getOperationAST,
+  parse,
+  specifiedRules,
+  validate,
+  GraphQLError,
+  Kind,
+} from "graphql";
 import { db } from "./db.js";
 import config from "./config.js";
 
-// ── Schema definition (SDL) ───────────────────────────────────────────────────
+const MAX_PAGE_SIZE = 100;
+const MAX_QUERY_LENGTH = 10_000;
+const MAX_QUERY_COMPLEXITY = 2_000;
 
 export const typeDefs = `
   type Event {
@@ -250,30 +246,19 @@ function isIntrospectionAllowed(req) {
   return isAuthenticated(req);
 }
 
-/**
- * Parse a GraphQL query and extract structure for security analysis.
- * Supports nested field sets and calculates depth for security validation.
- */
-function parseQuery(query) {
-  // Strip comments
-  const src = query.replace(/#[^\n]*/g, "").trim();
-
-  // Find the operation: { operationName(...) { ... } }
-  const mainMatch = src.match(/^\s*\{\s*(\w+)\s*(?:\(([^)]*)\))?\s*\{(.*)$/s);
-  if (!mainMatch) throw new Error("Cannot parse GraphQL query");
-
-  const [, opName, rawArgs = "", rawFields] = mainMatch;
-
-  // Parse args: key: "value" or key: 123
-  const args = {};
-  for (const m of rawArgs.matchAll(/(\w+)\s*:\s*(?:"([^"]*)"|([\d]+))/g)) {
-    args[m[1]] = m[3] !== undefined ? Number(m[3]) : m[2];
+  type Query {
+    events(contract: String, fn: String, type: String, after: Int, after_seq: Int, first: Int, limit: Int): EventPage!
+    event(seq: Int!): Event
+    contracts(type: String, after: String, first: Int, limit: Int): ContractPage!
+    wallet(address: String!, after: Int, after_seq: Int, first: Int, limit: Int): EventPage!
+    subInvocations(contract: String, txHash: String, after: Int, first: Int, limit: Int): SubInvocationPage!
   }
+`;
 
-  // Parse fields and calculate structure for security analysis
-  const { topFields, dataFields, maxDepth } = parseFieldsWithDepth(rawFields);
+const schema = buildSchema(typeDefs);
 
-  return { opName, args, topFields, dataFields, maxDepth };
+export function isListField(fieldName) {
+  return new Set(["events", "contracts", "wallet", "subInvocations", "data", "nodes", "edges", "items", "results", "records", "entries", "list", "feed", "page", "collection"]).has(fieldName);
 }
 
 /**
@@ -344,37 +329,43 @@ function extractSimpleFields(content) {
   return fields.slice(0, 10); // Limit to prevent abuse
 }
 
-/**
- * Apply Event-level field resolvers to a raw DB row so alias fields
- * (function_name, ledger_sequence) are present before projection.
- */
 function resolveEventFields(row) {
   if (!row) return row;
   return {
     ...row,
-    function_name: resolvers.Event.function_name(row),
-    ledger_sequence: resolvers.Event.ledger_sequence(row),
+    function_name: row.function ?? null,
+    ledger_sequence: row.ledger ?? null,
   };
 }
 
-/**
- * Project an object to only the requested fields.
- */
-function project(obj, fields) {
-  if (!obj || !fields) return obj;
-  const out = {};
-  for (const f of fields) out[f] = obj[f] ?? null;
-  return out;
+function maxSelectionDepth(selectionSet, fragments, depth = 0, visited = new Set()) {
+  if (!selectionSet) return depth;
+  let maxDepth = depth;
+  for (const selection of selectionSet.selections) {
+    if (selection.kind === Kind.FIELD) {
+      maxDepth = Math.max(maxDepth, depth + 1);
+      maxDepth = Math.max(maxDepth, maxSelectionDepth(selection.selectionSet, fragments, depth + 1, visited));
+    } else if (selection.kind === Kind.INLINE_FRAGMENT) {
+      maxDepth = Math.max(maxDepth, maxSelectionDepth(selection.selectionSet, fragments, depth, visited));
+    } else if (selection.kind === Kind.FRAGMENT_SPREAD && !visited.has(selection.name.value)) {
+      const fragment = fragments.get(selection.name.value);
+      if (fragment) {
+        visited.add(selection.name.value);
+        maxDepth = Math.max(maxDepth, maxSelectionDepth(fragment.selectionSet, fragments, depth, visited));
+        visited.delete(selection.name.value);
+      }
+    }
+  }
+  return maxDepth;
 }
 
-/**
- * Execute a parsed query against the resolvers.
- */
-async function execute(parsed) {
-  const resolver = resolvers.Query[parsed.opName];
-  if (!resolver) throw new Error(`Unknown query: ${parsed.opName}`);
-
-  const result = await resolver(null, parsed.args);
+function argumentValue(field, name, variables, defaultValue) {
+  const argument = field.arguments?.find((entry) => entry.name.value === name);
+  if (!argument) return defaultValue;
+  if (argument.value.kind === Kind.VARIABLE) return variables?.[argument.value.name.value] ?? defaultValue;
+  if (argument.value.kind === Kind.INT) return Number(argument.value.value);
+  return defaultValue;
+}
 
   // Shape result to match requested fields
   if (parsed.opName === "events") {
@@ -398,38 +389,21 @@ async function execute(parsed) {
         return parsed.dataFields ? project(resolved, parsed.dataFields) : resolved;
       });
     }
-    return out;
   }
-
-  // Single event
-  const resolved = resolveEventFields(result);
-  if (parsed.dataFields) return project(resolved, parsed.dataFields);
-  if (parsed.topFields) return project(resolved, parsed.topFields);
-  return resolved;
+  return cost;
 }
 
-// ── Introspection ─────────────────────────────────────────────────────────────
-
-/**
- * Build a minimal introspection response covering the Event type and Query
- * type so that clients can verify the schema without a full graphql-js runtime.
- */
-function buildIntrospectionResponse() {
-  const eventFields = [
-    { name: "seq", type: { name: "Int", kind: "SCALAR" } },
-    { name: "contract_id", type: { name: "String", kind: "SCALAR" } },
-    { name: "function", type: { name: "String", kind: "SCALAR" } },
-    { name: "function_name", type: { name: "String", kind: "SCALAR" } },
-    { name: "ledger", type: { name: "Int", kind: "SCALAR" } },
-    { name: "ledger_sequence", type: { name: "Int", kind: "SCALAR" } },
-    { name: "tx_hash", type: { name: "String", kind: "SCALAR" } },
-    { name: "description", type: { name: "String", kind: "SCALAR" } },
-    { name: "cpu_instructions", type: { name: "Int", kind: "SCALAR" } },
-    { name: "mem_bytes", type: { name: "Int", kind: "SCALAR" } },
-    { name: "fee_charged", type: { name: "Int", kind: "SCALAR" } },
-    { name: "is_high_bloat_risk", type: { name: "Boolean", kind: "SCALAR" } },
-    { name: "is_clawback", type: { name: "Boolean", kind: "SCALAR" } },
-  ];
+export function calculateDepth(parsed, operationName) {
+  if (typeof parsed?.maxDepth === "number") return parsed.maxDepth;
+  if (parsed?.kind === Kind.DOCUMENT) {
+    const fragments = new Map(parsed.definitions.filter((d) => d.kind === Kind.FRAGMENT_DEFINITION).map((d) => [d.name.value, d]));
+    const operations = parsed.definitions.filter((d) => d.kind === Kind.OPERATION_DEFINITION);
+    const operation = operations.find((d) => d.name?.value === operationName) ?? operations[0];
+    return maxSelectionDepth(operation?.selectionSet, fragments);
+  }
+  if (Array.isArray(parsed?.topFields)) return parsed.dataFields?.length ? 3 : 2;
+  return 1;
+}
 
   return {
     __schema: {
@@ -474,24 +448,24 @@ function buildIntrospectionResponse() {
   };
 }
 
-/**
- * Returns true when the query body is a GraphQL introspection request.
- */
-function isIntrospectionQuery(query) {
-  return typeof query === "string" && query.includes("__schema");
+export function validateQuerySecurity(document, variables = {}, operationName) {
+  const depth = calculateDepth(document, operationName);
+  const maxDepth = Number(config.MAX_GRAPHQL_DEPTH) || 5;
+  if (depth > maxDepth) return { message: `Query depth ${depth} exceeds maximum ${maxDepth}` };
+  const complexity = calculateComplexity(document, variables, operationName);
+  const maxComplexity = Math.min(Number(config.MAX_GRAPHQL_COMPLEXITY) || MAX_QUERY_COMPLEXITY, MAX_QUERY_COMPLEXITY);
+  if (complexity > maxComplexity) return { message: `Query complexity ${complexity} exceeds maximum ${maxComplexity}` };
+  return null;
 }
 
-// ── Express middleware ────────────────────────────────────────────────────────
+export function isAuthenticated(req) {
+  const apiKey = req.headers["x-api-key"] || req.query.apiKey;
+  return Boolean(apiKey && apiKey === config.API_KEY);
+}
 
-/**
- * Attach the /graphql endpoint to an Express app.
- * @param {import('express').Application} app
- */
-export function attachGraphQL(app) {
-  // POST /graphql — standard GraphQL over HTTP
-  app.post("/graphql", async (req, res) => {
-    const { query, variables } = req.body;
-    if (!query) return res.status(400).json({ errors: [{ message: "Missing query" }] });
+export function isIntrospectionAllowed(req) {
+  return process.env.NODE_ENV !== "production" || isAuthenticated(req);
+}
 
     // Handle introspection queries with security check
     if (isIntrospectionQuery(query)) {
@@ -519,7 +493,34 @@ export function attachGraphQL(app) {
     } catch (err) {
       res.status(400).json({ errors: [{ message: err.message }] });
     }
-  });
+    const securityError = validateQuerySecurity(document, variables, operationName);
+    if (securityError) return res.status(400).json({ errors: [securityError] });
+
+    const validationErrors = validate(schema, document, specifiedRules);
+    if (validationErrors.length) return res.status(400).json({ errors: validationErrors });
+
+    const result = await executeGraphQL({
+      schema,
+      document,
+      rootValue: createRootValue(),
+      variableValues: variables,
+      operationName,
+      fieldResolver(source, args, context, info) {
+        if (info.parentType.name === "Event" && info.fieldName === "function_name") return source.function ?? null;
+        if (info.parentType.name === "Event" && info.fieldName === "ledger_sequence") return source.ledger ?? null;
+        if (info.parentType.name === "SubInvocation" && info.fieldName === "args") {
+          return source.args == null ? null : JSON.stringify(source.args);
+        }
+        const value = source?.[info.fieldName];
+        return typeof value === "function" ? value(args, context, info) : value;
+      },
+    });
+    if (result.errors?.length) return res.status(400).json({ errors: result.errors });
+    return res.json({ data: result.data });
+  } catch (error) {
+    return res.status(400).json({ errors: [{ message: error.message }] });
+  }
+}
 
   // GET /graphql?query=… — convenience for browser testing
   app.get("/graphql", async (req, res) => {
@@ -553,6 +554,7 @@ export function attachGraphQL(app) {
     } catch (err) {
       res.status(400).json({ errors: [{ message: err.message }] });
     }
+    return handleGraphQL(req, res, String(req.query.query), variables, req.query.operationName);
   });
 
   logger.info("[graphql] Endpoint mounted at /graphql with security limits:");

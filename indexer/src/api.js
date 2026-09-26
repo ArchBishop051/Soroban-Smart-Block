@@ -43,7 +43,7 @@ export function handleCursorError(e, res) {
 import { analyzeSourceDependencies } from "./dependencyScanner.js";
 import { fetchTokenMetadata } from "./sep41Metadata.js";
 import { fetchWalletBalances, fetchAccountMeta, AccountNotFoundError } from "./horizonBalances.js";
-import { attachWebSocketServer, getTransactionStatus, onTransactionStatus, offTransactionStatus } from "./wsEvents.js";
+import { attachWebSocketServer, attachEventStreamRoutes, getTransactionStatus, onTransactionStatus, offTransactionStatus } from "./wsEvents.js";
 import { verifyAbi } from "./verify_abi.js";
 import { getMetrics } from "./rpcMetrics.js";
 import { getRpcNodeStatus, getProviderStats } from "./rpcMultiNode.js";
@@ -133,6 +133,7 @@ const _postContractSchema = {
     },
     name: { type: "string", minLength: 1, maxLength: 100 },
     description: { type: ["string", "null"], maxLength: 500 },
+    is_private: { type: "boolean" },
     registered_by: { type: ["string", "null"] },
     protocol_type: {
       type: ["string", "null"],
@@ -231,6 +232,7 @@ const PORT = process.env.PORT || 3001;
 const RPC_URL = process.env.SOROBAN_RPC_URL || "https://soroban-testnet.stellar.org";
 
 function requireApiKey(req, res, next) {
+  if (req.rateContext?.keyId) return next();
   const apiKey = process.env.API_KEY;
   if (!apiKey) return next();
   const key = req.headers["x-api-key"];
@@ -836,7 +838,7 @@ export function createApi({ logDestination, dbOverride } = {}) {
     "/api/search",
     makeCache("search", (req) => {
       const { q = "", limit = "10" } = req.query;
-      return `search:${String(q).toLowerCase()}:${limit}`;
+      return `search:${req.rateContext?.keyId || "public"}:${String(q).toLowerCase()}:${limit}`;
     }),
     async (req, res) => {
       try {
@@ -1164,7 +1166,7 @@ export function createApi({ logDestination, dbOverride } = {}) {
   // GET /api/contracts/:id
   app.get(
     "/api/contracts/:id",
-    makeCache("contracts_single", (req) => `contracts:single:${req.params.id}`),
+    makeCache("contracts_single", (req) => `contracts:single:${req.rateContext?.keyId || "public"}:${req.params.id}`),
     async (req, res) => {
       try {
         const meta = await db.getContractMeta(req.params.id);
@@ -1260,6 +1262,10 @@ export function createApi({ logDestination, dbOverride } = {}) {
       }
 
       const { id, functions } = req.body;
+      const keyId = req.rateContext?.keyId ?? null;
+      if (req.body.is_private && !keyId) {
+        return res.status(400).json({ error: "Private contracts require a per-key API credential" });
+      }
 
       const existing = await db.getContractMeta(id);
       if (existing) {
@@ -1284,13 +1290,15 @@ export function createApi({ logDestination, dbOverride } = {}) {
         });
       }
 
-      await db.upsertContractMeta(req.body);
+      await db.upsertContractMeta({
+        ...req.body,
+        registered_by_key_id: keyId,
+      });
       // ── Issue #523: store the registrant's API key ID for ownership checks
-      const keyId = req.rateContext?.keyId ?? null;
       if (keyId) {
         await db.query("UPDATE contracts SET registered_by_key_id = $1 WHERE id = $2", [keyId, id]).catch(() => {});
       }
-      await cacheInvalidate(`contracts:single:${id}`);
+      await cacheInvalidate(`contracts:single:*:${id}`);
       res.status(201).json({ ok: true });
     } catch (e) {
       res.status(500).json({ error: e.message });
@@ -1341,7 +1349,7 @@ export function createApi({ logDestination, dbOverride } = {}) {
       }
 
       await db.upsertContractMeta(updateBody);
-      await cacheInvalidate(`contracts:single:${contractId}`);
+      await cacheInvalidate(`contracts:single:*:${contractId}`);
       res.json({ ok: true });
     } catch (e) {
       res.status(500).json({ error: e.message });
@@ -1544,7 +1552,7 @@ export function createApi({ logDestination, dbOverride } = {}) {
   // cacheInvalidate("wallet:events:*") on new events.
   app.get(
     "/api/wallet/:address",
-    makeCache("wallet", (req) => `wallet:events:${req.params.address}`),
+    makeCache("wallet", (req) => `wallet:events:${req.params.address}:${req.query.after_seq || 0}:${req.query.limit || 25}:${req.query.fn || ""}:${req.query.from || ""}:${req.query.to || ""}`),
     async (req, res) => {
       try {
         const address = req.params.address;
@@ -2513,7 +2521,14 @@ export function createApi({ logDestination, dbOverride } = {}) {
   app.get("/api/export/events", async (req, res) => {
     try {
       const format = req.query.format === "json" ? "json" : "csv";
-      const limit = Math.min(Number(req.query.limit) || 10000, 10000);
+      const limit = Number(req.query.limit) || 10000;
+      if (!Number.isInteger(limit) || limit < 1 || limit > 10000) {
+        return res.status(422).json({ error: "Invalid limit" });
+      }
+      const after_seq = Number(req.query.after_seq) || 0;
+      if (!Number.isSafeInteger(after_seq) || after_seq < 0) {
+        return res.status(422).json({ error: "Invalid after_seq" });
+      }
       const wallet = req.query.wallet || undefined;
       const schedule = String(req.query.schedule || req.query.frequency || "").toLowerCase();
       const email = req.query.email ? String(req.query.email).trim() : undefined;
@@ -2522,6 +2537,7 @@ export function createApi({ logDestination, dbOverride } = {}) {
         fn: req.query.fn,
         type: req.query.type,
         wallet,
+        after_seq,
         limit,
       });
 
@@ -2552,12 +2568,12 @@ export function createApi({ logDestination, dbOverride } = {}) {
         const filename = wallet ? `wallet-${wallet}-events.json` : "events.json";
         res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
         res.setHeader("Content-Type", "application/json");
-        return res.json(rows);
+        return res.json(data);
       }
       const filename = wallet ? `wallet-${wallet}-events.csv` : "events.csv";
       res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
       res.setHeader("Content-Type", "text/csv");
-      return res.send(rowsToCsv(rows, EVENT_COLUMNS));
+      return res.send(rowsToCsv(data, EVENT_COLUMNS));
     } catch (e) {
       res.status(500).json({ error: e.message });
     }
@@ -2645,16 +2661,27 @@ export function createApi({ logDestination, dbOverride } = {}) {
   app.get("/api/export/contracts", async (req, res) => {
     try {
       const format = req.query.format === "json" ? "json" : "csv";
-      const rows = await db.getContractsForExport();
+      const limit = Number(req.query.limit) || 1000;
+      if (!Number.isInteger(limit) || limit < 1 || limit > 10000) {
+        return res.status(422).json({ error: "Invalid limit" });
+      }
+      const rows = await db.getContractsForExport({ after: req.query.after || undefined, limit });
+      const hasMore = rows.length > limit;
+      const data = hasMore ? rows.slice(0, limit) : rows;
+      if (hasMore) {
+        const last = data.at(-1);
+        res.setHeader("X-Next-Cursor", Buffer.from(JSON.stringify({ created_at: last.created_at, id: last.id })).toString("base64url"));
+      }
       if (format === "json") {
         res.setHeader("Content-Disposition", 'attachment; filename="contracts.json"');
         res.setHeader("Content-Type", "application/json");
-        return res.json(rows);
+        return res.json(data);
       }
       res.setHeader("Content-Disposition", 'attachment; filename="contracts.csv"');
       res.setHeader("Content-Type", "text/csv");
-      return res.send(rowsToCsv(rows, CONTRACT_COLUMNS));
+      return res.send(rowsToCsv(data, CONTRACT_COLUMNS));
     } catch (e) {
+      if (e.message === "Invalid contracts cursor") return res.status(422).json({ error: e.message });
       res.status(500).json({ error: e.message });
     }
   });
@@ -2811,6 +2838,7 @@ export function createApi({ logDestination, dbOverride } = {}) {
   });
 
   // ── GraphQL endpoint ───────────────────────────────────────────
+  attachEventStreamRoutes(app);
   if (!runningUnderTest) attachGraphQL(app);
 
   // ── Batch Multi-Call Endpoints ───────────────────────────────────────

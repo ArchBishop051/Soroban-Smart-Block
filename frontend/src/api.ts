@@ -256,11 +256,11 @@ export interface AbiHistoryResponse {
 
 export interface ContractsListResponse {
   contracts: ContractListItem[];
+  next_cursor: string | null;
   pagination: {
     page: number;
     limit: number;
-    total: number;
-    total_pages: number;
+    has_next: boolean;
   };
 }
 
@@ -1091,11 +1091,11 @@ export const api = {
   },
 
   // Issue #514: search + filter contracts list
-  listContractsSearch: (params: { q?: string; type?: string; page?: number; limit?: number }) => {
+  listContractsSearch: (params: { q?: string; type?: string; after?: string; limit?: number }) => {
     const q = new URLSearchParams();
     if (params.q) q.set("q", params.q);
     if (params.type && params.type !== "all") q.set("type", params.type);
-    q.set("page", String(params.page ?? 1));
+    if (params.after) q.set("after", params.after);
     q.set("limit", String(params.limit ?? 25));
     return get<ContractsListResponse>(`/contracts?${q}`);
   },

@@ -29,8 +29,31 @@ let lastWriteLsn = null;
 // promise-based call signature (pool.query(text, params)), which is the
 // only style used in this codebase.
 const _rawQuery = pool.query.bind(pool);
+const RLS_TABLES = /\b(?:contracts|contract_versions|contract_abi_versions|api_key_usage|api_key_usage_daily|api_audit_log)\b/i;
 pool.query = (text, params) =>
-  withSpan("db.query", () => _rawQuery(text, params), {
+  withSpan("db.query", async () => {
+    const context = requestContext.getStore();
+    if (typeof text !== "string" || !RLS_TABLES.test(text) || (!context?.apiKeyId && !context?.rlsBypass)) {
+      return _rawQuery(text, params);
+    }
+
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query("SELECT set_config('app.api_key_id', $1, true), set_config('app.rls_bypass', $2, true)", [
+        context.apiKeyId || "",
+        context.rlsBypass ? "true" : "false",
+      ]);
+      const result = await client.query(text, params);
+      await client.query("COMMIT");
+      return result;
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }, {
     "db.system": "postgresql",
     "db.statement": typeof text === "string" ? text.slice(0, 200) : undefined,
   });
@@ -414,8 +437,132 @@ export const db = {
     });
   },
 
+  async getEventsSince({ after_seq = 0, limit = 500, network = getIndexerNetwork() } = {}) {
+    const { rows } = await pool.query(
+      `SELECT * FROM events WHERE network = $1 AND seq > $2 ORDER BY seq ASC LIMIT $3`,
+      [network, after_seq, limit + 1],
+    );
+    const hasMore = rows.length > limit;
+    const data = hasMore ? rows.slice(0, limit) : rows;
+    return { data, next_cursor: data.length ? Number(data.at(-1).seq) : after_seq, has_more: hasMore };
+  },
+
+  async listContractsCursor({ type, q, after, limit = 25 } = {}) {
+    const params = [];
+    const conditions = [];
+    if (type === "verified") {
+      conditions.push(`id IN (SELECT DISTINCT contract_id FROM source_verifications)`);
+    } else if (type) {
+      params.push(type);
+      conditions.push(`protocol_type = $${params.length}`);
+    }
+    if (q) {
+      params.push(`%${String(q).replace(/([%_\\])/g, "\\$1")}%`);
+      conditions.push(`(name ILIKE $${params.length} OR description ILIKE $${params.length})`);
+    }
+    if (after) {
+      let cursor;
+      try {
+        if (typeof after !== "string" || after.length > 512) throw new Error();
+        cursor = JSON.parse(Buffer.from(after, "base64url").toString("utf8"));
+      } catch {
+        throw new Error("Invalid contracts cursor");
+      }
+      if (!cursor.created_at || !Number.isFinite(Date.parse(cursor.created_at)) || !cursor.id) {
+        throw new Error("Invalid contracts cursor");
+      }
+      params.push(cursor.created_at, cursor.id);
+      conditions.push(`(created_at, id) < ($${params.length - 1}::timestamptz, $${params.length})`);
+    }
+    const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
+    params.push(limit + 1);
+    const { rows } = await pool.query(
+      `SELECT id, name, description, registered_by, has_circuit_breaker, is_paused,
+              is_rwa, rwa_type, protocol_type, is_verified, verified_ledger, created_at
+       FROM contracts ${where} ORDER BY created_at DESC, id DESC LIMIT $${params.length}`,
+      params,
+    );
+    const hasMore = rows.length > limit;
+    const data = hasMore ? rows.slice(0, limit) : rows;
+    const last = data.at(-1);
+    const next_cursor = hasMore && last
+      ? Buffer.from(JSON.stringify({ created_at: last.created_at, id: last.id })).toString("base64url")
+      : null;
+    return { data, next_cursor };
+  },
+
+  async getWalletEventsCursor(address, { fn, from, to, after_seq = 0, limit = 25 } = {}) {
+    const params = [address];
+    const categories = fn
+      ? String(fn).split(",").map((value) => value.trim().toLowerCase()).filter(Boolean)
+      : [];
+    const categoryParts = [];
+    for (const category of this.WALLET_EVENT_CATEGORIES.filter((value) => categories.includes(value))) {
+      params.push(`${category}%`);
+      categoryParts.push(`function ILIKE $${params.length}`);
+    }
+    if (categories.includes("other")) {
+      const otherParts = this.WALLET_EVENT_CATEGORIES.map((category) => {
+        params.push(`${category}%`);
+        return `function NOT ILIKE $${params.length}`;
+      });
+      categoryParts.push(`(${otherParts.join(" AND ")})`);
+    }
+    const conditions = [
+      `to_tsvector('simple', coalesce(description, '') || ' ' || coalesce(raw_topics::text, '') || ' ' || coalesce(raw_data, '')) @@ plainto_tsquery('simple', $1)`,
+    ];
+    if (categoryParts.length) conditions.push(`(${categoryParts.join(" OR ")})`);
+    if (from) {
+      params.push(from);
+      conditions.push(`created_at >= $${params.length}::date`);
+    }
+    if (to) {
+      params.push(to);
+      conditions.push(`created_at < ($${params.length}::date + interval '1 day')`);
+    }
+    if (after_seq > 0) {
+      params.push(after_seq);
+      conditions.push(`seq < $${params.length}`);
+    }
+    params.push(limit + 1);
+    const { rows } = await pool.query(
+      `SELECT * FROM events WHERE ${conditions.join(" AND ")} ORDER BY seq DESC LIMIT $${params.length}`,
+      params,
+    );
+    const hasMore = rows.length > limit;
+    const data = hasMore ? rows.slice(0, limit) : rows;
+    return { data, next_cursor: hasMore ? Number(data.at(-1).seq) : null };
+  },
+
+  async getSubInvocationsCursor({ contract, tx_hash, after_id = 0, limit = 25 } = {}) {
+    const params = [];
+    const conditions = [];
+    if (contract) {
+      params.push(contract);
+      conditions.push(`contract_id = $${params.length}`);
+    }
+    if (tx_hash) {
+      params.push(tx_hash);
+      conditions.push(`parent_tx_hash = $${params.length}`);
+    }
+    if (after_id > 0) {
+      params.push(after_id);
+      conditions.push(`id < $${params.length}`);
+    }
+    const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
+    params.push(limit + 1);
+    const { rows } = await pool.query(
+      `SELECT id, parent_tx_hash, depth, contract_id, function, args, ledger
+       FROM sub_invocations ${where} ORDER BY id DESC LIMIT $${params.length}`,
+      params,
+    );
+    const hasMore = rows.length > limit;
+    const data = hasMore ? rows.slice(0, limit) : rows;
+    return { data, next_cursor: hasMore ? Number(data.at(-1).id) : null };
+  },
+
   async upsertEvent(ev) {
-    await pool.query(
+    const { rows } = await pool.query(
       `INSERT INTO events
          (contract_id, function, ledger, tx_hash, description, raw_topics, raw_data,
           cpu_instructions, mem_bytes, fee_charged, is_high_bloat_risk, upgrade_info, storage_tiers, is_clawback,
@@ -450,6 +597,7 @@ export const db = {
         ev.topic_count ?? null,
       ],
     );
+    return rows[0]?.seq ?? null;
   },
 
   async appendMmrNode({ level, nodeIndex, hash, leafCount }) {
@@ -520,7 +668,7 @@ export const db = {
    */
   async upsertEventValidated(ev, logger) {
     const validated = validateAndSanitizeDecodedEvent(ev, logger);
-    await this.upsertEvent(validated);
+    return this.upsertEvent(validated);
   },
 
   async upsertEventsValidatedBatch(events, logger = console) {
@@ -596,33 +744,9 @@ export const db = {
    * page-based GET /api/contracts/:id/events endpoint.
    */
   async getEvents({ contract, fn, page = 1, limit = 25, type } = {}) {
-    const conditions = [];
-    const params = [];
-    if (contract) {
-      params.push(contract);
-      conditions.push(`contract_id = $${params.length}`);
-    }
-    if (fn) {
-      params.push(fn);
-      conditions.push(`function = $${params.length}`);
-    }
-    // filter by transaction type
-    // "soroban"  → contract_id is non-empty (Soroban invocations/deployments)
-    // "classic"  → contract_id is empty string or NULL
-    if (type === "soroban") {
-      conditions.push(`contract_id IS NOT NULL AND contract_id <> ''`);
-    }
-    if (type === "classic") {
-      conditions.push(`(contract_id IS NULL OR contract_id = '')`);
-    }
-    const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
-    const offset = (page - 1) * limit;
-    params.push(limit, offset);
-    const { rows } = await pool.query(
-      `SELECT * FROM events ${where} ORDER BY ledger DESC LIMIT $${params.length - 1} OFFSET $${params.length}`,
-      params,
-    );
-    return rows;
+    if (page > 1) throw new Error("Page-based event pagination is no longer supported; use getEventsCursor");
+    const result = await this.getEventsCursor({ contract, fn, type, limit });
+    return result.data;
   },
 
   /** Look up an event by its canonical ID on a network (#892). */
@@ -1257,6 +1381,10 @@ export const db = {
       params.push(end_ledger);
       conditions.push(`ledger <= $${params.length}`);
     }
+    if (after_seq > 0) {
+      params.push(after_seq);
+      conditions.push(`seq < $${params.length}`);
+    }
 
     if (!hasAnchor && page && Number(page) > 1) {
       const offset = (Number(page) - 1) * safeLimit;
@@ -1375,8 +1503,8 @@ export const db = {
     const protocol_type = meta.protocol_type ?? this.inferProtocolType(functionNames);
 
     await pool.query(
-      `INSERT INTO contracts (id, name, description, functions, registered_by, source_files, has_circuit_breaker, is_rwa, rwa_type, version, abi_version, min_ledger, protocol_type)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+      `INSERT INTO contracts (id, name, description, functions, registered_by, source_files, has_circuit_breaker, is_rwa, rwa_type, version, abi_version, min_ledger, protocol_type, is_private, registered_by_key_id)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
        ON CONFLICT (id) DO UPDATE SET name=$2, description=$3, functions=$4, source_files=$6, has_circuit_breaker=$7, is_rwa=$8, rwa_type=$9, version=$10, abi_version=$11, min_ledger=$12, protocol_type=$13`,
       [
         meta.id,
@@ -1392,6 +1520,8 @@ export const db = {
         meta.abi_version ?? 0,
         meta.min_ledger ?? 0,
         protocol_type,
+        meta.is_private ?? false,
+        meta.registered_by_key_id ?? null,
       ],
     );
 
@@ -2259,7 +2389,7 @@ export const db = {
 
   // data export — events (CSV/JSON)
   // #528: accepts optional wallet address to filter events by address mention.
-  async getEventsForExport({ contract, fn, type, wallet, limit = 10000 } = {}) {
+  async getEventsForExport({ contract, fn, type, wallet, after_seq = 0, limit = 10000 } = {}) {
     const conditions = [];
     const params = [];
     if (contract) {
@@ -2287,8 +2417,12 @@ export const db = {
          ) @@ plainto_tsquery('simple', $${params.length})`,
       );
     }
+    if (after_seq > 0) {
+      params.push(after_seq);
+      conditions.push(`e.seq < $${params.length}`);
+    }
     const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
-    params.push(Math.min(limit, 10000));
+    params.push(Math.min(limit, 10000) + 1);
     const { rows } = await pool.query(
       `SELECT e.seq, e.contract_id, c.name AS contract_name, e.function,
               e.ledger, e.tx_hash, e.description, e.created_at
@@ -2301,10 +2435,28 @@ export const db = {
   },
 
   // data export — registered contracts (CSV/JSON)
-  async getContractsForExport() {
+  async getContractsForExport({ after, limit = 1000 } = {}) {
+    const params = [];
+    let where = "";
+    if (after) {
+      let cursor;
+      try {
+        if (typeof after !== "string" || after.length > 512) throw new Error();
+        cursor = JSON.parse(Buffer.from(after, "base64url").toString("utf8"));
+      } catch {
+        throw new Error("Invalid contracts cursor");
+      }
+      if (!cursor.created_at || !Number.isFinite(Date.parse(cursor.created_at)) || !cursor.id) {
+        throw new Error("Invalid contracts cursor");
+      }
+      params.push(cursor.created_at, cursor.id);
+      where = `WHERE (created_at, id) < ($1::timestamptz, $2)`;
+    }
+    params.push(Math.min(limit, 10000) + 1);
     const { rows } = await pool.query(
       `SELECT id, name, description, registered_by, has_circuit_breaker, is_paused, is_rwa, rwa_type, created_at
-       FROM contracts ORDER BY created_at DESC`,
+       FROM contracts ${where} ORDER BY created_at DESC, id DESC LIMIT $${params.length}`,
+      params,
     );
     return rows;
   },

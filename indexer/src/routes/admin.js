@@ -60,6 +60,22 @@ const AUDIT_LOG_COLUMNS = [
   "request_body_hash",
 ];
 
+function decodeAuditCursor(value) {
+  try {
+    const cursor = JSON.parse(Buffer.from(value, 'base64url').toString('utf8'));
+    if (!cursor.timestamp || !Number.isFinite(Date.parse(cursor.timestamp)) || !Number.isSafeInteger(Number(cursor.id)) || Number(cursor.id) < 1) {
+      throw new Error();
+    }
+    return cursor;
+  } catch {
+    throw new Error('Invalid audit-log cursor');
+  }
+}
+
+function encodeAuditCursor(row) {
+  return Buffer.from(JSON.stringify({ timestamp: row.timestamp, id: row.id })).toString('base64url');
+}
+
 // Note: EVENT_COLUMNS/CONTRACT_COLUMNS were only used by the removed legacy
 // /api/export/events and /api/export/contracts routes (see comment below)
 // and are dropped along with them.
@@ -408,6 +424,11 @@ export default function registerAdminRoutes(app) {
         params.push(toTs);
         conditions.push(`timestamp <= $${params.length}`);
       }
+      if (after) {
+        const cursor = decodeAuditCursor(String(after));
+        params.push(cursor.timestamp, cursor.id);
+        conditions.push(`(timestamp, id) < ($${params.length - 1}::timestamptz, $${params.length}::bigint)`);
+      }
 
       // If legacy offset request without cursor
       if (!hasAnchor && hasLegacy) {
@@ -546,6 +567,11 @@ export default function registerAdminRoutes(app) {
         params.push(toTs);
         conditions.push(`timestamp <= $${params.length}`);
       }
+      if (after) {
+        const cursor = decodeAuditCursor(String(after));
+        params.push(cursor.timestamp, cursor.id);
+        conditions.push(`(timestamp, id) < ($${params.length - 1}::timestamptz, $${params.length}::bigint)`);
+      }
 
       if (after || cursor) {
         const token = after || cursor;
@@ -596,6 +622,9 @@ export default function registerAdminRoutes(app) {
          LIMIT $${params.length}`,
         params,
       );
+      const hasMore = rows.length > limit;
+      const data = hasMore ? rows.slice(0, limit) : rows;
+      if (hasMore) res.setHeader('X-Next-Cursor', encodeAuditCursor(data.at(-1)));
 
       if (format === "csv") {
         res.setHeader("Content-Disposition", 'attachment; filename="audit-log.csv"');
