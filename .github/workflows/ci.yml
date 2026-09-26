@@ -40,6 +40,18 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITLEAKS_CONFIG: .gitleaks.toml
 
+  # ── SLO rules (#943) ─────────────────────────────────────────────────────
+  slo-rules:
+    name: SLO rules (promtool)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: promtool test rules
+        run: |
+          curl -sL https://github.com/prometheus/prometheus/releases/download/v2.53.2/prometheus-2.53.2.linux-amd64.tar.gz \
+            | tar xz --strip-components=1 prometheus-2.53.2.linux-amd64/promtool
+          ./promtool test rules monitoring/prometheus/slo/*.test.yml
+
   # ── Contracts ─────────────────────────────────────────────────────────────
   contracts:
     name: Contracts (build + test)
@@ -53,17 +65,21 @@ jobs:
           target: wasm32-unknown-unknown
           components: rustfmt, clippy
 
+      # #941: sccache (GHA backend) + rust-cache. Caches are read-only for
+      # fork PRs to prevent cache poisoning.
+      - name: Setup sccache
+        uses: mozilla-actions/sccache-action@v0.0.6
+
+      - name: Enable sccache
+        if: github.event.pull_request.head.repo.fork != true
+        run: |
+          echo "SCCACHE_GHA_ENABLED=true" >> "$GITHUB_ENV"
+          echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
+
       - name: Cache Rust build artifacts
-        uses: actions/cache@v4
+        uses: Swatinem/rust-cache@v2
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            ~/.cargo/bin
-            target/release/build
-            target/wasm32-unknown-unknown/release/deps
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-cargo-
+          save-if: ${{ github.event.pull_request.head.repo.fork != true }}
 
       - name: fmt
         run: cargo fmt --check
@@ -84,7 +100,9 @@ jobs:
           if-no-files-found: error
 
       - name: Install cargo-llvm-cov
-        run: cargo install cargo-llvm-cov --locked
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-llvm-cov
 
       - name: Test — explorer contract with coverage
         run: |

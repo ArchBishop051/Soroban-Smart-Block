@@ -1,8 +1,10 @@
 import { useState, useRef, useEffect } from "react";
 import { Link, useNavigate } from "react-router-dom";
+import { useTranslation } from "react-i18next";
 import ThemeToggle from "./ThemeToggle";
 import NetworkSwitcher from "./NetworkSwitcher";
 import WalletConnectButton from "./WalletConnectButton";
+import LanguageToggle from "./LanguageToggle";
 import { useRecentSearches } from "../hooks/useRecentSearches";
 import { useTranslation, type Locale } from "../i18n";
 
@@ -21,10 +23,12 @@ const NAV_LINKS = [
 export default function Nav() {
   const { t, locale, setLocale } = useTranslation();
   const [q, setQ] = useState("");
+  const [suggestions, setSuggestions] = useState<Array<{ kind: string; label: string; route: string }>>([]);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [searchFocused, setSearchFocused] = useState(false);
   const nav = useNavigate();
   const searchInputRef = useRef<HTMLInputElement>(null);
+  const { t } = useTranslation();
   const { recent, add: addRecentSearch, remove: removeRecentSearch, clearAll: clearRecentSearches } =
     useRecentSearches();
 
@@ -39,6 +43,13 @@ export default function Nav() {
     e.preventDefault();
     const v = q.trim();
     if (!v) return;
+    if (/^[a-fA-F0-9]{64}$/.test(v)) {
+      addRecentSearch(v, "all");
+      nav(`/tx/${v}`);
+      setQ("");
+      setSearchFocused(false);
+      return;
+    }
     let kind: string | undefined;
     if (v.startsWith("G") && v.length === 56) kind = "wallet";
     else if (v.startsWith("M") && v.length === 56) kind = "wallet";
@@ -77,6 +88,27 @@ export default function Nav() {
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, []);
+
+  useEffect(() => {
+    const value = q.trim();
+    if (!value || value.length < 2) {
+      setSuggestions([]);
+      return;
+    }
+
+    const handle = window.setTimeout(async () => {
+      try {
+        const res = await fetch(`/api/search?q=${encodeURIComponent(value)}&limit=5`);
+        if (!res.ok) return;
+        const payload = await res.json();
+        setSuggestions(Array.isArray(payload?.suggestions) ? payload.suggestions.slice(0, 5) : []);
+      } catch {
+        setSuggestions([]);
+      }
+    }, 250);
+
+    return () => window.clearTimeout(handle);
+  }, [q]);
 
   function handleNavLinkClick() {
     setMobileMenuOpen(false);
@@ -199,7 +231,7 @@ export default function Nav() {
           />
           <button type="submit">{t("search.submit")}</button>
 
-          {searchFocused && !q.trim() && recent.length > 0 && (
+          {searchFocused && (
             <div
               role="region"
               aria-label={t("search.recent")}
@@ -214,6 +246,7 @@ export default function Nav() {
                 boxShadow: "0 8px 24px rgba(0,0,0,0.25)",
                 zIndex: 50,
                 padding: 8,
+                display: q.trim() ? (suggestions.length ? "block" : "none") : recent.length > 0 ? "block" : "none",
               }}
             >
               <div
@@ -297,6 +330,7 @@ export default function Nav() {
               </div>
             </div>
           )}
+
         </form>
         <NetworkSwitcher />
         <WalletConnectButton />

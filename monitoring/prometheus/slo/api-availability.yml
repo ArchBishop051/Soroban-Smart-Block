@@ -1,0 +1,43 @@
+# Multi-window, multi-burn-rate SLO alerts (#943).
+# SLO: 99.9% of API requests succeed (non-5xx) over 30 days.
+# Error budget = 0.1%. Burn-rate factors follow the Google SRE workbook.
+groups:
+  - name: slo-api-availability-recording
+    rules:
+      - record: slo:api_errors:ratio_rate5m
+        expr: sum(rate(api_request_duration_seconds_count{status=~"5.."}[5m])) / sum(rate(api_request_duration_seconds_count[5m]))
+      - record: slo:api_errors:ratio_rate30m
+        expr: sum(rate(api_request_duration_seconds_count{status=~"5.."}[30m])) / sum(rate(api_request_duration_seconds_count[30m]))
+      - record: slo:api_errors:ratio_rate1h
+        expr: sum(rate(api_request_duration_seconds_count{status=~"5.."}[1h])) / sum(rate(api_request_duration_seconds_count[1h]))
+      - record: slo:api_errors:ratio_rate6h
+        expr: sum(rate(api_request_duration_seconds_count{status=~"5.."}[6h])) / sum(rate(api_request_duration_seconds_count[6h]))
+      - record: slo:api_requests:count1h
+        expr: sum(increase(api_request_duration_seconds_count[1h]))
+      - record: slo:api_error_budget:remaining
+        expr: 1 - (sum(increase(api_request_duration_seconds_count{status=~"5.."}[30d])) / sum(increase(api_request_duration_seconds_count[30d]))) / 0.001
+
+  - name: slo-api-availability-alerts
+    rules:
+      # Fast burn: 2% of the 30d budget in 1h -> page.
+      - alert: ApiAvailabilityFastBurn
+        expr: |
+          slo:api_errors:ratio_rate1h > (14.4 * 0.001)
+          and slo:api_errors:ratio_rate5m > (14.4 * 0.001)
+          and slo:api_requests:count1h >= 100
+        labels:
+          severity: page
+          slo: api-availability
+        annotations:
+          summary: "API availability error budget burning fast (14.4x)"
+      # Slow burn: 5% of the 30d budget in 6h -> ticket.
+      - alert: ApiAvailabilitySlowBurn
+        expr: |
+          slo:api_errors:ratio_rate6h > (6 * 0.001)
+          and slo:api_errors:ratio_rate30m > (6 * 0.001)
+          and slo:api_requests:count1h >= 100
+        labels:
+          severity: ticket
+          slo: api-availability
+        annotations:
+          summary: "API availability error budget burning steadily (6x)"

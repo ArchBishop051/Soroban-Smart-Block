@@ -1,0 +1,16 @@
+{
+  "name": "soroban-explorer-tutorials",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Runnable tutorial projects for the Soroban Smart Block Explorer (docs/guides/tutorial-*.md)",
+  "scripts": {
+    "test": "node run-all.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  }
+}

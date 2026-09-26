@@ -54,6 +54,7 @@ services:
       - ./indexer/src:/app/src
     environment:
       - DATABASE_URL=postgres://postgres:postgres@postgres:5432/soroban_explorer
+      - PYROSCOPE_SERVER_ADDRESS=${PYROSCOPE_SERVER_ADDRESS:-}
     healthcheck:
       test: ["CMD-SHELL", "curl -s -f http://localhost:3001/api/setup/status || exit 1"]
       interval: 10s
@@ -127,6 +128,7 @@ services:
     volumes:
       - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
       - ./monitoring/prometheus/alerts.yml:/etc/prometheus/alerts.yml
+      - ./monitoring/prometheus/slo:/etc/prometheus/slo
     depends_on:
       indexer:
         condition: service_healthy
@@ -143,6 +145,15 @@ services:
       - ./monitoring/grafana/provisioning:/etc/grafana/provisioning
     depends_on:
       - prometheus
+
+  # Continuous profiling (#944). Enable with:
+  #   PYROSCOPE_SERVER_ADDRESS=http://pyroscope:4040 docker compose --profile profiling up
+  pyroscope:
+    image: grafana/pyroscope:latest
+    container_name: soroban-pyroscope
+    profiles: [profiling]
+    ports:
+      - "4040:4040"
 
 volumes:
   pgdata:

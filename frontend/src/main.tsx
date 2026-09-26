@@ -7,6 +7,7 @@ import { NetworkProvider } from "./contexts/NetworkContext";
 import { ThemeProvider } from "./contexts/ThemeContext";
 import { initCsrf } from "./hooks/useCsrf";
 import { initSentry } from "./sentry";
+import "./i18n";
 import "./index.css";
 
 initSentry();

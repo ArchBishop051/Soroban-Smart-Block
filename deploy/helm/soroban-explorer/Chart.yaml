@@ -1,0 +1,6 @@
+apiVersion: v2
+name: soroban-explorer
+description: Soroban Smart Block Explorer (API, frontend, ingest) with Argo Rollouts canaries
+type: application
+version: 0.1.0
+appVersion: "latest"

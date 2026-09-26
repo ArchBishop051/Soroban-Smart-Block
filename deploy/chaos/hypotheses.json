@@ -1,0 +1,14 @@
+{
+  "_doc": "Steady-state hypotheses checked after each experiment by run.sh. recoverSeconds = lag must be back under maxLagLedgers within this time; maxErrorBudgetPct = share of the monthly 5xx budget the experiment may burn.",
+  "defaults": { "maxLagLedgers": 30, "recoverSeconds": 300, "maxErrorBudgetPct": 2, "settleSeconds": 60 },
+  "experiments": {
+    "kill-ingest-leader":        { "recoverSeconds": 120 },
+    "kill-api-pods":             { "maxErrorBudgetPct": 1, "load": true },
+    "postgres-primary-failover": { "recoverSeconds": 180, "maxErrorBudgetPct": 3 },
+    "rpc-partition":             { "recoverSeconds": 300, "waitSeconds": 120 },
+    "postgres-latency":          { "maxErrorBudgetPct": 2, "waitSeconds": 300, "load": true },
+    "redis-loss":                { "waitSeconds": 180 },
+    "clock-skew":                { "waitSeconds": 300 },
+    "worker-disk-full":          { "recoverSeconds": 300, "waitSeconds": 180 }
+  }
+}

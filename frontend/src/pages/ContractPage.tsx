@@ -21,6 +21,7 @@ import { useLocalAbi } from "../hooks/useLocalAbi";
 import { useMetaTags } from "../hooks/useMetaTags";
 import TTLProgressBar from "../components/TTLProgressBar";
 import CircuitBreakerStatus from "../components/CircuitBreakerStatus";
+import { useWatchlist } from "./WatchlistPage";
 import QuorumFreezeBadge from "../components/QuorumFreezeBadge";
 import RwaMetadataDisplay from "../components/RwaMetadataDisplay";
 import SourceVerificationBadge from "../components/SourceVerificationBadge";
@@ -129,6 +130,7 @@ export default function ContractPage() {
   const [selectedFn, setSelectedFn] = useState("");
   const [snippetFn, setSnippetFn] = useState<string | null>(null);
   const [historyOpen, setHistoryOpen] = useState(false);
+  const { isSaved, toggle } = useWatchlist();
 
   // Shared event-volume time range for the stats widget + invocation chart (#799)
   const [statsRange, setStatsRange] = useState<StatsRange>(30);
