@@ -11,6 +11,7 @@ const RegisterContractPage = lazy(() => import("./pages/RegisterContractPage"));
 const ContractPage = lazy(() => import("./pages/ContractPage"));
 const WalletPage = lazy(() => import("./pages/WalletPage"));
 const EventPage = lazy(() => import("./pages/EventPage"));
+const TransactionPage = lazy(() => import("./pages/TransactionPage"));
 const SearchPage = lazy(() => import("./pages/SearchPage"));
 const XdrInspector = lazy(() => import("./pages/XdrInspector"));
 const RpcMetricsDashboard = lazy(() => import("./pages/RpcMetricsDashboard"));
@@ -54,6 +55,7 @@ export default function App() {
             <Route path="/contract/:id/abi-diff" element={<AbiDiffPage />} />
             <Route path="/wallet/:address" element={<WalletPage />} />
             <Route path="/event/:seq" element={<EventPage />} />
+            <Route path="/tx/:hash" element={<TransactionPage />} />
             <Route path="/search" element={<SearchPage />} />
             <Route path="/xdr" element={<XdrInspector />} />
             <Route path="/rpc-metrics" element={<RpcMetricsDashboard />} />

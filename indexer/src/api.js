@@ -46,7 +46,7 @@ import { fetchWalletBalances, fetchAccountMeta, AccountNotFoundError } from "./h
 import { attachWebSocketServer, attachEventStreamRoutes, getTransactionStatus, onTransactionStatus, offTransactionStatus } from "./wsEvents.js";
 import { verifyAbi } from "./verify_abi.js";
 import { getMetrics } from "./rpcMetrics.js";
-import { getRpcNodeStatus, getProviderStats } from "./rpcMultiNode.js";
+import { getRpcNodeStatus, getProviderStats, multiNodeRpc } from "./rpcMultiNode.js";
 import { cacheHitTotal, cacheMissTotal, apiRequestDuration } from "./metrics.js";
 import { tracer, getTraceHeaders } from "./tracing.js";
 import { context, propagation } from "@opentelemetry/api";
@@ -87,6 +87,9 @@ import { requestContext } from "./logger.js";
 import { runAllChecks } from "./doctor-lib.js";
 import { registry } from "./metrics.js";
 import pg from "pg";
+import { analyticsPool, executeAnalyticsQuery, toCsv } from "./analyticsSql.js";
+import { ALLOWED_RPC_METHODS, proxyRpcRequest } from "./rpcProxy.js";
+import { adaptiveLoadShedder, getLoadShedderMetrics } from "./loadShedder.js";
 import { getBurnAlerts } from "./burnDetector.js";
 import { formatAmount } from "./formatAmount.js";
 import { verifySourceVerification } from "./sourceVerification.js";
@@ -563,6 +566,69 @@ export function createApi({ logDestination, dbOverride } = {}) {
     else res.status(404).json({ error: "Not found" });
   });
 
+  app.post("/api/sql", async (req, res) => {
+    const body = req.body;
+    if (
+      !body ||
+      typeof body !== "object" ||
+      Array.isArray(body) ||
+      Object.keys(body).some((key) => !["query", "format"].includes(key))
+    ) {
+      return res.status(400).json({ error: "Expected only query and format fields" });
+    }
+    try {
+      const result = await executeAnalyticsQuery(body.query, {
+        clientId: req.rateContext?.keyId ?? req.rateContext?.clientId ?? "anonymous",
+        tier: req.rateContext?.tier ?? "unauthenticated",
+        format: body.format ?? "json",
+      });
+      if (result.format === "csv") {
+        res.setHeader("Content-Type", "text/csv; charset=utf-8");
+        res.setHeader("Content-Disposition", "attachment; filename=analytics.csv");
+        res.setHeader("X-Row-Count", String(result.row_count));
+        res.setHeader("X-Results-Truncated", String(result.truncated));
+        return res.send(toCsv(result.rows));
+      }
+      res.json(result);
+    } catch (error) {
+      if (error.statusCode && error.statusCode < 500) {
+        return res.status(error.statusCode).json({ error: error.message });
+      }
+      if (!analyticsPool) {
+        return res.status(503).json({ error: "Analytics database is not configured" });
+      }
+      logger.error("[analytics-sql] Query failed:", error.message);
+      res.status(500).json({ error: "Analytics query failed" });
+    }
+  });
+
+  app.post("/api/rpc", async (req, res) => {
+    const body = req.body;
+    const id = body?.id ?? null;
+    const rpcError = (status, code, message) =>
+      res.status(status).json({ jsonrpc: "2.0", id, error: { code, message } });
+
+    if (Buffer.byteLength(JSON.stringify(body ?? {})) > 32_768) {
+      return rpcError(413, -32600, "RPC request exceeds 32768 bytes");
+    }
+    if (!body || Array.isArray(body) || body.jsonrpc !== "2.0" || typeof body.method !== "string") {
+      return rpcError(400, -32600, "Invalid JSON-RPC request");
+    }
+    if (!ALLOWED_RPC_METHODS.has(body.method)) {
+      return rpcError(403, -32601, "RPC method is not allowed");
+    }
+
+    try {
+      const result = await proxyRpcRequest(body.method, body.params ?? {});
+      res.json({ jsonrpc: "2.0", id, result });
+    } catch (error) {
+      const status = error.statusCode ?? 502;
+      const code = status === 400 ? -32602 : -32000;
+      if (status >= 500) logger.warn("[rpc-proxy] RPC request failed:", error.message);
+      rpcError(status, code, status >= 500 ? "Soroban RPC request failed" : error.message);
+    }
+  });
+
   // ── Health check endpoints ──────────────────────────────────────────────
 
   // Comprehensive health check with dependency and active-alert status
@@ -587,6 +653,9 @@ export function createApi({ logDestination, dbOverride } = {}) {
 
   app.get("/health", healthHandler);
   app.get("/api/health", healthHandler);
+  app.get("/api/load-shedder", (_req, res) => {
+    res.json(getLoadShedderMetrics());
+  });
 
   // Public status page data (issue #758): current health + rolling uptime
   // history, backed by the periodic samples uptimeRecorder.js writes.

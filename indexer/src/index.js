@@ -471,6 +471,8 @@ export async function indexLedger(
   // Invalidate events list cache after each ledger so stale pages are evicted.
   if (latestLedger > ledger) {
     cacheInvalidate("events:list:*").catch(() => {});
+    cacheInvalidate("rpc:ledger-entries:*").catch(() => {});
+    cacheInvalidate("rpc:simulation:*").catch(() => {});
   }
 
   return { latestLedger, latestLedgerHash, eventsProcessed };

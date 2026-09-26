@@ -518,6 +518,29 @@ export interface TxStatusResponse {
   error?: string | null;
 }
 
+export interface TransactionDetails extends TxStatusResponse {
+  latest_ledger?: number;
+  oldest_ledger?: number;
+  created_at?: number;
+  application_order?: number;
+  fee_bump?: boolean;
+  fee_source?: string | null;
+  envelope_xdr?: string | null;
+  result_xdr?: string | null;
+  result_meta_xdr?: string | null;
+  diagnostic_events_xdr?: string[];
+  events: DecodedEvent[];
+  invocations: SubInvocation[];
+}
+
+export interface AnalyticsSqlResult {
+  rows: Record<string, unknown>[];
+  row_count: number;
+  truncated: boolean;
+  duration_ms: number;
+  plan_cost: number;
+}
+
 // Live TTL status for contract instance and code entries
 export interface ContractTTL {
   contract_id: string;
@@ -888,6 +911,29 @@ export const api = {
 
   // transaction status (polling fallback; SSE via useTxStatus hook)
   txStatus: (txHash: string) => get<TxStatusResponse>(`/transactions/${txHash}/status`),
+  transaction: (txHash: string) => get<TransactionDetails>(`/transactions/${txHash}`),
+  runAnalyticsQuery: (query: string) =>
+    mutationFetch(`${BASE}/sql`, {
+      method: "POST",
+      body: JSON.stringify({ query, format: "json" }),
+    }).then(async (response) => {
+      if (!response.ok) {
+        const body = await response.json().catch(() => ({}));
+        throw new Error(body.error ?? `API ${response.status}`);
+      }
+      return response.json() as Promise<AnalyticsSqlResult>;
+    }),
+  exportAnalyticsCsv: async (query: string) => {
+    const response = await mutationFetch(`${BASE}/sql`, {
+      method: "POST",
+      body: JSON.stringify({ query, format: "csv" }),
+    });
+    if (!response.ok) {
+      const body = await response.json().catch(() => ({}));
+      throw new Error(body.error ?? `API ${response.status}`);
+    }
+    return response.blob();
+  },
 
   // Circuit breaker status
   circuitBreakerStatus: (id: string) => get<CircuitBreakerStatus>(`/contracts/${id}/circuit-breaker`),
