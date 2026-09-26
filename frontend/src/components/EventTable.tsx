@@ -80,6 +80,7 @@ function parseClassicAsset(ev: DecodedEvent): { code: string; issuer: string | n
 
 interface Props {
   events: DecodedEvent[];
+  onReachEnd?: () => void;
 }
 
 const FunctionBadge = memo(function FunctionBadge({ fn, isClassic }: { fn: string; isClassic?: boolean }) {
@@ -232,6 +233,15 @@ const EventRow = memo(function EventRow({ ev, contractMeta }: { ev: DecodedEvent
           whiteSpace: "nowrap",
         }}
       >
+        {ev.decode_status && ev.decode_status !== "verified" && (
+          <span
+            className="badge"
+            title={ev.decode_warnings?.join(", ") || "This description was not verified against the contract ABI"}
+            style={{ marginRight: 6, color: "var(--yellow, #f59e0b)" }}
+          >
+            {ev.decode_status === "heuristic" ? "Heuristic" : "Unverified"}
+          </span>
+        )}
         {ev.is_clawback && (
           <span className="badge clawback" style={{ marginRight: 6 }} title="Mandatory authority intervention">
             ⚠ COMPLIANCE: CLAWBACK
@@ -292,7 +302,7 @@ const EventRow = memo(function EventRow({ ev, contractMeta }: { ev: DecodedEvent
   );
 });
 
-export default function EventTable({ events }: Props) {
+export default function EventTable({ events, onReachEnd }: Props) {
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const { totalHeight, visibleItems } = useVirtualList(events, scrollContainerRef);
   const navigate = useNavigate();
@@ -355,6 +365,12 @@ export default function EventTable({ events }: Props) {
           overflowY: "auto",
           maxHeight: 600,
           position: "relative",
+        }}
+        onScroll={(event) => {
+          const target = event.currentTarget;
+          if (onReachEnd && target.scrollTop + target.clientHeight >= target.scrollHeight - ROW_HEIGHT * 4) {
+            onReachEnd();
+          }
         }}
       >
         {/* Spacer div creates the full scrollable height */}

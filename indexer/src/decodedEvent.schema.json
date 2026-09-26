@@ -25,6 +25,10 @@
       "description": "Transaction hash.",
       "minLength": 1
     },
+    "ingestion_id": {
+      "type": ["string", "null"],
+      "description": "Network-scoped Soroban RPC event identity used for idempotent ingestion."
+    },
     "description": {
       "type": "string",
       "description": "Human-readable decoded event text.",
@@ -80,8 +84,20 @@
     "archival_info": {
       "type": ["object", "null"]
     },
+    "protocol_version": { "type": ["integer", "null"] },
+    "protocol_degraded": { "type": "boolean" },
+    "raw_xdr": { "type": ["string", "null"] },
     "zk_host_calls": {
       "type": "object"
+    },
+    "topic_hashes": {
+      "type": "array",
+      "maxItems": 4,
+      "items": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+    },
+    "topic_count": {
+      "type": "integer",
+      "minimum": 0
     },
     "heuristic_params": {
       "type": "array"
@@ -97,6 +113,17 @@
       "type": "integer",
       "description": "DEX swap slippage in basis points: |amount_out - min_amount_out| / min_amount_out * 10000.",
       "minimum": 0
+    },
+    "decode_status": {
+      "type": "string",
+      "enum": ["verified", "unverified", "heuristic"]
+    },
+    "decode_warnings": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "decoded": {
+      "type": "boolean"
     },
     "type": {
       "type": "string",

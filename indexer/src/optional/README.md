@@ -1,17 +1,28 @@
 # Optional / Experimental Modules
 
-These modules are **not wired into the running indexer**. They are complete, tested implementations of features that require additional infrastructure or deliberate opt-in configuration.
+These modules are optional or experimental features that require additional infrastructure or deliberate configuration.
 
 | File | What it does | Requires |
 |---|---|---|
 | `kafkaEventBus.js` | Redis-backed event bus with Kafka-like at-least-once delivery and 7-day retention | `REDIS_URL` env var; swap to `kafkajs` for true Kafka |
-| `leaderElection.js` | Redis `SET NX EX` distributed leader election for multi-instance deployments | `REDIS_URL`; set `LEADER_ELECTION_KEY` |
+| `leaderElection.js` | Redis distributed leader election for multi-instance deployments; already wired into the daemon | Set the same `REDIS_URL` and `LEADER_ELECTION_KEY` on every replica |
 | `rpcProviderPool.js` | Weighted RPC provider pool with sliding-window health scoring and automatic failover | Multiple `SOROBAN_RPC_URLS` configured |
 | `rpcPool.js` | Simpler round-robin RPC pool (axios-based, CommonJS) | `axios` package |
 | `eventInserter.js` | Batch event inserter with per-event error tracking (CommonJS, simplified schema) | None — but targets an older schema subset |
 
 ## How to enable
 
-Each module exports a self-contained API. To activate one, import it from `../index.js` or whichever module is appropriate, and follow the configuration instructions in its file header.
+Each module exports a self-contained API. Activate optional modules by importing them from `../index.js` or the appropriate module and following the configuration instructions in the file header.
 
-For `kafkaEventBus` and `leaderElection`, ensure `REDIS_URL` is set in your `.env` before starting the indexer.
+When `REDIS_URL` is configured, only the replica holding the Redis lease polls and processes ledger events; other replicas continue serving the API. For multi-replica deployments, all indexers must share the same Redis URL and leader key.
+
+## Historical backfill
+
+Reprocess an inclusive ledger range without moving the daemon cursor:
+
+```sh
+cd indexer
+npm run backfill -- --from 500000 --to 510000
+```
+
+RPC pages are paced by `BACKFILL_PAGE_DELAY_MS` (default 250 ms, minimum 100 ms). Override the delay for a run with `--delay-ms`. Failed RPC requests use the indexer's retry policy, and a failed backfill exits non-zero so the range can be safely rerun.
