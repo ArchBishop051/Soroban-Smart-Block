@@ -48,7 +48,7 @@ import { verifyAbi } from "./verify_abi.js";
 import { getMetrics } from "./rpcMetrics.js";
 import { getRpcNodeStatus, getProviderStats } from "./rpcMultiNode.js";
 import { cacheHitTotal, cacheMissTotal, apiRequestDuration } from "./metrics.js";
-import { tracer } from "./tracing.js";
+import { tracer, getTraceHeaders } from "./tracing.js";
 import { context, propagation } from "@opentelemetry/api";
 import { getUptimeHistory } from "./uptimeRecorder.js";
 import { getDecodeStats } from "./decoder.js";

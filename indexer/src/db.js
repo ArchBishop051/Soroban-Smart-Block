@@ -358,6 +358,73 @@ export const db = {
     await this.upsertEvent(validated);
   },
 
+  async upsertEventsValidatedBatch(events, logger = console) {
+    if (!Array.isArray(events) || events.length === 0) return 0;
+
+    const validated = events.map((ev) => validateAndSanitizeDecodedEvent(ev, logger));
+    const columns = [
+      "contract_id",
+      "function",
+      "ledger",
+      "tx_hash",
+      "description",
+      "raw_topics",
+      "raw_data",
+      "cpu_instructions",
+      "mem_bytes",
+      "fee_charged",
+      "is_high_bloat_risk",
+      "upgrade_info",
+      "storage_tiers",
+      "is_clawback",
+      "footprint_contention",
+      "ttl_extension",
+      "fee_bump",
+      "archival_info",
+      "zk_host_calls",
+      "abi_version",
+      "slippage_bps",
+    ];
+
+    const placeholders = [];
+    const params = [];
+
+    for (const ev of validated) {
+      const row = [
+        ev.contract_id,
+        ev.function,
+        ev.ledger,
+        ev.tx_hash,
+        ev.description,
+        JSON.stringify(ev.raw_topics ?? []),
+        ev.raw_data,
+        ev.cpu_instructions ?? null,
+        ev.mem_bytes ?? null,
+        ev.fee_charged ?? null,
+        ev.is_high_bloat_risk ?? false,
+        ev.upgrade ? JSON.stringify(ev.upgrade) : null,
+        ev.storage_tiers ? JSON.stringify(ev.storage_tiers) : null,
+        ev.is_clawback ?? false,
+        ev.footprint_contention ?? false,
+        ev.ttl_extension ? JSON.stringify(ev.ttl_extension) : null,
+        ev.fee_bump ? JSON.stringify(ev.fee_bump) : null,
+        ev.archival_info ? JSON.stringify(ev.archival_info) : null,
+        ev.zk_host_calls ? JSON.stringify(ev.zk_host_calls) : null,
+        ev.abi_version ?? 0,
+        ev.slippage_bps ?? null,
+      ];
+
+      const start = params.length + 1;
+      const rowPlaceholders = row.map((_, idx) => `$${start + idx}`).join(", ");
+      placeholders.push(`(${rowPlaceholders})`);
+      params.push(...row);
+    }
+
+    const sql = `INSERT INTO events (${columns.join(", ")}) VALUES ${placeholders.join(", ")} ON CONFLICT (contract_id, ledger, tx_hash) DO NOTHING`;
+    const result = await pool.query(sql, params);
+    return result.rowCount ?? 0;
+  },
+
   /**
    * @deprecated OFFSET pagination degrades to a full-table scan at depth on
    * large tables — use getEventsCursor() instead (#490). Kept only for the
