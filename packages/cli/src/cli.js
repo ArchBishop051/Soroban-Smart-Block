@@ -3,7 +3,7 @@
 /**
  * soroban-explorer — CLI tool for querying the Soroban Smart Block Explorer.
  *
- * Zero-dependency CLI. Uses only Node.js built-ins (http/https, fs, os, path).
+ * Core commands are zero-dependency (Node.js built-ins only); `tui` lazily loads Ink.
  * Works immediately with `npx soroban-explorer` — no install needed beyond Node 18+.
  *
  * Usage:
@@ -13,6 +13,10 @@
  *   npx soroban-explorer search <query>
  *   npx soroban-explorer tail [--contract <id>]
  *   npx soroban-explorer submit --file events.json --explorer-id <C...> --source <identity>
+ *   npx soroban-explorer tui [--contract <id>] [--filter <dsl>] [--profile <name>]
+ *
+ * The interactive `tui` command is the only one with dependencies (Ink/React/ws);
+ * they are imported lazily so every other command stays dependency-free.
  */
 
 import { execFileSync } from "child_process";
@@ -45,6 +49,7 @@ Commands:
   tail       Stream live events to the terminal
   submit     Submit events from a JSON file to the explorer contract in batches
              (requires the stellar CLI; --file, --explorer-id, --source, --network)
+  tui        Interactive live event browser (--contract, --filter, --profile, --no-color)
   help       Show this help
 
 Global options:
@@ -61,6 +66,7 @@ Examples:
   soroban-explorer contract CDA2...
   soroban-explorer search "swap"
   soroban-explorer tail --contract CDA2...
+  soroban-explorer tui --filter "fn:transfer !contract:CDA2" --profile testnet
   soroban-explorer events --json --limit 10
   soroban-explorer submit --file events.json --explorer-id CDA2... --source admin`;
 
@@ -83,13 +89,17 @@ function parseArgs(argv) {
     if (arg === "--json") {
       flags.json = true;
       i++;
+    } else if (arg === "--no-color") {
+      flags.noColor = true;
+      i++;
     } else if (arg === "--help" || arg === "-h") {
       flags.help = true;
       i++;
     } else if (
       (arg === "--base-url" || arg === "--api-key" || arg === "--contract" ||
        arg === "--fn" || arg === "--limit" || arg === "--type" || arg === "--file" ||
-       arg === "--explorer-id" || arg === "--source" || arg === "--network") &&
+       arg === "--explorer-id" || arg === "--source" || arg === "--network" ||
+       arg === "--filter" || arg === "--profile") &&
       i + 1 < argv.length
     ) {
       flags[arg.slice(2).replace(/-([a-z])/g, (_, c) => c.toUpperCase())] = argv[i + 1];
@@ -557,6 +567,11 @@ async function main() {
       case "submit":
         await cmdSubmit(flags);
         break;
+      case "tui": {
+        const { runTui } = await import("./tui/index.js");
+        await runTui({ baseUrl, apiKey, flags, config });
+        break;
+      }
       default:
         console.error(`Unknown command: ${command}`);
         console.log(HELP);

@@ -2,6 +2,7 @@ import { logger } from "./logger.js";
 import { db } from "./db.js";
 import { decode } from "./decoder.js";
 import { CURRENT_DECODER_TAGS, decoderStatus } from "./decoderVersions.js";
+import { startLineageBatch, recordLineageEvent } from "./lineage.js";
 
 const DEFAULT_BATCH_SIZE = 100;
 const DEFAULT_INTERVAL_MS = 5_000;
@@ -37,10 +38,26 @@ function rawEventFromRow(row) {
   };
 }
 
-export async function runReDecodeBatch({ dbModule = db, decodeFn = decode, batchSize = DEFAULT_BATCH_SIZE } = {}) {
+export async function runReDecodeBatch({
+  dbModule = db,
+  decodeFn = decode,
+  batchSize = DEFAULT_BATCH_SIZE,
+  lineage = { startLineageBatch, recordLineageEvent },
+} = {}) {
   await dbModule.markStaleAbiEvents?.();
   const rows = await dbModule.getEventsNeedingRedecode(parseBatchSize(batchSize));
   let processed = 0;
+  // Re-decodes append lineage events rather than overwriting the origin batch (#945).
+  const batch = rows.length
+    ? await lineage
+        .startLineageBatch({
+          runType: "redecode",
+          source: "events.raw_topics/raw_data",
+          ledgerFrom: Math.min(...rows.map((r) => Number(r.ledger))),
+          ledgerTo: Math.max(...rows.map((r) => Number(r.ledger))),
+        })
+        .catch((error) => logger.error(`[redecode] lineage batch failed: ${error.message}`))
+    : null;
 
   for (const row of rows) {
     try {
@@ -50,6 +67,14 @@ export async function runReDecodeBatch({ dbModule = db, decodeFn = decode, batch
       const decoded = await decodeFn(rawEventFromRow(row), { currentAbi: true });
       decoded.abi_version = Number(meta.abi_version);
       await dbModule.updateRedecodedEvent(row.seq, decoded, Number(meta.abi_version));
+      if (batch) {
+        await lineage
+          .recordLineageEvent(row.seq, batch.id, "redecode", {
+            from_abi_version: Number(row.abi_version ?? 0),
+            to_abi_version: Number(meta.abi_version),
+          })
+          .catch((error) => logger.error(`[redecode] lineage event ${row.seq} failed: ${error.message}`));
+      }
       processed++;
     } catch (error) {
       logger.error(`[redecode] event ${row.seq} failed: ${error.message}`);

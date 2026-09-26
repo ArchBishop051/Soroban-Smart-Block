@@ -10,6 +10,7 @@ import HeuristicParams from "../components/HeuristicParams";
 import ZkCostDelta from "../components/ZkCostDelta";
 import FactoryDeploymentTree from "../components/FactoryDeploymentTree";
 import { useTranslation } from "../i18n";
+import ProvenancePanel from "../components/ProvenancePanel";
 
 export default function EventPage() {
   const { t } = useTranslation();
@@ -192,6 +193,7 @@ export default function EventPage() {
       <ResourceCosts event={ev} />
 
       {/* CAP-0080 ZK host function cost delta */}
+      <ProvenancePanel seq={ev.seq} />
       {ev.zk_host_calls && <ZkCostDelta calls={ev.zk_host_calls.calls} delta={ev.zk_host_calls.delta} />}
 
       {/* Gas-Limit Alert Flag */}

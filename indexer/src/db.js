@@ -567,8 +567,8 @@ export const db = {
          (contract_id, function, ledger, tx_hash, description, raw_topics, raw_data,
           cpu_instructions, mem_bytes, fee_charged, is_high_bloat_risk, upgrade_info, storage_tiers, is_clawback,
           footprint_contention, ttl_extension, fee_bump, archival_info, zk_host_calls, abi_version, slippage_bps,
-          topic0, topic1, topic2, topic3, topic_count)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26)
+          topic0, topic1, topic2, topic3, topic_count, lineage_batch_id)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27)
        ON CONFLICT (contract_id, ledger, tx_hash) DO NOTHING`,
       [
         ev.contract_id,
@@ -595,6 +595,7 @@ export const db = {
         // Hashed topic columns (#903): canonical-XDR sha256 per topic.
         ...[0, 1, 2, 3].map((i) => (ev.topic_hashes?.[i] ? Buffer.from(ev.topic_hashes[i], "hex") : null)),
         ev.topic_count ?? null,
+        ev.lineage_batch_id ?? null,
       ],
     );
     return rows[0]?.seq ?? null;
