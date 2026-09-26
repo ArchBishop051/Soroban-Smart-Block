@@ -6,6 +6,7 @@ import App from "./App";
 import { NetworkProvider } from "./contexts/NetworkContext";
 import { initCsrf } from "./hooks/useCsrf";
 import { initSentry } from "./sentry";
+import "./i18n";
 import "./index.css";
 
 initSentry();

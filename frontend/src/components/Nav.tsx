@@ -1,14 +1,17 @@
 import { useState, useRef, useEffect } from "react";
 import { Link, useNavigate } from "react-router-dom";
+import { useTranslation } from "react-i18next";
 import ThemeToggle from "./ThemeToggle";
 import NetworkSwitcher from "./NetworkSwitcher";
 import WalletConnectButton from "./WalletConnectButton";
+import LanguageToggle from "./LanguageToggle";
 import { useRecentSearches } from "../hooks/useRecentSearches";
 
 const NAV_LINKS = [
   { to: "/contracts", label: "Registry" },
   { to: "/contracts/register", label: "Register" },
   { to: "/search", label: "Search" },
+  { to: "/watchlist", label: "Watchlist" },
   { to: "/xdr", label: "XDR Workbench" },
   { to: "/rpc-metrics", label: "RPC Metrics" },
   { to: "/graph", label: "Dep Graph" },
@@ -19,10 +22,12 @@ const NAV_LINKS = [
 
 export default function Nav() {
   const [q, setQ] = useState("");
+  const [suggestions, setSuggestions] = useState<Array<{ kind: string; label: string; route: string }>>([]);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [searchFocused, setSearchFocused] = useState(false);
   const nav = useNavigate();
   const searchInputRef = useRef<HTMLInputElement>(null);
+  const { t } = useTranslation();
   const { recent, add: addRecentSearch, remove: removeRecentSearch, clearAll: clearRecentSearches } =
     useRecentSearches();
 
@@ -75,6 +80,27 @@ export default function Nav() {
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, []);
+
+  useEffect(() => {
+    const value = q.trim();
+    if (!value || value.length < 2) {
+      setSuggestions([]);
+      return;
+    }
+
+    const handle = window.setTimeout(async () => {
+      try {
+        const res = await fetch(`/api/search?q=${encodeURIComponent(value)}&limit=5`);
+        if (!res.ok) return;
+        const payload = await res.json();
+        setSuggestions(Array.isArray(payload?.suggestions) ? payload.suggestions.slice(0, 5) : []);
+      } catch {
+        setSuggestions([]);
+      }
+    }, 250);
+
+    return () => window.clearTimeout(handle);
+  }, [q]);
 
   function handleNavLinkClick() {
     setMobileMenuOpen(false);
@@ -186,12 +212,12 @@ export default function Nav() {
             onChange={(e) => setQ(e.target.value)}
             onFocus={() => setSearchFocused(true)}
             onBlur={() => setTimeout(() => setSearchFocused(false), 150)}
-            placeholder="Search contracts, events, wallets… (press / to focus)"
+            placeholder={t("search.placeholder")}
             style={{ flex: 1 }}
           />
-          <button type="submit">Search</button>
+          <button type="submit">{t("common.search")}</button>
 
-          {searchFocused && !q.trim() && recent.length > 0 && (
+          {searchFocused && (
             <div
               style={{
                 position: "absolute",
@@ -204,81 +230,112 @@ export default function Nav() {
                 boxShadow: "0 8px 24px rgba(0,0,0,0.25)",
                 zIndex: 50,
                 padding: 8,
+                display: q.trim() ? (suggestions.length ? "block" : "none") : recent.length > 0 ? "block" : "none",
               }}
             >
-              <div
-                style={{
-                  fontSize: 11,
-                  color: "var(--muted)",
-                  textTransform: "uppercase",
-                  letterSpacing: 0.5,
-                  padding: "4px 8px",
-                }}
-              >
-                Recent searches
-              </div>
-              {recent.map((entry) => (
-                <div
-                  key={`${entry.kind}:${entry.query}`}
-                  onMouseDown={(e) => {
-                    e.preventDefault();
-                    goToSearch(entry.query, entry.kind === "all" ? undefined : entry.kind);
-                    setQ("");
-                    setSearchFocused(false);
-                  }}
-                  style={{
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "space-between",
-                    gap: 8,
-                    padding: "6px 8px",
-                    borderRadius: 6,
-                    cursor: "pointer",
-                    fontSize: 13,
-                  }}
-                >
-                  <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                    {entry.query}
-                  </span>
-                  <button
-                    type="button"
-                    onMouseDown={(e) => {
-                      e.preventDefault();
-                      e.stopPropagation();
-                      removeRecentSearch(entry.query, entry.kind);
-                    }}
-                    title="Remove"
-                    aria-label={`Remove ${entry.query} from recent searches`}
-                    style={{ background: "none", border: "none", color: "var(--muted)", cursor: "pointer", fontSize: 12 }}
-                  >
-                    ✕
-                  </button>
-                </div>
-              ))}
-              <div style={{ borderTop: "1px solid var(--border)", marginTop: 4, paddingTop: 4 }}>
-                <button
-                  type="button"
-                  onMouseDown={(e) => {
-                    e.preventDefault();
-                    clearRecentSearches();
-                  }}
-                  style={{
-                    background: "none",
-                    border: "none",
-                    color: "var(--muted)",
-                    cursor: "pointer",
-                    fontSize: 12,
-                    padding: "4px 8px",
-                  }}
-                >
-                  ✕ Clear all
-                </button>
-              </div>
+              {q.trim() ? (
+                suggestions.length > 0 ? (
+                  <>
+                    <div style={{ fontSize: 11, color: "var(--muted)", textTransform: "uppercase", letterSpacing: 0.5, padding: "4px 8px" }}>
+                      {t("search.suggestions")}
+                    </div>
+                    {suggestions.map((entry) => (
+                      <div
+                        key={`${entry.kind}:${entry.label}`}
+                        onMouseDown={(e) => {
+                          e.preventDefault();
+                          nav(entry.route);
+                          setQ("");
+                          setSearchFocused(false);
+                        }}
+                        style={{ padding: "6px 8px", borderRadius: 6, cursor: "pointer", fontSize: 13 }}
+                      >
+                        {entry.label}
+                      </div>
+                    ))}
+                  </>
+                ) : null
+              ) : (
+                recent.length > 0 && (
+                  <>
+                    <div
+                      style={{
+                        fontSize: 11,
+                        color: "var(--muted)",
+                        textTransform: "uppercase",
+                        letterSpacing: 0.5,
+                        padding: "4px 8px",
+                      }}
+                    >
+                      {t("search.recent")}
+                    </div>
+                    {recent.map((entry) => (
+                      <div
+                        key={`${entry.kind}:${entry.query}`}
+                        onMouseDown={(e) => {
+                          e.preventDefault();
+                          goToSearch(entry.query, entry.kind === "all" ? undefined : entry.kind);
+                          setQ("");
+                          setSearchFocused(false);
+                        }}
+                        style={{
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "space-between",
+                          gap: 8,
+                          padding: "6px 8px",
+                          borderRadius: 6,
+                          cursor: "pointer",
+                          fontSize: 13,
+                        }}
+                      >
+                        <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                          {entry.query}
+                        </span>
+                        <button
+                          type="button"
+                          onMouseDown={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            removeRecentSearch(entry.query, entry.kind);
+                          }}
+                          title="Remove"
+                          aria-label={`Remove ${entry.query} from recent searches`}
+                          style={{ background: "none", border: "none", color: "var(--muted)", cursor: "pointer", fontSize: 12 }}
+                        >
+                          ✕
+                        </button>
+                      </div>
+                    ))}
+                    <div style={{ borderTop: "1px solid var(--border)", marginTop: 4, paddingTop: 4 }}>
+                      <button
+                        type="button"
+                        onMouseDown={(e) => {
+                          e.preventDefault();
+                          clearRecentSearches();
+                        }}
+                        style={{
+                          background: "none",
+                          border: "none",
+                          color: "var(--muted)",
+                          cursor: "pointer",
+                          fontSize: 12,
+                          padding: "4px 8px",
+                        }}
+                      >
+                        ✕ Clear all
+                      </button>
+                    </div>
+                  </>
+                )
+              )}
             </div>
           )}
+
         </form>
         <NetworkSwitcher />
         <WalletConnectButton />
+        <LanguageToggle />
         <ThemeToggle />
       </header>
 

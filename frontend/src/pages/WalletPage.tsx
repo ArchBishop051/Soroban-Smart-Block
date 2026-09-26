@@ -7,6 +7,7 @@ import EventTable from "../components/EventTable";
 import ExportButton from "../components/ExportButton";
 import WalletBalances from "../components/WalletBalances";
 import ProtocolBadge from "../components/ProtocolBadge";
+import { useWatchlist } from "./WatchlistPage";
 import {
   isMuxedAddress,
   muxedId,
@@ -184,6 +185,7 @@ export default function WalletPage() {
   const { address = "" } = useParams<{ address: string }>();
   const [searchParams, setSearchParams] = useSearchParams();
   const [copied, setCopied] = useState(false);
+  const { isSaved, toggle } = useWatchlist();
 
   // ── Resolve muxed addresses ──────────────────────────────────────────────
   // M... muxed addresses resolve to a base G... account for querying.
@@ -337,8 +339,16 @@ export default function WalletPage() {
             flexWrap: "wrap",
           }}
         >
-          <div>
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
             <h2 style={{ marginBottom: 4 }}>Wallet History</h2>
+            <button
+              type="button"
+              style={{ padding: "4px 8px", borderRadius: 999, border: "1px solid var(--border)", background: isSaved(address, "wallet") ? "var(--accent)" : "var(--surface)", color: isSaved(address, "wallet") ? "#0d1117" : "var(--text)", cursor: "pointer" }}
+              onClick={() => toggle({ id: address, kind: "wallet", label: address })}
+              aria-label="Toggle watchlist"
+            >
+              {isSaved(address, "wallet") ? "★" : "☆"}
+            </button>
             <code
               style={{ fontSize: 12, color: "var(--muted)", wordBreak: "break-all" }}
               title={address}

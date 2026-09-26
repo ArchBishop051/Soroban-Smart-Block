@@ -1,5 +1,6 @@
 import { lazy, Suspense } from "react";
 import { Routes, Route } from "react-router-dom";
+import { useTranslation } from "react-i18next";
 import Nav from "./components/Nav";
 import ErrorBoundary from "./components/ErrorBoundary";
 
@@ -26,9 +27,11 @@ const RegistrationSuccessPage = lazy(() => import("./pages/RegistrationSuccessPa
 const AbiDiffPage = lazy(() => import("./pages/AbiDiffPage"));
 const DashboardPage = lazy(() => import("./pages/DashboardPage"));
 const Status = lazy(() => import("./pages/Status"));
+const WatchlistPage = lazy(() => import("./pages/WatchlistPage"));
 
 function Fallback() {
-  return <p style={{ padding: 32, textAlign: "center", color: "var(--muted)" }}>Loading…</p>;
+  const { t } = useTranslation();
+  return <p style={{ padding: 32, textAlign: "center", color: "var(--muted)" }}>{t("common.loading")}</p>;
 }
 
 export default function App() {
@@ -55,6 +58,7 @@ export default function App() {
             <Route path="/graph" element={<GraphPage />} />
             <Route path="/sandbox" element={<Sandbox />} />
             <Route path="/sandbox/:id" element={<SharedSandbox />} />
+            <Route path="/watchlist" element={<WatchlistPage />} />
             <Route path="/setup" element={<SetupPage />} />
             <Route path="/batch" element={<BatchMultiCall />} />
             <Route path="/sub-invocations" element={<SubInvocationPage />} />

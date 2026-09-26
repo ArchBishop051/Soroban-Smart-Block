@@ -21,6 +21,7 @@ import { useLocalAbi } from "../hooks/useLocalAbi";
 import { useMetaTags } from "../hooks/useMetaTags";
 import TTLProgressBar from "../components/TTLProgressBar";
 import CircuitBreakerStatus from "../components/CircuitBreakerStatus";
+import { useWatchlist } from "./WatchlistPage";
 import QuorumFreezeBadge from "../components/QuorumFreezeBadge";
 import RwaMetadataDisplay from "../components/RwaMetadataDisplay";
 import SourceVerificationBadge from "../components/SourceVerificationBadge";
@@ -100,6 +101,7 @@ export default function ContractPage() {
   const [selectedFn, setSelectedFn] = useState("");
   const [snippetFn, setSnippetFn] = useState<string | null>(null);
   const [historyOpen, setHistoryOpen] = useState(false);
+  const { isSaved, toggle } = useWatchlist();
 
   // Shared event-volume time range for the stats widget + invocation chart (#799)
   const [statsRange, setStatsRange] = useState<StatsRange>(30);
@@ -246,6 +248,14 @@ export default function ContractPage() {
           <div>
             <div style={{ display: "flex", alignItems: "center", marginBottom: 8 }}>
               <h2 style={{ margin: 0 }}>{meta.name || "Unnamed Contract"}</h2>
+              <button
+                type="button"
+                style={{ marginLeft: 10, padding: "4px 8px", borderRadius: 999, border: "1px solid var(--border)", background: isSaved(id, "contract") ? "var(--accent)" : "var(--surface)", color: isSaved(id, "contract") ? "#0d1117" : "var(--text)", cursor: "pointer" }}
+                onClick={() => toggle({ id, kind: "contract", label: meta.name || id })}
+                aria-label="Toggle watchlist"
+              >
+                {isSaved(id, "contract") ? "★" : "☆"}
+              </button>
               {(meta as any).is_verified && <VerifiedBadge ledger={(meta as any).verified_ledger} />}{' '}
               <SourceVerifiedBadge contractId={id} />
               {meta.protocol_type && (
