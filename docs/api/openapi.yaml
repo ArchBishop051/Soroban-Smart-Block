@@ -306,6 +306,72 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
 
+  /api/events/stream:
+    get:
+      summary: Resume the live event feed over Server-Sent Events
+      description: >-
+        Starts live when no cursor is supplied. With a cursor, replays persisted
+        events before resuming live delivery. Resume with Last-Event-ID or
+        after_seq; reconnect with the last received event id after backpressure.
+      parameters:
+        - name: after_seq
+          in: query
+          schema:
+            type: integer
+            minimum: 0
+        - name: network
+          in: query
+          schema:
+            type: string
+            enum: [testnet, mainnet, futurenet]
+      responses:
+        "200":
+          description: Resumable event stream
+          content:
+            text/event-stream:
+              schema:
+                type: string
+        "422":
+          description: Invalid cursor
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /graphql:
+    post:
+      summary: Query events, contracts, wallets, and sub-invocations
+      description: Queries are limited to depth 4, complexity 1000, and 100 records per list field.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [query]
+              properties:
+                query:
+                  type: string
+                variables:
+                  type: object
+                operationName:
+                  type: string
+      responses:
+        "200":
+          description: GraphQL response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        "400":
+          description: Invalid or over-budget query
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+
   /api/v1/events:
     get:
       summary: List contract events (cursor pagination)
@@ -687,14 +753,20 @@ paths:
   /api/contracts:
     get:
       summary: List registered contracts
-      description: Returns a paginated list of registered contracts. Supports filtering by protocol type.
+      description: >-
+        Returns a cursor-paginated list. Pass next_cursor as after for the next
+        page. Numbered pages beyond page 1 are rejected. Private contracts are
+        visible only to their registering API-key owner.
       parameters:
-        - name: page
+        - name: after
+          in: query
+          description: Opaque cursor from the previous response
+          schema:
+            type: string
+        - name: q
           in: query
           schema:
-            type: integer
-            minimum: 1
-            default: 1
+            type: string
         - name: limit
           in: query
           schema:
@@ -816,7 +888,9 @@ paths:
   /api/wallet/{address}:
     get:
       summary: Get events involving a wallet address
-      description: Returns a list of events associated with a specific Stellar/Soroban wallet address.
+      description: >-
+        Returns a cursor-paginated event history for a Stellar/Soroban wallet.
+        Pass next_cursor as after_seq to continue.
       parameters:
         - name: address
           in: path
@@ -836,6 +910,28 @@ paths:
             (transfer/swap/mint/burn/stake match by prefix, e.g. "swap" also
             matches "swap_exact_tokens_for_tokens"; "other" matches any
             function outside those categories). Omit to return all events.
+        - name: after_seq
+          in: query
+          schema:
+            type: integer
+            minimum: 0
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 25
+        - name: from
+          in: query
+          schema:
+            type: string
+            format: date
+        - name: to
+          in: query
+          schema:
+            type: string
+            format: date
       responses:
         "200":
           description: Events matching the wallet address (empty array if none)
@@ -843,12 +939,15 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [events, horizon_account]
+                required: [events, next_cursor, horizon_account]
                 properties:
                   events:
                     type: array
                     items:
                       $ref: "#/components/schemas/DecodedEvent"
+                  next_cursor:
+                    type: integer
+                    nullable: true
                   horizon_account:
                     $ref: "#/components/schemas/HorizonAccount"
         "400":
@@ -1204,7 +1303,7 @@ paths:
   /api/contracts/{id}/events:
     get:
       summary: List events for a specific contract
-      description: Returns paginated decoded events emitted by the given contract.
+      description: Returns decoded events using a stable sequence cursor. Page jumps are not supported.
       parameters:
         - name: id
           in: path
@@ -1212,12 +1311,12 @@ paths:
           schema:
             type: string
             example: "CC4VM2DTTR4QO4J4E5K2YUXM"
-        - name: page
+        - name: after_seq
           in: query
+          description: Sequence cursor returned as next_cursor on the previous page
           schema:
             type: integer
-            default: 1
-            minimum: 1
+            minimum: 0
         - name: limit
           in: query
           schema:
@@ -1237,6 +1336,9 @@ paths:
                     type: array
                     items:
                       $ref: "#/components/schemas/DecodedEvent"
+                  next_cursor:
+                    type: integer
+                    nullable: true
                   pagination:
                     type: object
                     properties:
@@ -1244,8 +1346,8 @@ paths:
                         type: integer
                       limit:
                         type: integer
-                      total:
-                        type: integer
+                      has_next:
+                        type: boolean
               examples:
                 success:
                   summary: First page of events
@@ -3203,11 +3305,11 @@ paths:
             type: integer
             default: 100
             maximum: 1000
-        - name: offset
+        - name: after
           in: query
+          description: Opaque timestamp/id cursor from the previous response
           schema:
-            type: integer
-            default: 0
+            type: string
       responses:
         "200":
           description: Audit log entries
@@ -3215,7 +3317,7 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [data, limit, offset]
+                required: [data, limit, next_cursor]
                 properties:
                   data:
                     type: array
@@ -3223,8 +3325,9 @@ paths:
                       $ref: "#/components/schemas/AuditLogEntry"
                   limit:
                     type: integer
-                  offset:
-                    type: integer
+                  next_cursor:
+                    type: string
+                    nullable: true
         "401":
           description: Missing or invalid admin token
           content:
@@ -3282,23 +3385,35 @@ paths:
             type: integer
             default: 1000
             maximum: 1000
-        - name: offset
+        - name: after
           in: query
+          description: Opaque timestamp/id cursor from the previous response
           schema:
-            type: integer
-            default: 0
+            type: string
       responses:
         "200":
-          description: File download (CSV or JSON)
+          description: File download (CSV or JSON); X-Next-Cursor is set when more rows remain
+          headers:
+            X-Next-Cursor:
+              description: Pass as after to continue the export
+              schema:
+                type: string
           content:
             text/csv:
               schema:
                 type: string
             application/json:
               schema:
-                type: array
-                items:
-                  $ref: "#/components/schemas/AuditLogEntry"
+                type: object
+                required: [data, next_cursor]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/AuditLogEntry"
+                  next_cursor:
+                    type: string
+                    nullable: true
         "401":
           description: Missing or invalid admin token
           content:
@@ -3727,6 +3842,12 @@ paths:
           schema:
             type: string
             enum: [soroban, classic]
+        - name: after_seq
+          in: query
+          description: Event sequence cursor from the previous export response header
+          schema:
+            type: integer
+            minimum: 0
         - name: limit
           in: query
           schema:
@@ -3735,7 +3856,12 @@ paths:
             maximum: 10000
       responses:
         "200":
-          description: File download (CSV or JSON)
+          description: File download (CSV or JSON); X-Next-Cursor is set when more rows remain
+          headers:
+            X-Next-Cursor:
+              description: Pass as after_seq to continue the export
+              schema:
+                type: string
           content:
             text/csv:
               schema:
@@ -3754,7 +3880,20 @@ paths:
 
   /api/export/contracts:
     get:
-      summary: Export all registered contracts as CSV or JSON
+      summary: Export registered contracts as CSV or JSON
+      parameters:
+        - name: after
+          in: query
+          description: Opaque cursor from the previous export response header
+          schema:
+            type: string
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 10000
+            default: 1000
       parameters:
         - name: format
           in: query
@@ -3764,7 +3903,12 @@ paths:
             default: csv
       responses:
         "200":
-          description: File download (CSV or JSON)
+          description: File download (CSV or JSON); X-Next-Cursor is set when more rows remain
+          headers:
+            X-Next-Cursor:
+              description: Pass as after to continue the export
+              schema:
+                type: string
           content:
             text/csv:
               schema:
@@ -5043,12 +5187,15 @@ components:
 
     ContractsListResponse:
       type: object
-      required: [contracts, pagination]
+      required: [contracts, next_cursor, pagination]
       properties:
         contracts:
           type: array
           items:
             $ref: "#/components/schemas/ContractMeta"
+        next_cursor:
+          type: string
+          nullable: true
         pagination:
           type: object
           properties:
@@ -5056,10 +5203,8 @@ components:
               type: integer
             limit:
               type: integer
-            total:
-              type: integer
-            total_pages:
-              type: integer
+            has_next:
+              type: boolean
 
     ContractRegistration:
       type: object
@@ -5082,6 +5227,10 @@ components:
           type: string
           enum: [token, dex, lending, nft, bridge, other]
           description: Optional explicit protocol type; auto-tagged from functions if omitted
+        is_private:
+          type: boolean
+          default: false
+          description: Restrict ABI metadata to the registering API-key owner
 
     FunctionSpec:
       type: object

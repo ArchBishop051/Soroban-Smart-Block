@@ -77,11 +77,11 @@ async function fetchOnChainAbi(contractId) {
 }
 
 async function runVerificationBatch() {
-  let page = 1;
+  let after;
   let processed = 0;
 
   while (true) {
-    const { contracts } = await db.listContracts({ page, limit: BATCH_SIZE });
+    const { data: contracts, next_cursor } = await db.listContractsCursor({ after, limit: BATCH_SIZE });
     if (!contracts.length) break;
 
     for (const contract of contracts) {
@@ -107,8 +107,8 @@ async function runVerificationBatch() {
       }
     }
 
-    if (contracts.length < BATCH_SIZE) break;
-    page++;
+    if (!next_cursor) break;
+    after = next_cursor;
   }
 
   if (processed > 0) {

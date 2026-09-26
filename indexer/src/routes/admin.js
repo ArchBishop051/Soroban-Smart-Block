@@ -59,6 +59,22 @@ const AUDIT_LOG_COLUMNS = [
   'request_body_hash',
 ];
 
+function decodeAuditCursor(value) {
+  try {
+    const cursor = JSON.parse(Buffer.from(value, 'base64url').toString('utf8'));
+    if (!cursor.timestamp || !Number.isFinite(Date.parse(cursor.timestamp)) || !Number.isSafeInteger(Number(cursor.id)) || Number(cursor.id) < 1) {
+      throw new Error();
+    }
+    return cursor;
+  } catch {
+    throw new Error('Invalid audit-log cursor');
+  }
+}
+
+function encodeAuditCursor(row) {
+  return Buffer.from(JSON.stringify({ timestamp: row.timestamp, id: row.id })).toString('base64url');
+}
+
 // Note: EVENT_COLUMNS/CONTRACT_COLUMNS were only used by the removed legacy
 // /api/export/events and /api/export/contracts routes (see comment below)
 // and are dropped along with them.
@@ -271,11 +287,11 @@ export default function registerAdminRoutes(app) {
         from: fromTs,
         to: toTs,
         limit: limitParam = '100',
-        offset: offsetParam = '0',
+        after,
       } = req.query;
 
       const limit = Math.min(Number(limitParam) || 100, 1000);
-      const offset = Math.max(0, Number(offsetParam) || 0);
+      if (!Number.isInteger(limit) || limit < 1) return res.status(422).json({ error: 'Invalid limit' });
 
       const conditions = [];
       const params = [];
@@ -304,9 +320,14 @@ export default function registerAdminRoutes(app) {
         params.push(toTs);
         conditions.push(`timestamp <= $${params.length}`);
       }
+      if (after) {
+        const cursor = decodeAuditCursor(String(after));
+        params.push(cursor.timestamp, cursor.id);
+        conditions.push(`(timestamp, id) < ($${params.length - 1}::timestamptz, $${params.length}::bigint)`);
+      }
 
       const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
-      params.push(limit, offset);
+      params.push(limit + 1);
 
       const { rows } = await pool.query(
         `SELECT id, timestamp, api_key_id, key_name, tier, ip, method,
@@ -314,13 +335,16 @@ export default function registerAdminRoutes(app) {
                 user_agent, request_body_hash
          FROM api_audit_log
          ${where}
-         ORDER BY timestamp DESC
-         LIMIT $${params.length - 1} OFFSET $${params.length}`,
+         ORDER BY timestamp DESC, id DESC
+         LIMIT $${params.length}`,
         params,
       );
 
-      res.json({ data: rows, limit, offset });
+      const hasMore = rows.length > limit;
+      const data = hasMore ? rows.slice(0, limit) : rows;
+      res.json({ data, limit, next_cursor: hasMore ? encodeAuditCursor(data.at(-1)) : null });
     } catch (e) {
+      if (e.message === 'Invalid audit-log cursor') return res.status(422).json({ error: e.message });
       res.status(500).json({ error: e.message });
     }
   });
@@ -336,12 +360,12 @@ export default function registerAdminRoutes(app) {
         from: fromTs,
         to: toTs,
         limit: limitParam = '1000',
-        offset: offsetParam = '0',
+        after,
         format = 'json',
       } = req.query;
 
       const limit = Math.min(Number(limitParam) || 1000, 1000);
-      const offset = Math.max(0, Number(offsetParam) || 0);
+      if (!Number.isInteger(limit) || limit < 1) return res.status(422).json({ error: 'Invalid limit' });
 
       const conditions = [];
       const params = [];
@@ -370,9 +394,14 @@ export default function registerAdminRoutes(app) {
         params.push(toTs);
         conditions.push(`timestamp <= $${params.length}`);
       }
+      if (after) {
+        const cursor = decodeAuditCursor(String(after));
+        params.push(cursor.timestamp, cursor.id);
+        conditions.push(`(timestamp, id) < ($${params.length - 1}::timestamptz, $${params.length}::bigint)`);
+      }
 
       const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
-      params.push(limit, offset);
+      params.push(limit + 1);
 
       const { rows } = await pool.query(
         `SELECT id, timestamp, api_key_id, key_name, tier, ip, method,
@@ -380,21 +409,25 @@ export default function registerAdminRoutes(app) {
                 user_agent, request_body_hash
          FROM api_audit_log
          ${where}
-         ORDER BY timestamp DESC
-         LIMIT $${params.length - 1} OFFSET $${params.length}`,
+        ORDER BY timestamp DESC, id DESC
+        LIMIT $${params.length}`,
         params,
       );
+      const hasMore = rows.length > limit;
+      const data = hasMore ? rows.slice(0, limit) : rows;
+      if (hasMore) res.setHeader('X-Next-Cursor', encodeAuditCursor(data.at(-1)));
 
       if (format === 'csv') {
         res.setHeader('Content-Disposition', 'attachment; filename="audit-log.csv"');
         res.setHeader('Content-Type', 'text/csv');
-        return res.send(rowsToCsv(rows, AUDIT_LOG_COLUMNS));
+        return res.send(rowsToCsv(data, AUDIT_LOG_COLUMNS));
       }
 
       res.setHeader('Content-Disposition', 'attachment; filename="audit-log.json"');
       res.setHeader('Content-Type', 'application/json');
-      return res.json(rows);
+      return res.json({ data, next_cursor: hasMore ? encodeAuditCursor(data.at(-1)) : null });
     } catch (e) {
+      if (e.message === 'Invalid audit-log cursor') return res.status(422).json({ error: e.message });
       res.status(500).json({ error: e.message });
     }
   });

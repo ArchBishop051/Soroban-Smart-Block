@@ -211,7 +211,8 @@ export async function processSingleEvent(rawSorobanEvent, context = undefined) {
   decoded.storage_tiers = classifyStorageWrites(rawSorobanEvent);
   decoded.fee_bump = feeBump;
   decoded.archival_info = archivalInfo;
-  await db.upsertEventValidated(decoded);
+  const eventSeq = await db.upsertEventValidated(decoded);
+  if (eventSeq !== null && eventSeq !== undefined) decoded.seq = Number(eventSeq);
   // Bust wallet event caches (#534) — any new event may reference a wallet address.
   cacheInvalidate("wallet:events:*").catch(() => {});
   // Notify matching webhook subscriptions (non-blocking; failures retry via the DLQ).
