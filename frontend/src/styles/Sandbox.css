@@ -2,8 +2,8 @@
   display: flex;
   flex-direction: column;
   height: calc(100vh - 60px);
-  background: #1e1e1e;
-  color: #d4d4d4;
+  background: var(--bg);
+  color: var(--text);
   font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
 }
 
@@ -12,23 +12,25 @@
   justify-content: space-between;
   align-items: center;
   padding: 12px 20px;
-  background: #252526;
-  border-bottom: 1px solid #3e3e42;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
 }
 
 .sandbox-header h1 {
   margin: 0;
   font-size: 18px;
+  color: var(--text-primary);
 }
 
 .sandbox-header button {
   padding: 6px 12px;
-  background: #0e639c;
-  color: white;
+  background: var(--accent);
+  color: var(--accent-contrast);
   border: none;
-  border-radius: 3px;
+  border-radius: 4px;
   cursor: pointer;
   font-size: 12px;
+  font-weight: 600;
 }
 
 .sandbox-header button:disabled {
@@ -42,12 +44,12 @@
   gap: 1px;
   flex: 1;
   overflow: hidden;
-  background: #1e1e1e;
+  background: var(--border);
 }
 
 .file-explorer {
-  background: #252526;
-  border-right: 1px solid #3e3e42;
+  background: var(--surface);
+  border-right: 1px solid var(--border);
   overflow-y: auto;
   padding: 10px 0;
 }
@@ -57,13 +59,13 @@
   font-weight: 600;
   font-size: 12px;
   text-transform: uppercase;
-  color: #bebebe;
+  color: var(--text-muted);
 }
 
 .explorer-folder {
   padding: 4px 15px;
   font-size: 12px;
-  color: #bebebe;
+  color: var(--text-secondary);
   font-weight: 500;
   margin-top: 8px;
 }
@@ -71,23 +73,24 @@
 .explorer-file {
   padding: 4px 25px;
   font-size: 12px;
-  color: #d4d4d4;
+  color: var(--text);
   cursor: pointer;
   border-left: 3px solid transparent;
 }
 
 .explorer-file:hover {
-  background: #2d2d30;
+  background: var(--surface-raised);
 }
 
 .explorer-file.selected {
-  background: #37373d;
-  border-left-color: #0e639c;
+  background: var(--surface-raised);
+  border-left-color: var(--accent);
+  color: var(--accent);
 }
 
 .editor-section {
-  background: #1e1e1e;
-  border-right: 1px solid #3e3e42;
+  background: var(--surface);
+  border-right: 1px solid var(--border);
   overflow: hidden;
 }
 
@@ -96,7 +99,7 @@
   align-items: center;
   justify-content: center;
   height: 100%;
-  color: #6a6a6a;
+  color: var(--text-muted);
   font-size: 14px;
 }
 
@@ -104,13 +107,13 @@
   display: grid;
   grid-template-rows: 1fr 200px;
   gap: 1px;
-  background: #1e1e1e;
-  border-left: 1px solid #3e3e42;
+  background: var(--border);
+  border-left: 1px solid var(--border);
 }
 
 .preview {
-  background: #252526;
-  border-bottom: 1px solid #3e3e42;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
   overflow-y: auto;
   display: flex;
   flex-direction: column;
@@ -124,14 +127,14 @@
   font-weight: 600;
   font-size: 12px;
   text-transform: uppercase;
-  color: #bebebe;
-  border-bottom: 1px solid #3e3e42;
+  color: var(--text-muted);
+  border-bottom: 1px solid var(--border);
 }
 
 .preview-toggle {
   background: transparent;
   border: none;
-  color: #bebebe;
+  color: var(--text-secondary);
   cursor: pointer;
   font-size: 12px;
   padding: 2px 4px;
@@ -150,35 +153,35 @@
 .contract-events h3 {
   margin: 0 0 8px 0;
   font-size: 11px;
-  color: #bebebe;
+  color: var(--text-muted);
   text-transform: uppercase;
 }
 
 .event-item {
   padding: 4px 0;
-  color: #ce9178;
+  color: var(--warning);
   font-size: 11px;
 }
 
 .action-btn {
   padding: 4px 8px;
   margin: 4px 0;
-  background: #0e639c;
-  color: white;
+  background: var(--accent);
+  color: var(--accent-contrast);
   border: none;
-  border-radius: 2px;
+  border-radius: 4px;
   cursor: pointer;
   font-size: 11px;
   width: 100%;
 }
 
 .action-btn:hover {
-  background: #1177bb;
+  opacity: 0.9;
 }
 
 .terminal {
-  background: #1e1e1e;
-  border-top: 1px solid #3e3e42;
+  background: var(--surface-sunken);
+  border-top: 1px solid var(--border);
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -189,8 +192,8 @@
   font-weight: 600;
   font-size: 12px;
   text-transform: uppercase;
-  color: #bebebe;
-  border-bottom: 1px solid #3e3e42;
+  color: var(--text-muted);
+  border-bottom: 1px solid var(--border);
 }
 
 .terminal-content {
@@ -198,7 +201,7 @@
   overflow-y: auto;
   padding: 8px 12px;
   font-size: 11px;
-  color: #4ec9b0;
+  color: var(--success);
   line-height: 1.4;
 }
 

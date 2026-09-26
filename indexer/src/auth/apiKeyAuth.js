@@ -19,6 +19,7 @@ import { logger } from "../logger.js";
 import crypto from "crypto";
 import bcrypt from "bcryptjs";
 import { LRUCache } from "lru-cache";
+import { LEGACY_SCOPES } from "./scopes.js";
 import { pool } from "../db.js";
 import { ipMatchesCidr, ipInCidrList, getClientIp } from "../admin/ipUtils.js";
 
@@ -88,7 +89,8 @@ async function lookupKeyInDb(rawKey) {
     `SELECT id, name, key_hash, tier, rate_limit, daily_limit,
             allowed_ips, allowed_endpoints, expires_at,
             revoked, verified, last_used_at, usage_count,
-            rotated_at, rotation_grace_until
+            rotated_at, rotation_grace_until,
+            scopes, allowed_contract_ids, allowed_origins
      FROM   api_keys
      WHERE  key_prefix = $1`,
     [prefix],
@@ -195,6 +197,7 @@ async function apiKeyAuthenticator(req, res, next) {
         rateLimit: null,
         keyId: null,
         keyName: "static-admin-key",
+        scopes: ["admin:*"],
       };
       return next();
     }
@@ -273,6 +276,12 @@ async function apiKeyAuthenticator(req, res, next) {
       rateLimit: keyRecord.rate_limit ?? null,
       keyId: keyRecord.id,
       keyName: keyRecord.name,
+      // Scoped tokens (#901). Rows migrated before scopes existed carry
+      // LEGACY_SCOPES from the migration; null only if the column is missing.
+      scopes: keyRecord.scopes ?? LEGACY_SCOPES,
+      allowedContractIds: keyRecord.allowed_contract_ids ?? [],
+      allowedOrigins: keyRecord.allowed_origins ?? [],
+      expiresAt: keyRecord.expires_at ?? null,
     };
 
     // 5. Enforce the per-day API key limit synchronously, then continue.

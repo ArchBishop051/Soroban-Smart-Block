@@ -1,5 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { createIngestPipeline } from "../src/ingestPipeline.js";
 
 function parseRawAmount(raw_data) {
   if (!raw_data) return null;
@@ -30,6 +31,27 @@ describe("parseRawAmount", () => {
   });
   it("returns null for undefined input", () => {
     assert.equal(parseRawAmount(undefined), null);
+  });
+});
+
+describe("createIngestPipeline", () => {
+  it("processes queued work in bounded batches without overflowing the queue", async () => {
+    const seen = [];
+    const pipeline = createIngestPipeline({
+      concurrency: 2,
+      maxQueue: 4,
+      batchSize: 2,
+      processBatch: async (batch) => {
+        for (const item of batch) seen.push(item);
+      },
+    });
+
+    const accepted = pipeline.enqueue([1, 2, 3, 4, 5]);
+    await pipeline.drain();
+
+    assert.equal(accepted.accepted, 4);
+    assert.equal(accepted.dropped, 1);
+    assert.deepEqual(seen.sort((a, b) => a - b), [1, 2, 3, 4]);
   });
 });
 

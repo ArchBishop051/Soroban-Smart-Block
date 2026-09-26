@@ -70,7 +70,10 @@
       "Bash(sed -i 's/^      const sub = await db.createWebhookSubscription/      const _sub = await db.createWebhookSubscription/' test/webhooks-wallet.test.js)",
       "Bash(sed -i 's/const later = async \\(\\) =>/const _later = async \\(\\) =>/' test/api/health.test.js)",
       "Bash(sed -i 's/\\\\bcapturedReq\\\\b/_capturedReq/g' test/abuseDetector.test.js test/concurrentLimiter.test.js test/graphqlComplexity.test.js)",
-      "Bash(sed -i 's/const prevIncrCalls =/const _prevIncrCalls =/;s/const incrBefore =/const _incrBefore =/' test/abuseDetector.test.js)"
+      "Bash(sed -i 's/const prevIncrCalls =/const _prevIncrCalls =/;s/const incrBefore =/const _incrBefore =/' test/abuseDetector.test.js)",
+      "Bash(env)",
+      "Bash(curl -s \"https://api.github.com/repos/Soroban-Smart-Block-Explorer/Soroban-Smart-Block/issues?state=open&per_page=50\")",
+      "Bash(python3 /tmp/claude-1000/-workspaces-Soroban-Smart-Block/978655c8-121d-4247-b25b-069e07d6b279/scratchpad/new_issues.py)"
     ],
     "additionalDirectories": [
       "/workspaces/Soroban-Smart-Block/contracts/explorer/tests"

@@ -17,6 +17,7 @@ import { logger } from "./logger.js";
  *   9. DECODE_RATE_LOW     — decoder success rate below minimum over the last 24h
  */
 
+import { get as getRuntimeConfig } from "./runtimeConfig.js";
 import config from "./config.js";
 
 const SLACK_WEBHOOK_URL = process.env.SLACK_WEBHOOK_URL ?? "";
@@ -32,6 +33,7 @@ const MIN_DECODE_RATE = config.ALERT_MIN_DECODE_RATE;
 
 export const ALERT_CONDITIONS = {
   INDEXER_DOWN: "INDEXER_DOWN",
+  RUNTIME_CONFIG_REVERTED: "RUNTIME_CONFIG_REVERTED",
   LEDGER_GAP: "LEDGER_GAP",
   DB_FAILURE: "DB_FAILURE",
   RESOURCE_CONSTRAINT: "RESOURCE_CONSTRAINT",
@@ -161,7 +163,8 @@ export async function checkIndexerDown() {
  * @param {number} fromLedger  Start ledger of the gap
  */
 export async function checkLedgerGap(gapSize, fromLedger) {
-  if (gapSize > GAP_THRESHOLD) {
+  // Runtime override (#894), read live on every check.
+  if (gapSize > (getRuntimeConfig("alertThresholds")?.ledgerGap ?? GAP_THRESHOLD)) {
     await fireAlert(
       ALERT_CONDITIONS.LEDGER_GAP,
       `Gap of ${gapSize} ledgers starting at ${fromLedger} (threshold=${GAP_THRESHOLD})`,

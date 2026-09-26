@@ -96,7 +96,9 @@ function extractGasCosts(ev) {
     const meta = ev.txMeta;
     if (!meta) return result;
     let sorobanMeta = null;
-    try { sorobanMeta = meta.v3?.()?.sorobanMeta?.() ?? null; } catch { }
+    try {
+      sorobanMeta = meta.v3?.()?.sorobanMeta?.() ?? null;
+    } catch {}
     if (!sorobanMeta) return result;
     try {
       const extV1 = sorobanMeta.ext?.()?.v1?.();
@@ -105,11 +107,10 @@ function extractGasCosts(ev) {
           result.cpu_instructions = Number(extV1.totalNonRefundableResourceFeeCharged);
         if (extV1.totalRefundableResourceFeeCharged != null)
           result.fee_charged = Number(extV1.totalRefundableResourceFeeCharged);
-        if (extV1.rentFeeCharged != null)
-          result.mem_bytes = Number(extV1.rentFeeCharged);
+        if (extV1.rentFeeCharged != null) result.mem_bytes = Number(extV1.rentFeeCharged);
       }
-    } catch { }
-  } catch { }
+    } catch {}
+  } catch {}
   return result;
 }
 
@@ -149,7 +150,10 @@ function nativeXlmDescription(fnName, args, data) {
   if (fnName === "burn") {
     const [from, amount] = args;
     const amt = amount ?? data;
-    return { function: "unwrap_native", description: `Unwrapped ${fmtXlm(amt)} XLM (Soroban → Classic) from ${fmt(from)}` };
+    return {
+      function: "unwrap_native",
+      description: `Unwrapped ${fmtXlm(amt)} XLM (Soroban → Classic) from ${fmt(from)}`,
+    };
   }
   return null;
 }
@@ -170,7 +174,6 @@ function makeXdrEvent(type, topics, data, withContractId = true, _ledger = 12345
 
 // ── Test addresses ──────────────────────────────────────────────────────────
 
-
 // ── ScVal Type Tests ────────────────────────────────────────────────────────
 // Tests 1: Each ScVal type decoded correctly
 
@@ -178,7 +181,7 @@ describe("decoder — ScVal type decoding", () => {
   describe("scvSymbol", () => {
     it("decodes symbol type correctly", () => {
       const result = decodeContractEvent(
-        makeXdrEvent(xdr.ContractEventType.contract(), [xdr.ScVal.scvSymbol("transfer")], xdr.ScVal.scvVoid())
+        makeXdrEvent(xdr.ContractEventType.contract(), [xdr.ScVal.scvSymbol("transfer")], xdr.ScVal.scvVoid()),
       );
       assert.equal(result.topics[0], "transfer");
       assert.equal(typeof result.topics[0], "string");
@@ -188,7 +191,11 @@ describe("decoder — ScVal type decoding", () => {
   describe("scvString", () => {
     it("decodes string type correctly", () => {
       const result = decodeContractEvent(
-        makeXdrEvent(xdr.ContractEventType.contract(), [xdr.ScVal.scvSymbol("event")], xdr.ScVal.scvString("hello world"))
+        makeXdrEvent(
+          xdr.ContractEventType.contract(),
+          [xdr.ScVal.scvSymbol("event")],
+          xdr.ScVal.scvString("hello world"),
+        ),
       );
       assert.equal(result.value, "hello world");
     });
@@ -197,14 +204,14 @@ describe("decoder — ScVal type decoding", () => {
   describe("scvBool", () => {
     it("decodes boolean true", () => {
       const result = decodeContractEvent(
-        makeXdrEvent(xdr.ContractEventType.contract(), [xdr.ScVal.scvSymbol("activated")], xdr.ScVal.scvBool(true))
+        makeXdrEvent(xdr.ContractEventType.contract(), [xdr.ScVal.scvSymbol("activated")], xdr.ScVal.scvBool(true)),
       );
       assert.equal(result.value, true);
     });
 
     it("decodes boolean false", () => {
       const result = decodeContractEvent(
-        makeXdrEvent(xdr.ContractEventType.contract(), [xdr.ScVal.scvSymbol("paused")], xdr.ScVal.scvBool(false))
+        makeXdrEvent(xdr.ContractEventType.contract(), [xdr.ScVal.scvSymbol("paused")], xdr.ScVal.scvBool(false)),
       );
       assert.equal(result.value, false);
     });
@@ -213,21 +220,21 @@ describe("decoder — ScVal type decoding", () => {
   describe("scvI32", () => {
     it("decodes i32 negative value", () => {
       const result = decodeContractEvent(
-        makeXdrEvent(xdr.ContractEventType.contract(), [xdr.ScVal.scvSymbol("amount")], xdr.ScVal.scvI32(-42))
+        makeXdrEvent(xdr.ContractEventType.contract(), [xdr.ScVal.scvSymbol("amount")], xdr.ScVal.scvI32(-42)),
       );
       assert.equal(result.value, -42);
     });
 
     it("decodes i32 zero", () => {
       const result = decodeContractEvent(
-        makeXdrEvent(xdr.ContractEventType.contract(), [xdr.ScVal.scvSymbol("zero")], xdr.ScVal.scvI32(0))
+        makeXdrEvent(xdr.ContractEventType.contract(), [xdr.ScVal.scvSymbol("zero")], xdr.ScVal.scvI32(0)),
       );
       assert.equal(result.value, 0);
     });
 
     it("decodes i32 positive value", () => {
       const result = decodeContractEvent(
-        makeXdrEvent(xdr.ContractEventType.contract(), [xdr.ScVal.scvSymbol("count")], xdr.ScVal.scvI32(1000))
+        makeXdrEvent(xdr.ContractEventType.contract(), [xdr.ScVal.scvSymbol("count")], xdr.ScVal.scvI32(1000)),
       );
       assert.equal(result.value, 1000);
     });
@@ -236,14 +243,14 @@ describe("decoder — ScVal type decoding", () => {
   describe("scvU32", () => {
     it("decodes u32 zero", () => {
       const result = decodeContractEvent(
-        makeXdrEvent(xdr.ContractEventType.contract(), [xdr.ScVal.scvSymbol("count")], xdr.ScVal.scvU32(0))
+        makeXdrEvent(xdr.ContractEventType.contract(), [xdr.ScVal.scvSymbol("count")], xdr.ScVal.scvU32(0)),
       );
       assert.equal(result.value, 0);
     });
 
     it("decodes u32 positive value", () => {
       const result = decodeContractEvent(
-        makeXdrEvent(xdr.ContractEventType.contract(), [xdr.ScVal.scvSymbol("count")], xdr.ScVal.scvU32(4294967295))
+        makeXdrEvent(xdr.ContractEventType.contract(), [xdr.ScVal.scvSymbol("count")], xdr.ScVal.scvU32(4294967295)),
       );
       assert.equal(result.value, 4294967295);
     });
@@ -252,14 +259,22 @@ describe("decoder — ScVal type decoding", () => {
   describe("scvI64", () => {
     it("decodes i64 positive value", () => {
       const result = decodeContractEvent(
-        makeXdrEvent(xdr.ContractEventType.contract(), [xdr.ScVal.scvSymbol("amount")], xdr.ScVal.scvI64(xdr.Int64.fromString("9223372036854775807")))
+        makeXdrEvent(
+          xdr.ContractEventType.contract(),
+          [xdr.ScVal.scvSymbol("amount")],
+          xdr.ScVal.scvI64(xdr.Int64.fromString("9223372036854775807")),
+        ),
       );
       assert.equal(result.value, "9223372036854775807");
     });
 
     it("decodes i64 negative value", () => {
       const result = decodeContractEvent(
-        makeXdrEvent(xdr.ContractEventType.contract(), [xdr.ScVal.scvSymbol("amount")], xdr.ScVal.scvI64(xdr.Int64.fromString("-9223372036854775808")))
+        makeXdrEvent(
+          xdr.ContractEventType.contract(),
+          [xdr.ScVal.scvSymbol("amount")],
+          xdr.ScVal.scvI64(xdr.Int64.fromString("-9223372036854775808")),
+        ),
       );
       assert.equal(result.value, "-9223372036854775808");
     });
@@ -268,7 +283,11 @@ describe("decoder — ScVal type decoding", () => {
   describe("scvU64", () => {
     it("decodes u64 value", () => {
       const result = decodeContractEvent(
-        makeXdrEvent(xdr.ContractEventType.contract(), [xdr.ScVal.scvSymbol("amount")], xdr.ScVal.scvU64(xdr.Uint64.fromString("18446744073709551615")))
+        makeXdrEvent(
+          xdr.ContractEventType.contract(),
+          [xdr.ScVal.scvSymbol("amount")],
+          xdr.ScVal.scvU64(xdr.Uint64.fromString("18446744073709551615")),
+        ),
       );
       assert.equal(result.value, "18446744073709551615");
     });
@@ -280,7 +299,7 @@ describe("decoder — ScVal type decoding", () => {
         new xdr.Int128Parts({
           hi: xdr.Int64.fromString("0"),
           lo: xdr.Uint64.fromString("999999999999"),
-        })
+        }),
       );
       const parsed = parseI128(scv);
       assert.equal(parsed, 999999999999n);
@@ -291,7 +310,7 @@ describe("decoder — ScVal type decoding", () => {
         new xdr.Int128Parts({
           hi: xdr.Int64.fromString("1"),
           lo: xdr.Uint64.fromString("0"),
-        })
+        }),
       );
       const parsed = parseI128(scv);
       assert.equal(parsed, 18446744073709551616n);
@@ -304,7 +323,7 @@ describe("decoder — ScVal type decoding", () => {
         new xdr.UInt128Parts({
           hi: xdr.Uint64.fromString("0"),
           lo: xdr.Uint64.fromString("999999999999"),
-        })
+        }),
       );
       const parsed = parseU128(scv);
       assert.equal(parsed, 999999999999n);
@@ -315,7 +334,7 @@ describe("decoder — ScVal type decoding", () => {
         new xdr.UInt128Parts({
           hi: xdr.Uint64.fromString("1"),
           lo: xdr.Uint64.fromString("500"),
-        })
+        }),
       );
       const parsed = parseU128(scv);
       assert.equal(parsed, 18446744073709551616n + 500n);
@@ -325,7 +344,11 @@ describe("decoder — ScVal type decoding", () => {
   describe("scvBytes", () => {
     it("decodes bytes as hex string", () => {
       const result = decodeContractEvent(
-        makeXdrEvent(xdr.ContractEventType.contract(), [xdr.ScVal.scvSymbol("hash")], xdr.ScVal.scvBytes(Buffer.from("deadbeef", "hex")))
+        makeXdrEvent(
+          xdr.ContractEventType.contract(),
+          [xdr.ScVal.scvSymbol("hash")],
+          xdr.ScVal.scvBytes(Buffer.from("deadbeef", "hex")),
+        ),
       );
       assert.equal(result.value, "deadbeef");
     });
@@ -334,18 +357,18 @@ describe("decoder — ScVal type decoding", () => {
   describe("scvVec", () => {
     it("decodes vec of primitives", () => {
       const result = decodeContractEvent(
-        makeXdrEvent(xdr.ContractEventType.contract(), [xdr.ScVal.scvSymbol("args")], xdr.ScVal.scvVec([
-          xdr.ScVal.scvI32(1),
-          xdr.ScVal.scvI32(2),
-          xdr.ScVal.scvI32(3),
-        ]))
+        makeXdrEvent(
+          xdr.ContractEventType.contract(),
+          [xdr.ScVal.scvSymbol("args")],
+          xdr.ScVal.scvVec([xdr.ScVal.scvI32(1), xdr.ScVal.scvI32(2), xdr.ScVal.scvI32(3)]),
+        ),
       );
       assert.deepEqual(result.value, [1, 2, 3]);
     });
 
     it("decodes empty vec", () => {
       const result = decodeContractEvent(
-        makeXdrEvent(xdr.ContractEventType.contract(), [xdr.ScVal.scvSymbol("empty")], xdr.ScVal.scvVec([]))
+        makeXdrEvent(xdr.ContractEventType.contract(), [xdr.ScVal.scvSymbol("empty")], xdr.ScVal.scvVec([])),
       );
       assert.deepEqual(result.value, []);
     });
@@ -354,10 +377,14 @@ describe("decoder — ScVal type decoding", () => {
   describe("scvMap", () => {
     it("decodes map with string keys", () => {
       const result = decodeContractEvent(
-        makeXdrEvent(xdr.ContractEventType.contract(), [xdr.ScVal.scvSymbol("event")], xdr.ScVal.scvMap([
-          new xdr.ScMapEntry({ key: xdr.ScVal.scvString("from"), val: xdr.ScVal.scvString("GABC") }),
-          new xdr.ScMapEntry({ key: xdr.ScVal.scvString("to"), val: xdr.ScVal.scvString("XYZ") }),
-        ]))
+        makeXdrEvent(
+          xdr.ContractEventType.contract(),
+          [xdr.ScVal.scvSymbol("event")],
+          xdr.ScVal.scvMap([
+            new xdr.ScMapEntry({ key: xdr.ScVal.scvString("from"), val: xdr.ScVal.scvString("GABC") }),
+            new xdr.ScMapEntry({ key: xdr.ScVal.scvString("to"), val: xdr.ScVal.scvString("XYZ") }),
+          ]),
+        ),
       );
       assert.equal(result.value.from, "GABC");
       assert.equal(result.value.to, "XYZ");
@@ -365,16 +392,18 @@ describe("decoder — ScVal type decoding", () => {
 
     it("decodes map with symbol keys", () => {
       const result = decodeContractEvent(
-        makeXdrEvent(xdr.ContractEventType.contract(), [xdr.ScVal.scvSymbol("config")], xdr.ScVal.scvMap([
-          new xdr.ScMapEntry({ key: xdr.ScVal.scvSymbol("decimals"), val: xdr.ScVal.scvU32(7) }),
-        ]))
+        makeXdrEvent(
+          xdr.ContractEventType.contract(),
+          [xdr.ScVal.scvSymbol("config")],
+          xdr.ScVal.scvMap([new xdr.ScMapEntry({ key: xdr.ScVal.scvSymbol("decimals"), val: xdr.ScVal.scvU32(7) })]),
+        ),
       );
       assert.equal(result.value.decimals, 7);
     });
 
     it("decodes empty map", () => {
       const result = decodeContractEvent(
-        makeXdrEvent(xdr.ContractEventType.contract(), [xdr.ScVal.scvSymbol("empty")], xdr.ScVal.scvMap([]))
+        makeXdrEvent(xdr.ContractEventType.contract(), [xdr.ScVal.scvSymbol("empty")], xdr.ScVal.scvMap([])),
       );
       assert.deepEqual(result.value, {});
     });
@@ -384,9 +413,11 @@ describe("decoder — ScVal type decoding", () => {
     it("decodes account address", () => {
       const ed25519 = Buffer.alloc(32, 1);
       const result = decodeContractEvent(
-        makeXdrEvent(xdr.ContractEventType.contract(), [xdr.ScVal.scvSymbol("owner")], xdr.ScVal.scvAddress(
-          xdr.ScAddress.scAddressTypeAccount(xdr.PublicKey.publicKeyTypeEd25519(ed25519))
-        ))
+        makeXdrEvent(
+          xdr.ContractEventType.contract(),
+          [xdr.ScVal.scvSymbol("owner")],
+          xdr.ScVal.scvAddress(xdr.ScAddress.scAddressTypeAccount(xdr.PublicKey.publicKeyTypeEd25519(ed25519))),
+        ),
       );
       assert.equal(result.value, StrKey.encodeEd25519PublicKey(ed25519));
     });
@@ -394,9 +425,11 @@ describe("decoder — ScVal type decoding", () => {
     it("decodes contract address", () => {
       const contractId = Buffer.alloc(32, 0xab);
       const result = decodeContractEvent(
-        makeXdrEvent(xdr.ContractEventType.contract(), [xdr.ScVal.scvSymbol("token")], xdr.ScVal.scvAddress(
-          xdr.ScAddress.scAddressTypeContract(contractId)
-        ))
+        makeXdrEvent(
+          xdr.ContractEventType.contract(),
+          [xdr.ScVal.scvSymbol("token")],
+          xdr.ScVal.scvAddress(xdr.ScAddress.scAddressTypeContract(contractId)),
+        ),
       );
       assert.equal(result.value, StrKey.encodeContract(contractId));
     });
@@ -410,10 +443,10 @@ describe("decoder — ScVal type decoding", () => {
           hiLo: xdr.Uint64.fromString("0"),
           loHi: xdr.Uint64.fromString("0"),
           loLo: xdr.Uint64.fromString("12345"),
-        })
+        }),
       );
       const result = decodeContractEvent(
-        makeXdrEvent(xdr.ContractEventType.contract(), [xdr.ScVal.scvSymbol("amount")], scv)
+        makeXdrEvent(xdr.ContractEventType.contract(), [xdr.ScVal.scvSymbol("amount")], scv),
       );
       assert.equal(result.value, "12345");
     });
@@ -427,10 +460,10 @@ describe("decoder — ScVal type decoding", () => {
           hiLo: xdr.Uint64.fromString("0"),
           loHi: xdr.Uint64.fromString("0"),
           loLo: xdr.Uint64.fromString("999"),
-        })
+        }),
       );
       const result = decodeContractEvent(
-        makeXdrEvent(xdr.ContractEventType.contract(), [xdr.ScVal.scvSymbol("amount")], scv)
+        makeXdrEvent(xdr.ContractEventType.contract(), [xdr.ScVal.scvSymbol("amount")], scv),
       );
       assert.equal(result.value, "999");
     });
@@ -443,7 +476,7 @@ describe("decoder — ScVal type decoding", () => {
           xdr.ContractEventType.contract(),
           [xdr.ScVal.scvSymbol("error")],
           xdr.ScVal.scvError(xdr.ScError.sceContract(10)),
-        )
+        ),
       );
       assert.deepEqual(result.value, { error: "10" });
     });
@@ -452,7 +485,11 @@ describe("decoder — ScVal type decoding", () => {
   describe("scvTimepoint", () => {
     it("decodes timepoint as bigint", () => {
       const result = decodeContractEvent(
-        makeXdrEvent(xdr.ContractEventType.contract(), [xdr.ScVal.scvSymbol("timestamp")], xdr.ScVal.scvTimepoint(xdr.Uint64.fromString("1234567890")))
+        makeXdrEvent(
+          xdr.ContractEventType.contract(),
+          [xdr.ScVal.scvSymbol("timestamp")],
+          xdr.ScVal.scvTimepoint(xdr.Uint64.fromString("1234567890")),
+        ),
       );
       assert.equal(result.value, "1234567890");
     });
@@ -461,7 +498,11 @@ describe("decoder — ScVal type decoding", () => {
   describe("scvDuration", () => {
     it("decodes duration as bigint", () => {
       const result = decodeContractEvent(
-        makeXdrEvent(xdr.ContractEventType.contract(), [xdr.ScVal.scvSymbol("time")], xdr.ScVal.scvDuration(xdr.Uint64.fromString("3600")))
+        makeXdrEvent(
+          xdr.ContractEventType.contract(),
+          [xdr.ScVal.scvSymbol("time")],
+          xdr.ScVal.scvDuration(xdr.Uint64.fromString("3600")),
+        ),
       );
       assert.equal(result.value, "3600");
     });
@@ -476,7 +517,7 @@ describe("decoder — Nested Vec and Map decoding", () => {
     const innerVec = xdr.ScVal.scvVec([xdr.ScVal.scvI32(1), xdr.ScVal.scvI32(2)]);
     const outerVec = xdr.ScVal.scvVec([innerVec, xdr.ScVal.scvI32(3)]);
     const result = decodeContractEvent(
-      makeXdrEvent(xdr.ContractEventType.contract(), [xdr.ScVal.scvSymbol("nested")], outerVec)
+      makeXdrEvent(xdr.ContractEventType.contract(), [xdr.ScVal.scvSymbol("nested")], outerVec),
     );
     assert.deepEqual(result.value, [[1, 2], 3]);
   });
@@ -487,18 +528,16 @@ describe("decoder — Nested Vec and Map decoding", () => {
     ]);
     const outerVec = xdr.ScVal.scvVec([innerMap]);
     const result = decodeContractEvent(
-      makeXdrEvent(xdr.ContractEventType.contract(), [xdr.ScVal.scvSymbol("items")], outerVec)
+      makeXdrEvent(xdr.ContractEventType.contract(), [xdr.ScVal.scvSymbol("items")], outerVec),
     );
     assert.deepEqual(result.value, [{ id: 1 }]);
   });
 
   it("decodes nested vec inside map", () => {
     const innerVec = xdr.ScVal.scvVec([xdr.ScVal.scvU32(10), xdr.ScVal.scvU32(20)]);
-    const map = xdr.ScVal.scvMap([
-      new xdr.ScMapEntry({ key: xdr.ScVal.scvSymbol("values"), val: innerVec }),
-    ]);
+    const map = xdr.ScVal.scvMap([new xdr.ScMapEntry({ key: xdr.ScVal.scvSymbol("values"), val: innerVec })]);
     const result = decodeContractEvent(
-      makeXdrEvent(xdr.ContractEventType.contract(), [xdr.ScVal.scvSymbol("data")], map)
+      makeXdrEvent(xdr.ContractEventType.contract(), [xdr.ScVal.scvSymbol("data")], map),
     );
     assert.deepEqual(result.value.values, [10, 20]);
   });
@@ -515,7 +554,7 @@ describe("decoder — Nested Vec and Map decoding", () => {
       }),
     ]);
     const result = decodeContractEvent(
-      makeXdrEvent(xdr.ContractEventType.contract(), [xdr.ScVal.scvSymbol("root")], deep)
+      makeXdrEvent(xdr.ContractEventType.contract(), [xdr.ScVal.scvSymbol("root")], deep),
     );
     assert.deepEqual(result.value, { items: [{ nested: "deep" }] });
   });
@@ -549,14 +588,17 @@ describe("decoder — Amount formatting", () => {
 // Tests 2: SEP-41 events (transfer, mint, burn, clawback)
 
 describe("decoder — SEP-41 events", () => {
-  const MOCK_CONTRACT = "CABC123DEF456GHI789JKL012MNO345PQR678STU901VWX234YZA";
-
   it("formats transfer event with exact human-readable output", () => {
     const d = buildDescription(
       "transfer",
-      ["GABC123DEF456GHI789JKL012MNO345PQR678STU901VWX234YZ", "GBCD234DEF567GHI890JKL123MNO456PQR789STU012VWX345YZ", "100000000", "USDC"],
+      [
+        "GABC123DEF456GHI789JKL012MNO345PQR678STU901VWX234YZ",
+        "GBCD234DEF567GHI890JKL123MNO456PQR789STU012VWX345YZ",
+        "100000000",
+        "USDC",
+      ],
       null,
-      "USDC Token"
+      "USDC Token",
     );
     assert.match(d, /transferred 100000000 USDC/);
     assert.match(d, /to .*USDC Token/);
@@ -567,7 +609,7 @@ describe("decoder — SEP-41 events", () => {
       "mint",
       ["GABC123DEF456GHI789JKL012MNO345PQR678STU901VWX234YZ", "500000000", "USDC"],
       null,
-      "USDC Token"
+      "USDC Token",
     );
     assert.match(d, /500000000 USDC minted/);
     assert.match(d, /on USDC Token/);
@@ -578,7 +620,7 @@ describe("decoder — SEP-41 events", () => {
       "burn",
       ["GABC123DEF456GHI789JKL012MNO345PQR678STU901VWX234YZ", "500000000", "USDC"],
       null,
-      "USDC Token"
+      "USDC Token",
     );
     assert.match(d, /500000000 USDC burned/);
     assert.match(d, /on USDC Token/);
@@ -587,9 +629,14 @@ describe("decoder — SEP-41 events", () => {
   it("formats clawback event with exact human-readable output", () => {
     const d = buildDescription(
       "clawback",
-      ["GADMIN123456789012345678901234567890123456789012", "GVICTIM9876543210987654321098765432109876543210987", "100000000", "USDC"],
+      [
+        "GADMIN123456789012345678901234567890123456789012",
+        "GVICTIM9876543210987654321098765432109876543210987",
+        "100000000",
+        "USDC",
+      ],
       null,
-      "USDC Token"
+      "USDC Token",
     );
     assert.match(d, /CLAWBACK/);
     assert.match(d, /recovered/);
@@ -647,9 +694,13 @@ describe("decoder — Missing ABI graceful fallback", () => {
   it("missing token parameter handled gracefully", () => {
     const d = buildDescription(
       "transfer",
-      ["GABC123DEF456GHI789JKL012MNO345PQR678STU901VWX234YZ", "GBCD234DEF567GHI890JKL123MNO456PQR789STU012VWX345YZ", "100"],
+      [
+        "GABC123DEF456GHI789JKL012MNO345PQR678STU901VWX234YZ",
+        "GBCD234DEF567GHI890JKL123MNO456PQR789STU012VWX345YZ",
+        "100",
+      ],
       null,
-      "Token"
+      "Token",
     );
     // Token may be undefined/null, should still work
     assert.match(d, /transferred 100/);
