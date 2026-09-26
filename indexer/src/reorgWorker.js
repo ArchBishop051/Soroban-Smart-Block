@@ -62,31 +62,36 @@ export async function rollback(forkLedger) {
  * } | string} dependencies Optional test seams or the latest ledger hash.
  * @returns {Promise<number|null>} fork ledger height, or null if no reorg
  */
-export async function checkForReorg(latestLedgerOrRpc, latestLedgerHashOrDependencies = {}) {
+export async function checkForReorg(
+  latestLedgerOrRpc,
+  latestLedgerHashOrDependencies = {},
+  fastPathDependencies = {},
+) {
   const fastPath =
     typeof latestLedgerOrRpc === "number" &&
     typeof latestLedgerHashOrDependencies === "string";
+  const dependencies = fastPath ? fastPathDependencies : latestLedgerHashOrDependencies;
 
   const getStoredHashes =
-    fastPath || !latestLedgerHashOrDependencies
+    !dependencies
       ? getRecentLedgerHashes
-      : latestLedgerHashOrDependencies.getStoredHashes ?? getRecentLedgerHashes;
+      : dependencies.getStoredHashes ?? getRecentLedgerHashes;
   const rollbackFork =
-    fastPath || !latestLedgerHashOrDependencies
+    !dependencies
       ? rollback
-      : latestLedgerHashOrDependencies.rollbackFork ?? rollback;
+      : dependencies.rollbackFork ?? rollback;
   const alertReorg =
-    fastPath || !latestLedgerHashOrDependencies
+    !dependencies
       ? alertManager.alertReorg
-      : latestLedgerHashOrDependencies.alertReorg ?? alertManager.alertReorg;
+      : dependencies.alertReorg ?? alertManager.alertReorg;
   const checkInterval =
-    fastPath || !latestLedgerHashOrDependencies
+    !dependencies
       ? config.REORG_CHECK_INTERVAL
-      : latestLedgerHashOrDependencies.checkInterval ?? config.REORG_CHECK_INTERVAL;
+      : dependencies.checkInterval ?? config.REORG_CHECK_INTERVAL;
   const maxDepth =
-    fastPath || !latestLedgerHashOrDependencies
+    !dependencies
       ? config.REORG_MAX_DEPTH
-      : latestLedgerHashOrDependencies.maxDepth ?? config.REORG_MAX_DEPTH;
+      : dependencies.maxDepth ?? config.REORG_MAX_DEPTH;
 
   const lookback = checkInterval + maxDepth;
   const stored = await getStoredHashes(lookback);
@@ -98,14 +103,29 @@ export async function checkForReorg(latestLedgerOrRpc, latestLedgerHashOrDepende
     const latestEntry = stored.find((row) => Number(row.ledger) === latestLedger);
     if (!latestEntry) return null;
     if (latestEntry.hash !== latestLedgerHash) {
-      logger.warn(`[reorg] Mismatch at ledger ${latestLedger}: stored=${latestEntry.hash} network=${latestLedgerHash}`);
-      await rollbackFork(latestLedger);
-      try {
-        await alertReorg(latestLedger);
-      } catch (err) {
-        logger.error(`[reorg] Alert failed at ledger ${latestLedger}: ${err.message}`);
+      let forkLedger = latestLedger;
+      if (dependencies.rpc) {
+        for (const { ledger, hash } of stored) {
+          const ledgerNumber = Number(ledger);
+          let networkHash;
+          try {
+            networkHash = (await dependencies.rpc.getLedger(ledgerNumber).catch(() => null))?.hash ?? null;
+          } catch {
+            continue;
+          }
+          if (networkHash && networkHash !== hash) {
+            forkLedger = Math.min(forkLedger, ledgerNumber);
+          }
+        }
       }
-      return latestLedger;
+      logger.warn(`[reorg] Mismatch at ledger ${forkLedger}; latest checked ledger ${latestLedger}`);
+      await rollbackFork(forkLedger);
+      try {
+        await alertReorg(forkLedger);
+      } catch (err) {
+        logger.error(`[reorg] Alert failed at ledger ${forkLedger}: ${err.message}`);
+      }
+      return forkLedger;
     }
     return null;
   }

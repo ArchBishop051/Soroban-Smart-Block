@@ -18,6 +18,18 @@ const LEADER_KEY = process.env.LEADER_ELECTION_KEY || config.LEADER_ELECTION_KEY
 const LEASE_TTL_S = config.LEADER_LEASE_TTL_S;
 const RENEW_INTERVAL_MS = config.LEADER_RENEW_INTERVAL_MS;
 const ELECTION_POLL_MS = config.LEADER_ELECTION_POLL_MS;
+const RENEW_SCRIPT = `
+  if redis.call("get", KEYS[1]) == ARGV[1] then
+    return redis.call("expire", KEYS[1], ARGV[2])
+  end
+  return 0
+`;
+const RELEASE_SCRIPT = `
+  if redis.call("get", KEYS[1]) == ARGV[1] then
+    return redis.call("del", KEYS[1])
+  end
+  return 0
+`;
 
 let _client = null;
 let _instanceId = null;
@@ -74,13 +86,15 @@ export async function renewLock() {
   if (!_isLeader) return false;
   const client = await getClient();
   const id = getInstanceId();
-  const current = await client.get(LEADER_KEY);
-  if (current !== id) {
+  const renewed = await client.eval(RENEW_SCRIPT, {
+    keys: [LEADER_KEY],
+    arguments: [id, String(LEASE_TTL_S)],
+  });
+  if (renewed !== 1) {
     _isLeader = false;
-    logger.warn(`[leaderElection] lost leadership — current leader is ${current}`);
+    logger.warn("[leaderElection] lost leadership");
     return false;
   }
-  await client.expire(LEADER_KEY, LEASE_TTL_S);
   return true;
 }
 
@@ -91,9 +105,11 @@ export async function releaseLock() {
   if (!_isLeader) return;
   const client = await getClient();
   const id = getInstanceId();
-  const current = await client.get(LEADER_KEY);
-  if (current === id) {
-    await client.del(LEADER_KEY);
+  const released = await client.eval(RELEASE_SCRIPT, {
+    keys: [LEADER_KEY],
+    arguments: [id],
+  });
+  if (released === 1) {
     logger.info(`[leaderElection] instance ${id} released leadership`);
   }
   _isLeader = false;
@@ -115,14 +131,13 @@ export function isLeader() {
 export function start({ onBecomeLeader, onLoseLeadership } = {}) {
   _renewTimer = setInterval(async () => {
     if (!_isLeader) return;
+    const wasLeader = _isLeader;
     const renewed = await renewLock().catch((err) => {
       logger.error("[leaderElection] renew error:", err.message);
+      _isLeader = false;
       return false;
     });
-    if (!renewed && _isLeader) {
-      _isLeader = false;
-      onLoseLeadership?.();
-    }
+    if (!renewed && wasLeader) onLoseLeadership?.();
   }, RENEW_INTERVAL_MS);
 
   _electionTimer = setInterval(async () => {
