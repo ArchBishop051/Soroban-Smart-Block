@@ -1,5 +1,20 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { resolveStartupCursor } from "../src/cursor.js";
+
+describe("resolveStartupCursor", () => {
+  it("prefers the durable cursor over a partially indexed ledger", () => {
+    assert.equal(resolveStartupCursor(120, 137, 50), 120);
+  });
+
+  it("replays the highest indexed ledger when no durable cursor exists", () => {
+    assert.equal(resolveStartupCursor(0, 137, 50), 137);
+  });
+
+  it("uses the configured initial cursor when the database is empty", () => {
+    assert.equal(resolveStartupCursor(null, 0, 50), 50);
+  });
+});
 
 function parseRawAmount(raw_data) {
   if (!raw_data) return null;

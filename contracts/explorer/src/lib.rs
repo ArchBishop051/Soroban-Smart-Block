@@ -39,8 +39,9 @@ pub struct VersionKey {
 pub enum DataKey {
     Admin,
     Contract(BytesN<32>),
-    /// Event log entries use persistent storage to ensure they survive ledger archival.
-    /// Temporary storage would expire when TTL reaches zero, causing silent data loss.
+    /// Event log entries use persistent storage so they can be archived and restored.
+    /// Keepers must refresh live entries before TTL expiry; restoration of archived
+    /// entries requires a RestoreFootprintOp before invoking this contract.
     EventLog(u64),
     EventSeq,
     MaxEvents,
@@ -493,6 +494,53 @@ impl ExplorerContract {
             PERSISTENT_TTL_THRESHOLD,
             PERSISTENT_TTL_EXTEND_TO,
         );
+    }
+
+    /// Permissionlessly extends a historical ABI snapshot while it is live.
+    /// Archived entries must first be restored with a Soroban RestoreFootprintOp.
+    pub fn bump_contract_version_ttl(
+        env: Env,
+        contract_id: BytesN<32>,
+        abi_version: u32,
+    ) -> Result<(), Error> {
+        Self::bump_instance_ttl(&env);
+        let key = DataKey::ContractVersion(VersionKey {
+            contract_id,
+            abi_version,
+        });
+        if !env.storage().persistent().has(&key) {
+            return Err(Error::NotFound);
+        }
+        env.storage().persistent().extend_ttl(
+            &key,
+            PERSISTENT_TTL_THRESHOLD,
+            PERSISTENT_TTL_EXTEND_TO,
+        );
+        Ok(())
+    }
+
+    /// Permissionlessly extends a retained event slot while it is live.
+    /// Archived entries must first be restored with a Soroban RestoreFootprintOp.
+    pub fn bump_event_ttl(env: Env, seq: u64) -> Result<(), Error> {
+        Self::bump_instance_ttl(&env);
+        let max: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::MaxEvents)
+            .unwrap_or(DEFAULT_MAX_EVENTS);
+        let key = DataKey::EventLog(seq % (max as u64));
+        let Some(event) = env.storage().persistent().get::<DataKey, DecodedEvent>(&key) else {
+            return Err(Error::NotFound);
+        };
+        if event.seq != seq {
+            return Err(Error::NotFound);
+        }
+        env.storage().persistent().extend_ttl(
+            &key,
+            PERSISTENT_TTL_THRESHOLD,
+            PERSISTENT_TTL_EXTEND_TO,
+        );
+        Ok(())
     }
 
     pub fn get_contract(env: Env, contract_id: BytesN<32>) -> Result<ContractMeta, Error> {
