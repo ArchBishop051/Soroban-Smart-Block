@@ -1,5 +1,6 @@
 import { lazy, Suspense } from "react";
 import { Routes, Route } from "react-router-dom";
+import { useTranslation } from "react-i18next";
 import Nav from "./components/Nav";
 import ErrorBoundary from "./components/ErrorBoundary";
 import { useTranslation } from "./i18n";
@@ -59,6 +60,7 @@ export default function App() {
             <Route path="/graph" element={<GraphPage />} />
             <Route path="/sandbox" element={<Sandbox />} />
             <Route path="/sandbox/:id" element={<SharedSandbox />} />
+            <Route path="/watchlist" element={<WatchlistPage />} />
             <Route path="/setup" element={<SetupPage />} />
             <Route path="/batch" element={<BatchMultiCall />} />
             <Route path="/sub-invocations" element={<SubInvocationPage />} />
