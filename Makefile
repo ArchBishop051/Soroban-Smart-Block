@@ -1,4 +1,4 @@
-.PHONY: build test check deploy indexer frontend clean fmt fmt-check lint \
+.PHONY: build test check deploy indexer frontend clean fmt fmt-check lint budget budget-update \
 	docker-up docker-down docker-build docker-logs docker-test docker-staging docker-prod \
 	db-reset db-seed \
 	e2e e2e-setup e2e-test e2e-api e2e-chaos e2e-property e2e-playwright e2e-k6 e2e-full
@@ -21,6 +21,17 @@ lint:
 	cargo clippy -- -D warnings
 
 check: fmt-check lint test
+
+# Resource-budget gate (#873) — see docs/BUDGET.md.
+budget-measure: build
+	cargo test -p soroban-explorer-contract --test budget
+	cd contracts/ticket && cargo test --features testutils --release budget_record
+
+budget: budget-measure
+	node scripts/budget-check.js
+
+budget-update: budget-measure
+	node scripts/budget-check.js --update
 
 optimize:
 	stellar contract optimize \

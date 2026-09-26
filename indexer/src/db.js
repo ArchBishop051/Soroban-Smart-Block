@@ -3,6 +3,8 @@ import { runMigrations } from "./migrate.js";
 import { validateAndSanitizeDecodedEvent } from "./decoderValidator.js";
 import { withSpan } from "./tracing.js";
 import { getIndexerNetwork } from "./networkConfig.js";
+import { decodeCursor, hashFilters, formatPageResponse } from "./cursor.js";
+import config from "./config.js";
 
 // Migration 031 made `daemon_state` and `ledger_hashes` network-scoped:
 // their primary keys are now (network, key) and (network, ledger). Every
@@ -17,6 +19,10 @@ import { getIndexerNetwork } from "./networkConfig.js";
 pg.types.setTypeParser(20, (val) => parseInt(val, 10));
 
 const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL });
+const replicaPools = String(process.env.READ_REPLICA_DATABASE_URLS || process.env.DATABASE_READ_REPLICA_URLS || "")
+  .split(",").map((url) => url.trim()).filter(Boolean).map((connectionString) => new pg.Pool({ connectionString }));
+const replicaState = replicaPools.map((pool, index) => ({ pool, index, healthy: true, lagMs: 0, lastCheck: 0, replayLsn: null }));
+let lastWriteLsn = null;
 
 // Wrap every query in an OTel span (issue #755) so a request's trace shows
 // DB timing alongside its RPC and cache hops. Only instruments the
@@ -32,31 +38,42 @@ pool.query = (text, params) =>
 /** Exported for pool metric collection — do not use for queries outside db.js. */
 export { pool };
 
-export const db = {
-  async upsertStateVersions(versions) {
-    if (!versions?.length) return 0;
-    const client = await pool.connect();
+export function getReplicaState() { return replicaState.map(({ pool: _pool, ...state }) => ({ ...state })); }
+
+export async function getReadPool(requiredLsn = null) {
+  for (const replica of replicaState) {
     try {
-      await client.query("BEGIN");
-      for (const version of versions) {
-        await client.query("UPDATE contract_state_versions SET ledger_to = $1 WHERE contract_id = $2 AND key_xdr = $3 AND ledger_to IS NULL AND ledger_from <= $1", [Number(version.ledger_from) - 1, version.contract_id, version.key_xdr]);
-        await client.query(`INSERT INTO contract_state_versions (contract_id,key_xdr,durability,ledger_from,ledger_to,value_xdr,decoded_key,decoded_value,tx_hash,tx_index,change_type) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`, [version.contract_id, version.key_xdr, version.durability, version.ledger_from, version.ledger_to, version.value_xdr, version.decoded_key == null ? null : JSON.stringify(version.decoded_key), version.decoded_value == null ? null : JSON.stringify(version.decoded_value), version.tx_hash, version.tx_index ?? 0, version.change_type]);
-      }
-      await client.query("COMMIT");
-      return versions.length;
-    } catch (error) { await client.query("ROLLBACK"); throw error; } finally { client.release(); }
-  },
-  async getContractStateAt(contractId, ledger, prefix = null) {
-    const params = [contractId, Number(ledger)];
-    const filter = prefix ? ` AND (decoded_key::text LIKE $3 OR key_xdr LIKE $3)` : "";
-    if (prefix) params.push(`${prefix}%`);
-    const { rows } = await pool.query(`SELECT DISTINCT ON (key_xdr) * FROM contract_state_versions WHERE contract_id = $1 AND ledger_range @> $2 ${filter} ORDER BY key_xdr, ledger_from DESC, tx_index DESC`, params);
-    return rows.filter((row) => row.change_type !== "removed");
-  },
-  async getContractStateHistory(contractId, key) {
-    const { rows } = await pool.query("SELECT * FROM contract_state_versions WHERE contract_id = $1 AND key_xdr = $2 ORDER BY ledger_from ASC, tx_index ASC", [contractId, key]);
+      const { rows } = await replica.pool.query("SELECT EXTRACT(EPOCH FROM (NOW() - pg_last_xact_replay_timestamp())) * 1000 AS lag_ms, pg_last_wal_replay_lsn() AS replay_lsn");
+      replica.lagMs = Number(rows[0]?.lag_ms) || 0;
+      replica.replayLsn = rows[0]?.replay_lsn ?? null;
+      replica.lastCheck = Date.now();
+      replica.healthy = replica.lagMs <= Number(process.env.REPLICA_MAX_LAG_MS || 5000) && (!requiredLsn || !replica.replayLsn || String(replica.replayLsn) >= String(requiredLsn));
+    } catch { replica.healthy = false; }
+    if (replica.healthy) return replica.pool;
+  }
+  return pool;
+}
+
+export async function queryRead(text, params, options = {}) { return (await getReadPool(options.requiredLsn)).query(text, params); }
+export function noteWriteLsn(lsn) { lastWriteLsn = lsn; return lastWriteLsn; }
+export function getLastWriteLsn() { return lastWriteLsn; }
+
+export const db = {
+  query: (text, params) => pool.query(text, params),
+  queryRead,
+  getReplicaState,
+  getLastWriteLsn,
+  async getReplayRows(from, to) {
+    const { rows } = await queryRead("SELECT * FROM events WHERE ledger BETWEEN $1 AND $2 ORDER BY ledger, seq", [from, to]);
     return rows;
   },
+  async upsertTransaction(record) {
+    const { rows } = await pool.query(`INSERT INTO transactions (hash, ledger, source, status, result_code, operation_count, footprint_read_bytes, footprint_write_bytes, fee_payer, inner_source, inclusion_fee, resource_fee, refundable_fee_charged, refund_amount, rent_fee, charged_fee, failure_reason) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17) ON CONFLICT (hash) DO UPDATE SET ledger=EXCLUDED.ledger,status=EXCLUDED.status,result_code=EXCLUDED.result_code,charged_fee=EXCLUDED.charged_fee,failure_reason=EXCLUDED.failure_reason RETURNING *`, [record.hash, record.ledger, record.source, record.status, record.result_code, record.operation_count, record.footprint_read_bytes, record.footprint_write_bytes, record.fee_payer, record.inner_source, record.inclusion_fee, record.resource_fee, record.refundable_fee_charged, record.refund_amount, record.rent_fee, record.charged_fee, record.failure_reason]);
+    try { const lsn = await pool.query("SELECT pg_current_wal_lsn() AS lsn"); noteWriteLsn(lsn.rows[0]?.lsn); } catch { /* non-Postgres test doubles */ }
+    return rows[0];
+  },
+  async getTransaction(hash) { const { rows } = await queryRead("SELECT * FROM transactions WHERE hash = $1", [hash], { requiredLsn: lastWriteLsn }); return rows[0] ?? null; },
+  async getAccountTransactions(account, limit = 50) { const { rows } = await queryRead("SELECT * FROM transactions WHERE source = $1 OR fee_payer = $1 ORDER BY ledger DESC LIMIT $2", [account, Math.min(Number(limit) || 50, 100)], { requiredLsn: lastWriteLsn }); return rows; },
   /** Run all pending SQL migrations from indexer/migrations/. */
   async init() {
     await runMigrations(pool);
@@ -83,19 +100,18 @@ export const db = {
   },
 
   async saveCursor(ledger) {
-    await this.saveDaemonState('cursor', ledger);
+    await this.saveDaemonState("cursor", ledger);
   },
 
   async loadCursor() {
-    const { rows } = await pool.query(
-      "SELECT value FROM daemon_state WHERE network = $1 AND key = 'cursor'",
-      [getIndexerNetwork()],
-    );
+    const { rows } = await pool.query("SELECT value FROM daemon_state WHERE network = $1 AND key = 'cursor'", [
+      getIndexerNetwork(),
+    ]);
     return rows[0] ? Number(rows[0].value) : null;
   },
 
   async saveLastIndexedLedger(ledger) {
-    await this.saveDaemonState('last_indexed_ledger', ledger);
+    await this.saveDaemonState("last_indexed_ledger", ledger);
   },
 
   async getLastIndexedLedger() {
@@ -125,16 +141,124 @@ export const db = {
   },
 
   /** Atomically purge orphaned data and persist the daemon rewind cursor. */
+  // ── Query jobs (#906) ─────────────────────────────────────────────────────
+
+  async createQueryJob(job) {
+    const { rows } = await pool.query(
+      `INSERT INTO query_jobs (id, api_key_id, tier, type, params, format, idempotency_key)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)
+       ON CONFLICT (api_key_id, idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING
+       RETURNING *`,
+      [job.id, job.apiKeyId, job.tier, job.type, job.params, job.format, job.idempotencyKey ?? null],
+    );
+    return rows[0] ?? null;
+  },
+
+  async getQueryJob(id) {
+    const { rows } = await pool.query("SELECT * FROM query_jobs WHERE id = $1", [id]);
+    return rows[0] ?? null;
+  },
+
+  async getQueryJobByIdempotencyKey(apiKeyId, key) {
+    const { rows } = await pool.query(
+      "SELECT * FROM query_jobs WHERE api_key_id = $1 AND idempotency_key = $2",
+      [apiKeyId, key],
+    );
+    return rows[0] ?? null;
+  },
+
+  async countActiveQueryJobs(apiKeyId) {
+    const { rows } = await pool.query(
+      "SELECT COUNT(*)::INT AS n FROM query_jobs WHERE api_key_id = $1 AND status IN ('queued', 'running')",
+      [apiKeyId],
+    );
+    return rows[0].n;
+  },
+
+  async updateQueryJob(id, fields) {
+    const keys = Object.keys(fields);
+    if (!keys.length) return;
+    await pool.query(
+      `UPDATE query_jobs SET ${keys.map((k, i) => `${k} = $${i + 2}`).join(", ")} WHERE id = $1`,
+      [id, ...keys.map((k) => fields[k])],
+    );
+  },
+
+  async listQueryJobsByStatus(status) {
+    const { rows } = await pool.query("SELECT id FROM query_jobs WHERE status = $1 ORDER BY created_at", [status]);
+    return rows;
+  },
+
+  async listExpiredQueryJobs() {
+    const { rows } = await pool.query(
+      "SELECT id, result_path FROM query_jobs WHERE expires_at IS NOT NULL AND expires_at < now() AND status <> 'expired'",
+    );
+    return rows;
+  },
+
+  async isApiKeyActive(apiKeyId) {
+    const { rows } = await pool.query(
+      "SELECT 1 FROM api_keys WHERE id = $1 AND revoked = FALSE AND (expires_at IS NULL OR expires_at > now())",
+      [apiKeyId],
+    );
+    return rows.length > 0;
+  },
+
+  /**
+   * Stream events matching `filter` in `batchSize` pages from a single
+   * REPEATABLE READ transaction, so the whole export is one consistent
+   * snapshot even while the indexer keeps writing.
+   */
+  async *iterateEventsSnapshot({ contract, fromLedger, toLedger }, batchSize = 5_000) {
+    const client = await pool.connect();
+    let committed = false;
+    try {
+      await client.query("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY");
+      let lastSeq = 0;
+      while (true) {
+        const { rows } = await client.query(
+          `SELECT e.seq, e.ledger, e.contract_id, c.name AS contract_name, e.function,
+                  e.description, e.tx_hash, e.created_at
+           FROM events e LEFT JOIN contracts c ON c.id = e.contract_id
+           WHERE e.seq > $1
+             AND ($2::TEXT IS NULL OR e.contract_id = $2)
+             AND ($3::BIGINT IS NULL OR e.ledger >= $3)
+             AND ($4::BIGINT IS NULL OR e.ledger <= $4)
+           ORDER BY e.seq
+           LIMIT $5`,
+          [lastSeq, contract ?? null, fromLedger ?? null, toLedger ?? null, batchSize],
+        );
+        if (!rows.length) break;
+        yield rows;
+        lastSeq = rows[rows.length - 1].seq;
+        if (rows.length < batchSize) break;
+      }
+      await client.query("COMMIT");
+      committed = true;
+    } finally {
+      // Also runs when the consumer stops early (cancel / quota): never hand a
+      // client with an open transaction back to the pool.
+      if (!committed) await client.query("ROLLBACK").catch(() => {});
+      client.release();
+    }
+  },
+
+  /** Events at or after `forkLedger` (seq + contract), for CDN purging on reorg. */
+  async getEventsFromLedger(forkLedger, limit = 10_000) {
+    const { rows } = await pool.query(
+      "SELECT seq, contract_id FROM events WHERE ledger >= $1 ORDER BY seq LIMIT $2",
+      [forkLedger, limit],
+    );
+    return rows;
+  },
+
   async rollbackFromLedger(forkLedger) {
     const network = getIndexerNetwork();
     const client = await pool.connect();
     try {
       await client.query("BEGIN");
       await client.query("DELETE FROM events WHERE ledger >= $1", [forkLedger]);
-      await client.query("DELETE FROM ledger_hashes WHERE network = $1 AND ledger >= $2", [
-        network,
-        forkLedger,
-      ]);
+      await client.query("DELETE FROM ledger_hashes WHERE network = $1 AND ledger >= $2", [network, forkLedger]);
       await client.query(
         `INSERT INTO daemon_state (network, key, value) VALUES ($1, 'cursor', $2)
          ON CONFLICT (network, key) DO UPDATE SET value = $2`,
@@ -154,61 +278,140 @@ export const db = {
    * Return a page of events using keyset (cursor-based) pagination.
    * Avoids OFFSET degradation on large tables.
    *
-   * @param {{ contract?: string, fn?: string, type?: string,
-   *           after_seq?: number, limit?: number }} opts
+  * @param {{ contract?: string, fn?: string, type?: string,
+  *           after_seq?: number, limit?: number, from?: string, to?: string }} opts
    *   after_seq — the `seq` of the last event on the previous page (opaque cursor).
    *               Omit (or pass 0) for the first page.
    * @returns {{ data: object[], next_cursor: number|null }}
    */
-  async getEventsCursor({ contract, fn, type, after_seq = 0, limit = 25 } = {}) {
-    const conditions = [];
-    const params = [];
+  async getEventsCursor({ contract, fn, type, cursor, after, before, after_seq = 0, limit = 25, count } = {}) {
+    const filterHash = hashFilters({ contract, fn, type });
+    const safeLimit = Math.min(Math.max(1, Number(limit) || 25), 200);
+
+    let isBackward = false;
+    let anchorSeq = null;
+    let hasAnchor = false;
+
+    if (before) {
+      const decoded = decodeCursor(before, filterHash, config.CURSOR_SIGNING_SECRET);
+      anchorSeq = Number(decoded.tuple[0]);
+      isBackward = true;
+      hasAnchor = true;
+    } else if (after || cursor) {
+      const token = after || cursor;
+      if (typeof token === "number" || (/^\d+$/.test(String(token)) && String(token).length < 20)) {
+        anchorSeq = Number(token);
+        isBackward = false;
+        hasAnchor = anchorSeq > 0;
+      } else {
+        const decoded = decodeCursor(token, filterHash, config.CURSOR_SIGNING_SECRET);
+        anchorSeq = Number(decoded.tuple[0]);
+        isBackward = decoded.direction === "backward";
+        hasAnchor = true;
+      }
+    } else if (after_seq > 0) {
+      anchorSeq = Number(after_seq);
+      isBackward = false;
+      hasAnchor = true;
+    }
+
+    const filterConditions = [];
+    const filterParams = [];
 
     if (contract) {
-      params.push(contract);
-      conditions.push(`contract_id = $${params.length}`);
+      filterParams.push(contract);
+      filterConditions.push(`contract_id = $${filterParams.length}`);
     }
     if (fn) {
-      // Comma-separated list of exact function names (e.g. "swap,swap_exact_tokens_for_tokens"
-      // for the DEX function-filter chips, issue #555). A single value keeps the
-      // plain equality comparison for backward compatibility.
-      const fns = String(fn).split(",").map((s) => s.trim()).filter(Boolean);
+      const fns = String(fn)
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean);
       if (fns.length === 1) {
-        params.push(fns[0]);
-        conditions.push(`function = $${params.length}`);
+        filterParams.push(fns[0]);
+        filterConditions.push(`function = $${filterParams.length}`);
       } else if (fns.length > 1) {
-        params.push(fns);
-        conditions.push(`function = ANY($${params.length})`);
+        filterParams.push(fns);
+        filterConditions.push(`function = ANY($${filterParams.length})`);
       }
     }
     if (type === "soroban") {
-      conditions.push(`contract_id IS NOT NULL AND contract_id <> ''`);
+      filterConditions.push(`contract_id IS NOT NULL AND contract_id <> ''`);
     }
     if (type === "classic") {
-      conditions.push(`(contract_id IS NULL OR contract_id = '')`);
+      filterConditions.push(`(contract_id IS NULL OR contract_id = '')`);
     }
 
-    // Keyset: fetch rows with seq < after_seq (descending) or all rows for first page
-    if (after_seq > 0) {
-      params.push(after_seq);
-      conditions.push(`seq < $${params.length}`);
+    const queryConditions = [...filterConditions];
+    const queryParams = [...filterParams];
+
+    if (anchorSeq !== null && anchorSeq > 0) {
+      queryParams.push(anchorSeq);
+      queryConditions.push(isBackward ? `seq > $${queryParams.length}` : `seq < $${queryParams.length}`);
     }
 
-    const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
-    params.push(limit + 1); // fetch one extra to detect next page
+    const where = queryConditions.length ? `WHERE ${queryConditions.join(" AND ")}` : "";
+    queryParams.push(safeLimit + 1);
 
+    const orderDirection = isBackward ? "ASC" : "DESC";
     const { rows } = await pool.query(
       `SELECT *, CASE WHEN contract_id IS NULL OR contract_id = '' THEN 'classic' ELSE 'soroban' END AS type
-       FROM events ${where} ORDER BY seq DESC LIMIT $${params.length}`,
-      params,
+       FROM events ${where} ORDER BY seq ${orderDirection} LIMIT $${queryParams.length}`,
+      queryParams,
     );
 
-    const hasMore = rows.length > limit;
-    const data = hasMore ? rows.slice(0, limit) : rows;
-    // seq is BIGINT so pg returns it as a string — coerce for a numeric cursor
-    const next_cursor = hasMore ? Number(data[data.length - 1].seq) : null;
+    // Calculate total count (exact opt-in via count=exact, or approximate reltuples)
+    let total;
+    let countIsEstimate = true;
+    const filterWhere = filterConditions.length ? `WHERE ${filterConditions.join(" AND ")}` : "";
 
-    return { data, next_cursor };
+    if (count === "exact") {
+      const { rows: countRows } = await pool.query(
+        `SELECT COUNT(*)::BIGINT AS total FROM events ${filterWhere}`,
+        filterParams,
+      );
+      total = Number(countRows[0]?.total ?? 0);
+      countIsEstimate = false;
+    } else {
+      if (!filterConditions.length) {
+        const { rows: relRows } = await pool.query(
+          `SELECT reltuples::BIGINT AS estimate FROM pg_class WHERE relname = 'events'`,
+        );
+        const est = Number(relRows[0]?.estimate ?? -1);
+        if (est >= 0) {
+          total = est;
+        } else {
+          const { rows: countRows } = await pool.query(`SELECT COUNT(*)::BIGINT AS total FROM events`);
+          total = Number(countRows[0]?.total ?? 0);
+        }
+      } else {
+        try {
+          const { rows: expRows } = await pool.query(`EXPLAIN SELECT 1 FROM events ${filterWhere}`, filterParams);
+          const match = expRows[0]?.["QUERY PLAN"]?.match(/rows=(\d+)/);
+          total = match ? Number(match[1]) : 0;
+        } catch {
+          const { rows: countRows } = await pool.query(
+            `SELECT COUNT(*)::BIGINT AS total FROM events ${filterWhere}`,
+            filterParams,
+          );
+          total = Number(countRows[0]?.total ?? 0);
+        }
+      }
+    }
+
+    const hasExtraRow = rows.length > safeLimit;
+    return formatPageResponse({
+      data: rows,
+      limit: safeLimit,
+      hasExtraRow,
+      isBackward,
+      hasAnchor,
+      extractTuple: (r) => [Number(r.seq)],
+      filterHash,
+      secret: config.CURSOR_SIGNING_SECRET,
+      total,
+      countIsEstimate,
+    });
   },
 
   async upsertEvent(ev) {
@@ -216,8 +419,9 @@ export const db = {
       `INSERT INTO events
          (contract_id, function, ledger, tx_hash, description, raw_topics, raw_data,
           cpu_instructions, mem_bytes, fee_charged, is_high_bloat_risk, upgrade_info, storage_tiers, is_clawback,
-          footprint_contention, ttl_extension, fee_bump, archival_info, zk_host_calls, abi_version, slippage_bps, protocol_version, raw_xdr)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23)
+          footprint_contention, ttl_extension, fee_bump, archival_info, zk_host_calls, abi_version, slippage_bps,
+          topic0, topic1, topic2, topic3, topic_count)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26)
        ON CONFLICT (contract_id, ledger, tx_hash) DO NOTHING`,
       [
         ev.contract_id,
@@ -241,8 +445,9 @@ export const db = {
         ev.zk_host_calls ? JSON.stringify(ev.zk_host_calls) : null,
         ev.abi_version ?? 0,
         ev.slippage_bps ?? null,
-        ev.protocol_version ?? null,
-        ev.raw_xdr ?? null,
+        // Hashed topic columns (#903): canonical-XDR sha256 per topic.
+        ...[0, 1, 2, 3].map((i) => (ev.topic_hashes?.[i] ? Buffer.from(ev.topic_hashes[i], "hex") : null)),
+        ev.topic_count ?? null,
       ],
     );
   },
@@ -284,16 +489,11 @@ export const db = {
            raw_topics = $4,
            raw_data = $5,
            abi_version = $6,
+           decode_status = $7,
+           decode_warnings = $8,
            needs_redecode = FALSE
        WHERE seq = $1 AND needs_redecode = TRUE`,
-      [
-        seq,
-        decoded.function,
-        decoded.description,
-        JSON.stringify(decoded.raw_topics),
-        decoded.raw_data,
-        abiVersion,
-      ],
+      [seq, decoded.function, decoded.description, JSON.stringify(decoded.raw_topics), decoded.raw_data, abiVersion],
     );
   },
 
@@ -312,6 +512,73 @@ export const db = {
   async upsertEventValidated(ev, logger) {
     const validated = validateAndSanitizeDecodedEvent(ev, logger);
     await this.upsertEvent(validated);
+  },
+
+  async upsertEventsValidatedBatch(events, logger = console) {
+    if (!Array.isArray(events) || events.length === 0) return 0;
+
+    const validated = events.map((ev) => validateAndSanitizeDecodedEvent(ev, logger));
+    const columns = [
+      "contract_id",
+      "function",
+      "ledger",
+      "tx_hash",
+      "description",
+      "raw_topics",
+      "raw_data",
+      "cpu_instructions",
+      "mem_bytes",
+      "fee_charged",
+      "is_high_bloat_risk",
+      "upgrade_info",
+      "storage_tiers",
+      "is_clawback",
+      "footprint_contention",
+      "ttl_extension",
+      "fee_bump",
+      "archival_info",
+      "zk_host_calls",
+      "abi_version",
+      "slippage_bps",
+    ];
+
+    const placeholders = [];
+    const params = [];
+
+    for (const ev of validated) {
+      const row = [
+        ev.contract_id,
+        ev.function,
+        ev.ledger,
+        ev.tx_hash,
+        ev.description,
+        JSON.stringify(ev.raw_topics ?? []),
+        ev.raw_data,
+        ev.cpu_instructions ?? null,
+        ev.mem_bytes ?? null,
+        ev.fee_charged ?? null,
+        ev.is_high_bloat_risk ?? false,
+        ev.upgrade ? JSON.stringify(ev.upgrade) : null,
+        ev.storage_tiers ? JSON.stringify(ev.storage_tiers) : null,
+        ev.is_clawback ?? false,
+        ev.footprint_contention ?? false,
+        ev.ttl_extension ? JSON.stringify(ev.ttl_extension) : null,
+        ev.fee_bump ? JSON.stringify(ev.fee_bump) : null,
+        ev.archival_info ? JSON.stringify(ev.archival_info) : null,
+        ev.zk_host_calls ? JSON.stringify(ev.zk_host_calls) : null,
+        ev.abi_version ?? 0,
+        ev.slippage_bps ?? null,
+      ];
+
+      const start = params.length + 1;
+      const rowPlaceholders = row.map((_, idx) => `$${start + idx}`).join(", ");
+      placeholders.push(`(${rowPlaceholders})`);
+      params.push(...row);
+    }
+
+    const sql = `INSERT INTO events (${columns.join(", ")}) VALUES ${placeholders.join(", ")} ON CONFLICT (contract_id, ledger, tx_hash) DO NOTHING`;
+    const result = await pool.query(sql, params);
+    return result.rowCount ?? 0;
   },
 
   /**
@@ -347,6 +614,16 @@ export const db = {
       params,
     );
     return rows;
+  },
+
+  /** Look up an event by its canonical ID on a network (#892). */
+  async getEventByEventId(eventId, network = getIndexerNetwork()) {
+    const { rows } = await pool.query(
+      `SELECT *, CASE WHEN contract_id IS NULL OR contract_id = '' THEN 'classic' ELSE 'soroban' END AS type
+       FROM events WHERE network = $1 AND event_id = $2`,
+      [network, eventId],
+    );
+    return rows[0] ?? null;
   },
 
   async getEvent(seq) {
@@ -615,40 +892,171 @@ export const db = {
     ].slice(0, limitN);
   },
 
-  async listContracts({ page = 1, limit = 25, type } = {}) {
-    const offset = (page - 1) * limit;
-    const params = [];
-    const conditions = [];
+  async listContracts({ page, limit = 25, type, q, cursor, after, before, count } = {}) {
+    const filterHash = hashFilters({ type, q });
+    const safeLimit = Math.min(Math.max(1, Number(limit) || 25), 100);
 
-    if (type) {
-      params.push(type);
-      conditions.push(`protocol_type = $${params.length}`);
+    let isBackward = false;
+    let anchorCreatedAt = null;
+    let anchorId = null;
+    let hasAnchor = false;
+
+    if (before) {
+      const decoded = decodeCursor(before, filterHash, config.CURSOR_SIGNING_SECRET);
+      anchorCreatedAt = decoded.tuple[0];
+      anchorId = decoded.tuple[1];
+      isBackward = true;
+      hasAnchor = true;
+    } else if (after || cursor) {
+      const token = after || cursor;
+      const decoded = decodeCursor(token, filterHash, config.CURSOR_SIGNING_SECRET);
+      anchorCreatedAt = decoded.tuple[0];
+      anchorId = decoded.tuple[1];
+      isBackward = decoded.direction === "backward";
+      hasAnchor = true;
     }
 
-    const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
+    const filterConditions = [];
+    const filterParams = [];
 
-    params.push(limit);
-    const limitIdx = params.length;
-    params.push(offset);
-    const offsetIdx = params.length;
+    if (q) {
+      filterParams.push(`%${q}%`);
+      const idx = filterParams.length;
+      filterConditions.push(`(name ILIKE $${idx} OR description ILIKE $${idx})`);
+    }
 
-    const [{ rows }, { rows: countRows }] = await Promise.all([
-      pool.query(
-        `SELECT id, name, description, registered_by, has_circuit_breaker, is_paused,
-                is_rwa, rwa_type, protocol_type, is_verified, verified_ledger, created_at
-         FROM contracts ${where} ORDER BY created_at DESC LIMIT $${limitIdx} OFFSET $${offsetIdx}`,
-        params,
-      ),
-      pool.query(`SELECT COUNT(*)::INT AS total FROM contracts ${where}`, type ? [type] : []),
-    ]);
-    const total = countRows[0].total;
+    if (type && type !== "all") {
+      if (type === "verified") {
+        filterConditions.push(`id IN (SELECT DISTINCT contract_id FROM source_verifications)`);
+      } else {
+        filterParams.push(type);
+        filterConditions.push(
+          `(protocol_type = $${filterParams.length} OR LOWER(COALESCE(protocol_type, '')) = $${filterParams.length})`,
+        );
+      }
+    }
+
+    // Support legacy offset pagination if requested without cursor
+    if (!hasAnchor && page !== undefined && Number(page) > 1) {
+      const safePage = Math.max(1, Number(page) || 1);
+      const offset = (safePage - 1) * safeLimit;
+      const where = filterConditions.length ? `WHERE ${filterConditions.join(" AND ")}` : "";
+      const queryParams = [...filterParams, safeLimit, offset];
+      const [{ rows }, { rows: countRows }] = await Promise.all([
+        pool.query(
+          `SELECT id, name, description, registered_by, has_circuit_breaker, is_paused,
+                  is_rwa, rwa_type, protocol_type, is_verified, verified_ledger, created_at
+           FROM contracts ${where}
+           ORDER BY created_at DESC, id DESC
+           LIMIT $${queryParams.length - 1} OFFSET $${queryParams.length}`,
+          queryParams,
+        ),
+        pool.query(`SELECT COUNT(*)::INT AS total FROM contracts ${where}`, filterParams),
+      ]);
+      const total = countRows[0]?.total ?? 0;
+      return {
+        contracts: rows,
+        data: rows,
+        pagination: {
+          page: safePage,
+          limit: safeLimit,
+          total,
+          total_pages: Math.ceil(total / safeLimit),
+        },
+      };
+    }
+
+    const queryConditions = [...filterConditions];
+    const queryParams = [...filterParams];
+
+    if (anchorCreatedAt !== null && anchorId !== null) {
+      queryParams.push(anchorCreatedAt, anchorId);
+      const p1 = queryParams.length - 1;
+      const p2 = queryParams.length;
+      if (isBackward) {
+        queryConditions.push(`(created_at, id) > ($${p1}::timestamptz, $${p2})`);
+      } else {
+        queryConditions.push(`(created_at, id) < ($${p1}::timestamptz, $${p2})`);
+      }
+    }
+
+    const where = queryConditions.length ? `WHERE ${queryConditions.join(" AND ")}` : "";
+    queryParams.push(safeLimit + 1);
+
+    const orderDirection = isBackward ? "ASC" : "DESC";
+    const { rows } = await pool.query(
+      `SELECT id, name, description, registered_by, has_circuit_breaker, is_paused,
+              is_rwa, rwa_type, protocol_type, is_verified, verified_ledger, created_at
+       FROM contracts ${where}
+       ORDER BY created_at ${orderDirection}, id ${orderDirection}
+       LIMIT $${queryParams.length}`,
+      queryParams,
+    );
+
+    let total;
+    let countIsEstimate = true;
+    const filterWhere = filterConditions.length ? `WHERE ${filterConditions.join(" AND ")}` : "";
+
+    if (count === "exact") {
+      const { rows: countRows } = await pool.query(
+        `SELECT COUNT(*)::INT AS total FROM contracts ${filterWhere}`,
+        filterParams,
+      );
+      total = countRows[0]?.total ?? 0;
+      countIsEstimate = false;
+    } else {
+      if (!filterConditions.length) {
+        const { rows: relRows } = await pool.query(
+          `SELECT reltuples::BIGINT AS estimate FROM pg_class WHERE relname = 'contracts'`,
+        );
+        const est = Number(relRows[0]?.estimate ?? -1);
+        if (est >= 0) {
+          total = est;
+        } else {
+          const { rows: countRows } = await pool.query(`SELECT COUNT(*)::INT AS total FROM contracts`);
+          total = countRows[0]?.total ?? 0;
+        }
+      } else {
+        try {
+          const { rows: expRows } = await pool.query(`EXPLAIN SELECT 1 FROM contracts ${filterWhere}`, filterParams);
+          const match = expRows[0]?.["QUERY PLAN"]?.match(/rows=(\d+)/);
+          total = match ? Number(match[1]) : 0;
+        } catch {
+          const { rows: countRows } = await pool.query(
+            `SELECT COUNT(*)::INT AS total FROM contracts ${filterWhere}`,
+            filterParams,
+          );
+          total = countRows[0]?.total ?? 0;
+        }
+      }
+    }
+
+    const hasExtraRow = rows.length > safeLimit;
+    const formatted = formatPageResponse({
+      data: rows,
+      limit: safeLimit,
+      hasExtraRow,
+      isBackward,
+      hasAnchor,
+      extractTuple: (r) => [r.created_at instanceof Date ? r.created_at.toISOString() : r.created_at, r.id],
+      filterHash,
+      secret: config.CURSOR_SIGNING_SECRET,
+      total,
+      countIsEstimate,
+    });
+
     return {
-      contracts: rows,
+      contracts: formatted.data,
+      data: formatted.data,
+      page_info: formatted.page_info,
+      next_cursor: formatted.next_cursor,
+      total,
+      count_is_estimate: countIsEstimate,
       pagination: {
-        page,
-        limit,
+        page: Number(page) || 1,
+        limit: safeLimit,
         total,
-        total_pages: Math.ceil(total / limit),
+        total_pages: Math.ceil(total / safeLimit),
       },
     };
   },
@@ -659,12 +1067,158 @@ export const db = {
     return rows[0] ?? null;
   },
 
+  async listSandboxes({ cursor, after, before, page, limit = 25, offset, count } = {}) {
+    const filterHash = hashFilters({});
+    const safeLimit = Math.min(Math.max(1, Number(limit) || 25), 100);
+
+    let isBackward = false;
+    let anchorUpdatedAt = null;
+    let anchorId = null;
+    let hasAnchor = false;
+
+    if (before) {
+      const decoded = decodeCursor(before, filterHash, config.CURSOR_SIGNING_SECRET);
+      anchorUpdatedAt = decoded.tuple[0];
+      anchorId = decoded.tuple[1];
+      isBackward = true;
+      hasAnchor = true;
+    } else if (after || cursor) {
+      const token = after || cursor;
+      const decoded = decodeCursor(token, filterHash, config.CURSOR_SIGNING_SECRET);
+      anchorUpdatedAt = decoded.tuple[0];
+      anchorId = decoded.tuple[1];
+      isBackward = decoded.direction === "backward";
+      hasAnchor = true;
+    }
+
+    // If legacy offset request without cursor
+    if (!hasAnchor && (offset !== undefined || (page !== undefined && Number(page) > 1))) {
+      const safeOffset =
+        offset !== undefined ? Math.max(0, Number(offset) || 0) : (Math.max(1, Number(page) || 1) - 1) * safeLimit;
+      const { rows } = await pool.query(
+        `SELECT sandbox_id, template_id, updated_at, created_at
+         FROM sandboxes ORDER BY updated_at DESC, sandbox_id DESC LIMIT $1 OFFSET $2`,
+        [safeLimit, safeOffset],
+      );
+      const { rows: countRows } = await pool.query("SELECT COUNT(*)::INT AS total FROM sandboxes");
+      const total = countRows[0]?.total ?? 0;
+      return {
+        sandboxes: rows,
+        data: rows,
+        total,
+        pagination: {
+          page: Math.floor(safeOffset / safeLimit) + 1,
+          limit: safeLimit,
+          total,
+          total_pages: Math.ceil(total / safeLimit),
+        },
+      };
+    }
+
+    const queryConditions = [];
+    const queryParams = [];
+
+    if (anchorUpdatedAt !== null && anchorId !== null) {
+      queryParams.push(anchorUpdatedAt, anchorId);
+      const p1 = queryParams.length - 1;
+      const p2 = queryParams.length;
+      if (isBackward) {
+        queryConditions.push(`(updated_at, sandbox_id) > ($${p1}::timestamptz, $${p2})`);
+      } else {
+        queryConditions.push(`(updated_at, sandbox_id) < ($${p1}::timestamptz, $${p2})`);
+      }
+    }
+
+    const where = queryConditions.length ? `WHERE ${queryConditions.join(" AND ")}` : "";
+    queryParams.push(safeLimit + 1);
+
+    const orderDirection = isBackward ? "ASC" : "DESC";
+    const { rows } = await pool.query(
+      `SELECT sandbox_id, template_id, updated_at, created_at
+       FROM sandboxes ${where}
+       ORDER BY updated_at ${orderDirection}, sandbox_id ${orderDirection}
+       LIMIT $${queryParams.length}`,
+      queryParams,
+    );
+
+    let total;
+    let countIsEstimate = true;
+    if (count === "exact") {
+      const { rows: countRows } = await pool.query(`SELECT COUNT(*)::INT AS total FROM sandboxes`);
+      total = countRows[0]?.total ?? 0;
+      countIsEstimate = false;
+    } else {
+      const { rows: relRows } = await pool.query(
+        `SELECT reltuples::BIGINT AS estimate FROM pg_class WHERE relname = 'sandboxes'`,
+      );
+      const est = Number(relRows[0]?.estimate ?? -1);
+      if (est >= 0) {
+        total = est;
+      } else {
+        const { rows: countRows } = await pool.query(`SELECT COUNT(*)::INT AS total FROM sandboxes`);
+        total = countRows[0]?.total ?? 0;
+      }
+    }
+
+    const hasExtraRow = rows.length > safeLimit;
+    const formatted = formatPageResponse({
+      data: rows,
+      limit: safeLimit,
+      hasExtraRow,
+      isBackward,
+      hasAnchor,
+      extractTuple: (r) => [r.updated_at instanceof Date ? r.updated_at.toISOString() : r.updated_at, r.sandbox_id],
+      filterHash,
+      secret: config.CURSOR_SIGNING_SECRET,
+      total,
+      countIsEstimate,
+    });
+
+    return {
+      sandboxes: formatted.data,
+      data: formatted.data,
+      page_info: formatted.page_info,
+      next_cursor: formatted.next_cursor,
+      total,
+      count_is_estimate: countIsEstimate,
+    };
+  },
+
   /**
    * paginated contract transaction history with optional filters.
    * @param {string} contractId
-   * @param {{ function_name?: string, start_ledger?: number, end_ledger?: number, page?: number, limit?: number }} opts
+   * @param {{ function_name?: string, start_ledger?: number, end_ledger?: number, page?: number, limit?: number, cursor?: string, after?: string, before?: string }} opts
    */
-  async getContractTransactions(contractId, { function_name, start_ledger, end_ledger, page = 1, limit = 25 } = {}) {
+  async getContractTransactions(
+    contractId,
+    { function_name, start_ledger, end_ledger, page = 1, limit = 25, cursor, after, before } = {},
+  ) {
+    const filterHash = hashFilters({ contractId, function_name, start_ledger, end_ledger });
+    const safeLimit = Math.min(Math.max(1, Number(limit) || 25), 100);
+
+    let isBackward = false;
+    let anchorSeq = null;
+    let hasAnchor = false;
+
+    if (before) {
+      const decoded = decodeCursor(before, filterHash, config.CURSOR_SIGNING_SECRET);
+      anchorSeq = Number(decoded.tuple[0]);
+      isBackward = true;
+      hasAnchor = true;
+    } else if (after || cursor) {
+      const token = after || cursor;
+      if (typeof token === "number" || (/^\d+$/.test(String(token)) && String(token).length < 20)) {
+        anchorSeq = Number(token);
+        isBackward = false;
+        hasAnchor = anchorSeq > 0;
+      } else {
+        const decoded = decodeCursor(token, filterHash, config.CURSOR_SIGNING_SECRET);
+        anchorSeq = Number(decoded.tuple[0]);
+        isBackward = decoded.direction === "backward";
+        hasAnchor = true;
+      }
+    }
+
     const params = [contractId];
     const conditions = ["contract_id = $1"];
 
@@ -681,26 +1235,74 @@ export const db = {
       conditions.push(`ledger <= $${params.length}`);
     }
 
-    const where = conditions.join(" AND ");
-    const offset = (page - 1) * limit;
+    if (!hasAnchor && page && Number(page) > 1) {
+      const offset = (Number(page) - 1) * safeLimit;
+      const where = conditions.join(" AND ");
+      const [{ rows }, { rows: countRows }] = await Promise.all([
+        pool.query(
+          `SELECT * FROM events WHERE ${where} ORDER BY ledger DESC, seq DESC LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
+          [...params, safeLimit, offset],
+        ),
+        pool.query(`SELECT COUNT(*)::INT AS total FROM events WHERE ${where}`, params),
+      ]);
+      const total = countRows[0]?.total ?? 0;
+      return {
+        data: rows,
+        pagination: {
+          page: Number(page),
+          limit: safeLimit,
+          total,
+          total_pages: Math.ceil(total / safeLimit),
+          has_next: Number(page) * safeLimit < total,
+        },
+      };
+    }
 
+    const queryConditions = [...conditions];
+    const queryParams = [...params];
+
+    if (anchorSeq !== null && anchorSeq > 0) {
+      queryParams.push(anchorSeq);
+      queryConditions.push(isBackward ? `seq > $${queryParams.length}` : `seq < $${queryParams.length}`);
+    }
+
+    const where = queryConditions.join(" AND ");
+    queryParams.push(safeLimit + 1);
+
+    const orderDirection = isBackward ? "ASC" : "DESC";
     const [{ rows }, { rows: countRows }] = await Promise.all([
       pool.query(
-        `SELECT * FROM events WHERE ${where} ORDER BY ledger DESC LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
-        [...params, limit, offset],
+        `SELECT * FROM events WHERE ${where} ORDER BY seq ${orderDirection} LIMIT $${queryParams.length}`,
+        queryParams,
       ),
-      pool.query(`SELECT COUNT(*)::INT AS total FROM events WHERE ${where}`, params),
+      pool.query(`SELECT COUNT(*)::INT AS total FROM events WHERE ${conditions.join(" AND ")}`, params),
     ]);
 
-    const total = countRows[0].total;
-    return {
+    const total = countRows[0]?.total ?? 0;
+    const hasExtraRow = rows.length > safeLimit;
+    const formatted = formatPageResponse({
       data: rows,
+      limit: safeLimit,
+      hasExtraRow,
+      isBackward,
+      hasAnchor,
+      extractTuple: (r) => [Number(r.seq)],
+      filterHash,
+      secret: config.CURSOR_SIGNING_SECRET,
+      total,
+      countIsEstimate: false,
+    });
+
+    return {
+      data: formatted.data,
+      page_info: formatted.page_info,
+      next_cursor: formatted.next_cursor,
       pagination: {
-        page,
-        limit,
+        page: Number(page) || 1,
+        limit: safeLimit,
         total,
-        total_pages: Math.ceil(total / limit),
-        has_next: page * limit < total,
+        total_pages: Math.ceil(total / safeLimit),
+        has_next: formatted.page_info.has_next,
       },
     };
   },
@@ -746,7 +1348,7 @@ export const db = {
 
   async upsertContractMeta(meta) {
     // Auto-tag protocol_type from function names if not explicitly provided
-    const functionNames = (meta.functions ?? []).map((f) => (typeof f === 'string' ? f : f?.name ?? ''));
+    const functionNames = (meta.functions ?? []).map((f) => (typeof f === "string" ? f : (f?.name ?? "")));
     const protocol_type = meta.protocol_type ?? this.inferProtocolType(functionNames);
 
     await pool.query(
@@ -781,7 +1383,7 @@ export const db = {
           meta.abi_version,
           meta.min_ledger ?? 0,
           JSON.stringify(meta.functions ?? []),
-          meta.registered_by ?? '',
+          meta.registered_by ?? "",
         ],
       );
     }
@@ -1598,10 +2200,10 @@ export const db = {
    * @param {string} status  "closed" | "failed" | "pending"
    */
   async updateGapLogStatus(id, status) {
-    await pool.query(
-      `UPDATE gap_log SET status = $1, closed_at = NOW(), updated_at = NOW() WHERE id = $2`,
-      [status, id],
-    );
+    await pool.query(`UPDATE gap_log SET status = $1, closed_at = NOW(), updated_at = NOW() WHERE id = $2`, [
+      status,
+      id,
+    ]);
   },
 
   /**
@@ -1707,10 +2309,7 @@ export const db = {
    * @returns {Promise<number[]>}  Sorted ascending array of ledger numbers
    */
   async getRecentLedgers(n = 100) {
-    const { rows } = await pool.query(
-      `SELECT DISTINCT ledger FROM events ORDER BY ledger DESC LIMIT $1`,
-      [n],
-    );
+    const { rows } = await pool.query(`SELECT DISTINCT ledger FROM events ORDER BY ledger DESC LIMIT $1`, [n]);
     return rows.map((r) => Number(r.ledger)).sort((a, b) => a - b);
   },
 
@@ -1732,30 +2331,21 @@ export const db = {
    * Mark a gap_log entry as closed (successfully re-indexed).
    */
   async closeGapLog(id) {
-    await pool.query(
-      `UPDATE gap_log SET status = 'closed', closed_at = NOW() WHERE id = $1`,
-      [id],
-    );
+    await pool.query(`UPDATE gap_log SET status = 'closed', closed_at = NOW() WHERE id = $1`, [id]);
   },
 
   /**
    * Mark a gap_log entry as sent to the dead-letter queue after exhausting retries.
    */
   async dlqGapLog(id) {
-    await pool.query(
-      `UPDATE gap_log SET status = 'dlq', closed_at = NOW() WHERE id = $1`,
-      [id],
-    );
+    await pool.query(`UPDATE gap_log SET status = 'dlq', closed_at = NOW() WHERE id = $1`, [id]);
   },
 
   /**
    * Increment the retry counter on a gap_log entry.
    */
   async incrementGapRetries(id) {
-    await pool.query(
-      `UPDATE gap_log SET retries = retries + 1 WHERE id = $1`,
-      [id],
-    );
+    await pool.query(`UPDATE gap_log SET retries = retries + 1 WHERE id = $1`, [id]);
   },
 
   /**
@@ -1773,6 +2363,29 @@ export const db = {
            verified_ledger = CASE WHEN $2 THEN $3 ELSE verified_ledger END
        WHERE id = $1`,
       [contractId, isVerified, ledger],
+    );
+  },
+
+  /**
+   * Issue #875 — mirror the explorer contract's `get_ownership` result.
+   * @param {string} contractId
+   * @param {{ owner: string, method: string, ledger: number } | null} ownership
+   */
+  async setContractOwnership(contractId, ownership) {
+    await pool.query(
+      `UPDATE contracts
+       SET ownership_verified = $2,
+           ownership_owner = $3,
+           ownership_method = $4,
+           ownership_ledger = $5
+       WHERE id = $1`,
+      [
+        contractId,
+        ownership !== null,
+        ownership?.owner ?? null,
+        ownership?.method ?? null,
+        ownership?.ledger ?? null,
+      ],
     );
   },
 
@@ -1819,7 +2432,7 @@ export const db = {
         entry.contract_id,
         entry.abi_version,
         JSON.stringify(entry.functions ?? []),
-        entry.registered_by ?? '',
+        entry.registered_by ?? "",
         entry.min_ledger ?? 0,
       ],
     );
@@ -1841,10 +2454,10 @@ export const db = {
    */
   inferProtocolType(functionNames) {
     const names = (functionNames ?? []).map((n) => String(n).toLowerCase());
-    if (names.some((n) => n === 'swap' || n === 'swap_exact')) return 'dex';
-    if (names.some((n) => n === 'supply' || n === 'borrow')) return 'lending';
-    if (names.includes('mint') && names.includes('transfer')) return 'token';
-    return 'other';
+    if (names.some((n) => n === "swap" || n === "swap_exact")) return "dex";
+    if (names.some((n) => n === "supply" || n === "borrow")) return "lending";
+    if (names.includes("mint") && names.includes("transfer")) return "token";
+    return "other";
   },
 
   /**
@@ -1927,12 +2540,12 @@ export const db = {
   /** Number of consecutive delivery failures after which a subscription is auto-disabled. */
   WEBHOOK_MAX_CONSECUTIVE_FAILURES: 5,
 
-  async createWebhookSubscription({ api_key_id, url, contract_id, function_filter, wallet_address, secret }) {
+  async createWebhookSubscription({ api_key_id, url, contract_id, function_filter, wallet_address, secret, filter }) {
     const { rows } = await pool.query(
-      `INSERT INTO webhook_subscriptions (api_key_id, url, contract_id, function_filter, wallet_address, secret)
-       VALUES ($1, $2, $3, $4, $5, $6)
-       RETURNING id, api_key_id, url, contract_id, function_filter, wallet_address, active, failure_count, created_at, last_triggered_at`,
-      [api_key_id, url, contract_id ?? null, function_filter ?? null, wallet_address ?? null, secret],
+      `INSERT INTO webhook_subscriptions (api_key_id, url, contract_id, function_filter, wallet_address, secret, filter)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)
+       RETURNING id, api_key_id, url, contract_id, function_filter, wallet_address, filter, active, failure_count, created_at, last_triggered_at`,
+      [api_key_id, url, contract_id ?? null, function_filter ?? null, wallet_address ?? null, secret, filter ? JSON.stringify(filter) : null],
     );
     return rows[0];
   },
@@ -1994,7 +2607,16 @@ export const db = {
    * Record the outcome of a delivery attempt, and update the subscription's
    * consecutive-failure counter — auto-disabling it once the threshold is hit.
    */
-  async recordWebhookDelivery({ webhook_id, event_seq, url, request_body, response_status, response_body, duration_ms, success }) {
+  async recordWebhookDelivery({
+    webhook_id,
+    event_seq,
+    url,
+    request_body,
+    response_status,
+    response_body,
+    duration_ms,
+    success,
+  }) {
     const { rows } = await pool.query(
       `INSERT INTO webhook_deliveries
          (webhook_id, event_seq, url, request_body, response_status, response_body, duration_ms, delivered_at)
@@ -2013,10 +2635,9 @@ export const db = {
     );
 
     if (success) {
-      await pool.query(
-        `UPDATE webhook_subscriptions SET failure_count = 0, last_triggered_at = NOW() WHERE id = $1`,
-        [webhook_id],
-      );
+      await pool.query(`UPDATE webhook_subscriptions SET failure_count = 0, last_triggered_at = NOW() WHERE id = $1`, [
+        webhook_id,
+      ]);
     } else {
       await pool.query(
         `UPDATE webhook_subscriptions
@@ -2049,7 +2670,10 @@ export const db = {
     ]);
 
     const total = countRows[0].total;
-    return { data: rows, pagination: { page: safePage, limit: safeLimit, total, total_pages: Math.ceil(total / safeLimit) } };
+    return {
+      data: rows,
+      pagination: { page: safePage, limit: safeLimit, total, total_pages: Math.ceil(total / safeLimit) },
+    };
   },
 
   /** Total webhook delivery attempts ever made across all of one API key's subscriptions ("events received"). */

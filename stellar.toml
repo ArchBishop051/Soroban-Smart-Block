@@ -5,6 +5,11 @@ VERSION = "2.0.0"
 
 NETWORK_PASSPHRASE = "Test SDF Network ; September 2015"
 
+# Ed25519 public keys used to sign API responses requested with ?signed=1
+# (active + retired keys during rotation overlap). Verify with
+# `soroban-explorer verify <file.json>` or verifySignedResponse() in the SDK.
+EXPLORER_SIGNING_KEYS_URL = "https://explorer.example.com/.well-known/explorer-keys.json"
+
 [DOCUMENTATION]
 ORG_NAME        = "Soroban Smart Block Explorer"
 ORG_GITHUB      = "https://github.com/Soroban-Smart-Block-Explorer/Soroban-Smart-Block"

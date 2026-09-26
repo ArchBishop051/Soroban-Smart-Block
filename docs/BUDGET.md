@@ -62,3 +62,65 @@
 > Budget requested: **$36,800 USD in XLM**  
 > This is well within the $150,000 SCF Build Award cap and sized to the actual scope.  
 > No marketing, token giveaways, or non-development expenses are included.
+
+---
+
+## Contract resource budget (CI gate)
+
+Soroban fees scale with CPU instructions, memory, ledger I/O and event size,
+so a PR that makes an entrypoint more expensive is a user-facing change. The
+**Contracts (resource budget)** CI job fails such PRs before they merge.
+
+### What is measured
+
+| Source | Metrics |
+| --- | --- |
+| `contracts/explorer/tests/budget.rs` | every public explorer entrypoint: `cpu_insns`, `mem_bytes`, `event_bytes` |
+| `contracts/ticket/src/test.rs` (`budget` module) | every public ticket entrypoint: same metrics |
+| explorer release WASM | `wasm_bytes` |
+
+Each entrypoint is invoked once with representative inputs on a fresh,
+unlimited test-host budget. Numbers are deterministic (fixed PRNG seed, the
+budget model does not depend on time or build profile), so two runs on the
+same commit produce identical results.
+
+`budget_covers_every_public_entrypoint` enumerates the `pub fn`s of the
+`#[contractimpl]` block in `contracts/explorer/src/lib.rs` (the contract spec)
+and fails if any entrypoint is not measured, so new entrypoints cannot skip
+the gate.
+
+soroban-sdk 21 only exposes CPU and memory from the test budget. Ledger
+read/write entries and bytes will be added once the contracts move to an SDK
+with `env.cost_estimate()`.
+
+### Workflow
+
+```bash
+make budget          # build, measure, compare with the baseline
+make budget-update   # build, measure, rewrite contracts/budget-baseline.json
+```
+
+`scripts/budget-check.js` compares `target/budget/*.json` and the WASM size
+with `contracts/budget-baseline.json` and writes `target/budget/report.md`.
+
+| Situation | Result |
+| --- | --- |
+| Metric grows more than its threshold | ❌ job fails, table lists the regressions |
+| Metric grows within threshold | ✅ pass |
+| Metric decreases | ✅ pass, report suggests `make budget-update` |
+| Entrypoint has no baseline entry | ⚠️ warning; add it with `make budget-update` in the same PR |
+
+Thresholds live in the baseline file (`thresholds`), per metric. Defaults are
++5%, with `wasm_bytes` at +10% to absorb toolchain drift between the stable
+compiler used locally and in CI.
+
+In CI the report is posted as a PR comment and added to the job summary.
+
+### Changing the baseline
+
+If a cost increase is intended:
+
+1. Run `make budget-update` and commit `contracts/budget-baseline.json`.
+2. Explain the increase in the PR description.
+3. A maintainer adds the `budget-change-approved` label and re-runs the job.
+   The job fails whenever the baseline file changes without that label.

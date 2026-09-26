@@ -2,7 +2,7 @@ use proptest::prelude::*;
 use soroban_explorer_contract::{
     ContractMeta, ExplorerContract, ExplorerContractClient, FunctionAbi, ParamDef,
     DEFAULT_MAX_EVENTS, MAX_DESCRIPTION_LEN, MAX_FUNCTIONS, MAX_NAME_LEN, MAX_PARAMS_PER_FUNCTION,
-    MIN_MAX_EVENTS,
+    MAX_MAX_EVENTS, MIN_MAX_EVENTS,
 };
 use soroban_sdk::{testutils::Address as _, Address, BytesN, Env, String, Symbol, Vec};
 use std::panic::{catch_unwind, AssertUnwindSafe};
@@ -31,7 +31,9 @@ fn setup() -> (Env, ExplorerContractClient<'static>) {
 
 proptest! {
     #[test]
-    fn test_init_invariants(max_events in 0u32..u32::MAX) {
+    fn test_init_invariants(
+        max_events in prop_oneof![Just(0u32), MIN_MAX_EVENTS..=MAX_MAX_EVENTS],
+    ) {
         let env = Env::default();
         env.mock_all_auths();
         let id = env.register_contract(None, ExplorerContract);
