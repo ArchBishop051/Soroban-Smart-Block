@@ -83,6 +83,15 @@
     "zk_host_calls": {
       "type": "object"
     },
+    "topic_hashes": {
+      "type": "array",
+      "maxItems": 4,
+      "items": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+    },
+    "topic_count": {
+      "type": "integer",
+      "minimum": 0
+    },
     "heuristic_params": {
       "type": "array"
     },

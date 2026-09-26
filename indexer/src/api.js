@@ -54,6 +54,10 @@ import { getUptimeHistory } from "./uptimeRecorder.js";
 import { getDecodeStats } from "./decoder.js";
 // ── Auth & Rate Limiting ──────────────────────────────────────────────────────
 import { apiKeyAuthenticator } from "./auth/apiKeyAuth.js";
+import { scopeMiddleware, assertRoutesDeclareScopes } from "./auth/scopes.js";
+import { toFilterAst, planFilter, FilterError, FILTER_TIER_LIMITS } from "./filters/filter.js";
+import { compileFilter } from "./filters/sql.js";
+import { parseRpcFilters, compileRpcFilters, RpcFilterError } from "./rpcFilters.js";
 import { geoIpRateLimiter } from "./rateLimit/geoIpLimiter.js";
 import { concurrentRequestLimiter } from "./rateLimit/concurrentLimiter.js";
 import { tokenBucketMiddleware } from "./rateLimit/tokenBucket.js";
@@ -491,6 +495,8 @@ export function createApi({ logDestination, dbOverride } = {}) {
   ensureAuditPartitions().catch((err) => logger.error("[api] Startup audit partition check failed:", err.message));
   app.use(auditLoggerMiddleware);
   app.use(apiKeyAuthenticator);
+  // Scoped API tokens (#901): enforce each route's declared scopes.
+  app.use(scopeMiddleware);
   // RATE_LIMITING_DISABLED short-circuits the per-client throttles. Intended
   // only for load/perf harnesses (e.g. the k6 PR baseline job) that drive
   // thousands of requests/second from a single origin and would otherwise
@@ -663,6 +669,13 @@ export function createApi({ logDestination, dbOverride } = {}) {
       }
       next();
     },
+    // Filter DSL (#902): ?filter=<text or JSON AST> or ?query_id=<saved query>.
+    // Served uncached — results depend on the caller's tier limits.
+    async (req, res, next) => {
+      if (req.query.filters !== undefined) return runRpcFilteredEvents(req, res, req.query.filters);
+      if (req.query.filter === undefined && req.query.query_id === undefined) return next();
+      await runFilteredEvents(req, res);
+    },
     makeCache("events_list", (req) => {
       const { contract = "", fn = "", type = "", cursor = "", after = "", before = "", count = "" } = req.query;
       const afterSeq = Number(req.query.after_seq) || 0;
@@ -708,6 +721,105 @@ export function createApi({ logDestination, dbOverride } = {}) {
       }
     },
   );
+
+  // ── Event filter DSL + saved queries (#902) ─────────────────────────────────
+  // Grammar and limits: docs/guides/filters.md.
+
+  /** Parse, plan and run a filter for GET /api/events or a saved query. */
+  async function runFilteredEvents(req, res, savedFilter) {
+    try {
+      let input = savedFilter;
+      if (input === undefined && req.query.query_id !== undefined) {
+        if (!req.rateContext?.keyId) return res.status(401).json({ error: "Saved queries require an API key" });
+        const saved = await db.getSavedQuery(String(req.query.query_id), req.rateContext.keyId);
+        if (!saved) return res.status(404).json({ error: "Saved query not found" });
+        input = saved.filter;
+      }
+      const ast = toFilterAst(input ?? req.query.filter);
+      const plan = planFilter(ast);
+      if (!plan.ok) return res.status(422).json({ error: `Filter cannot use an index: ${plan.reason}` });
+      const { sql, params } = compileFilter(ast);
+      const limits = FILTER_TIER_LIMITS[req.rateContext?.tier] ?? FILTER_TIER_LIMITS.unauthenticated;
+      const limit = Math.min(Number(req.query.limit) || 25, 200);
+      const afterSeq = Number(req.query.after_seq) || 0;
+      const result = await db.queryEventsByFilter({ where: sql, params, afterSeq, limit, ...limits });
+      res.set("Cache-Control", "no-store").json(result);
+    } catch (e) {
+      if (e instanceof FilterError) return res.status(400).json({ error: e.message });
+      res.status(e.status ?? 500).json({ error: e.message });
+    }
+  }
+
+  // ── Soroban-RPC-compatible filters (#903) ──────────────────────────────────
+  // GET /api/events?filters=<URL-encoded JSON> or POST /api/events { filters }.
+  async function runRpcFilteredEvents(req, res, input) {
+    try {
+      const filters = parseRpcFilters(input);
+      const { sql, params } = compileRpcFilters(filters);
+      const limits = FILTER_TIER_LIMITS[req.rateContext?.tier] ?? FILTER_TIER_LIMITS.unauthenticated;
+      const source = req.method === "POST" ? req.body ?? {} : req.query;
+      const limit = Math.min(Number(source.limit) || 25, 200);
+      const afterSeq = Number(source.after_seq) || 0;
+      const result = await db.queryEventsByFilter({ where: sql, params, afterSeq, limit, ...limits });
+      res.set("Cache-Control", "no-store").json(result);
+    } catch (e) {
+      if (e instanceof RpcFilterError) return res.status(400).json({ error: e.message });
+      res.status(e.status ?? 500).json({ error: e.message });
+    }
+  }
+
+  app.post("/api/events", async (req, res) => {
+    if (req.body?.filters === undefined) {
+      return res.status(400).json({ error: "body must contain an RPC-style filters array" });
+    }
+    await runRpcFilteredEvents(req, res, req.body.filters);
+  });
+
+  const requireKey = (req, res) => {
+    if (!req.rateContext?.keyId) {
+      res.status(401).json({ error: "An API key is required" });
+      return null;
+    }
+    return req.rateContext.keyId;
+  };
+
+  app.post("/api/queries", async (req, res) => {
+    const keyId = requireKey(req, res);
+    if (!keyId) return;
+    const { name, filter } = req.body ?? {};
+    if (typeof name !== "string" || !name.trim() || name.length > 128) {
+      return res.status(400).json({ error: "name is required (max 128 characters)" });
+    }
+    try {
+      const ast = toFilterAst(filter);
+      const plan = planFilter(ast);
+      if (!plan.ok) return res.status(422).json({ error: `Filter cannot use an index: ${plan.reason}` });
+      res.status(201).json(await db.createSavedQuery({ apiKeyId: keyId, name: name.trim(), filter: ast }));
+    } catch (e) {
+      res.status(e instanceof FilterError ? 400 : 500).json({ error: e.message });
+    }
+  });
+
+  app.get("/api/queries", async (req, res) => {
+    const keyId = requireKey(req, res);
+    if (keyId) res.json({ data: await db.listSavedQueries(keyId) });
+  });
+
+  app.get("/api/queries/:id/events", async (req, res) => {
+    const keyId = requireKey(req, res);
+    if (!keyId) return;
+    const saved = await db.getSavedQuery(req.params.id, keyId).catch(() => null);
+    if (!saved) return res.status(404).json({ error: "Saved query not found" });
+    await runFilteredEvents(req, res, saved.filter);
+  });
+
+  app.delete("/api/queries/:id", async (req, res) => {
+    const keyId = requireKey(req, res);
+    if (!keyId) return;
+    const deleted = await db.deleteSavedQuery(req.params.id, keyId).catch(() => false);
+    if (!deleted) return res.status(404).json({ error: "Saved query not found" });
+    res.status(204).end();
+  });
 
   // GET /api/search?q=&limit=
   app.get(
@@ -1892,6 +2004,23 @@ export function createApi({ logDestination, dbOverride } = {}) {
     }
   });
 
+  // GET /api/keys/introspect — what the presented API key can do (#901).
+  app.get("/api/keys/introspect", (req, res) => {
+    const ctx = req.rateContext;
+    if (!ctx?.keyId && !ctx?.scopes) {
+      return res.status(401).json({ error: "Present an API key in the x-api-key header" });
+    }
+    res.set("Cache-Control", "no-store").json({
+      key_id: ctx.keyId,
+      name: ctx.keyName,
+      tier: ctx.tier,
+      scopes: ctx.scopes,
+      allowed_contract_ids: ctx.allowedContractIds ?? [],
+      allowed_origins: ctx.allowedOrigins ?? [],
+      expires_at: ctx.expiresAt ?? null,
+    });
+  });
+
   // GET /api/keys/verify?token= - Verify email and activate the key, return the full key once
   app.get("/api/keys/verify", async (req, res) => {
     try {
@@ -2729,6 +2858,9 @@ export function createApi({ logDestination, dbOverride } = {}) {
       res.status(500).json({ error: e.message });
     }
   });
+
+  // Every route must declare its scopes (#901) — fail fast on a missing entry.
+  assertRoutesDeclareScopes(app);
 
   // ── Start HTTP + WebSocket server ───────────────────────────────────────────
   const server = http.createServer(app);
