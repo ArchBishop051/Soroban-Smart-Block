@@ -24,18 +24,19 @@
  *   GET    /api/admin/audit-log/export      — CSV or JSON export
  */
 
-import { Router } from 'express';
-import { adminAuthMiddleware } from '../admin/adminAuth.js';
+import { Router } from "express";
+import { adminAuthMiddleware } from "../admin/adminAuth.js";
+import { listKeys, createKey, updateKey, deleteKey, rotateKey, getKeyUsage } from "../admin/keyManager.js";
+import { db, pool } from "../db.js";
+import { getActiveAlerts, resolveAlert } from "../alertManager.js";
 import {
-  listKeys,
-  createKey,
-  updateKey,
-  deleteKey,
-  rotateKey,
-  getKeyUsage,
-} from '../admin/keyManager.js';
-import { db, pool } from '../db.js';
-import { getActiveAlerts, resolveAlert } from '../alertManager.js';
+  decodeCursor,
+  hashFilters,
+  formatPageResponse,
+  InvalidCursorError,
+  CursorFilterMismatchError,
+} from "../cursor.js";
+import config from "../config.js";
 // Note: getRedisClient (rateLimit/tokenBucket.js) and runAllChecks
 // (doctor-lib.js) were imported here but never called anywhere in this
 // file — dead imports left over from the removed legacy /api/doctor route
@@ -44,19 +45,19 @@ import { getActiveAlerts, resolveAlert } from '../alertManager.js';
 // ── CSV helpers ───────────────────────────────────────────────────────────────
 
 const AUDIT_LOG_COLUMNS = [
-  'id',
-  'timestamp',
-  'api_key_id',
-  'key_name',
-  'tier',
-  'ip',
-  'method',
-  'endpoint',
-  'status_code',
-  'response_time_ms',
-  'rate_limit_remaining',
-  'user_agent',
-  'request_body_hash',
+  "id",
+  "timestamp",
+  "api_key_id",
+  "key_name",
+  "tier",
+  "ip",
+  "method",
+  "endpoint",
+  "status_code",
+  "response_time_ms",
+  "rate_limit_remaining",
+  "user_agent",
+  "request_body_hash",
 ];
 
 // Note: EVENT_COLUMNS/CONTRACT_COLUMNS were only used by the removed legacy
@@ -76,7 +77,7 @@ async function runIntegrityChecks() {
      WHERE seq - previous_seq > 1`,
   );
   if (Number(gapRows[0]?.gap_count ?? 0) > 0) {
-    failed.push({ check: 'seq_gap', details: { gap_count: Number(gapRows[0].gap_count) } });
+    failed.push({ check: "seq_gap", details: { gap_count: Number(gapRows[0].gap_count) } });
   }
 
   const { rows: ledgerOrderRows } = await pool.query(
@@ -91,19 +92,20 @@ async function runIntegrityChecks() {
        AND ledger < previous_ledger`,
   );
   if (Number(ledgerOrderRows[0]?.non_monotonic_count ?? 0) > 0) {
-    failed.push({ check: 'ledger_monotonicity', details: { non_monotonic_count: Number(ledgerOrderRows[0].non_monotonic_count) } });
+    failed.push({
+      check: "ledger_monotonicity",
+      details: { non_monotonic_count: Number(ledgerOrderRows[0].non_monotonic_count) },
+    });
   }
 
-  const { rows: maxLedgerRows } = await pool.query(
-    `SELECT COALESCE(MAX(ledger), 0)::bigint AS max_ledger FROM events`,
-  );
+  const { rows: maxLedgerRows } = await pool.query(`SELECT COALESCE(MAX(ledger), 0)::bigint AS max_ledger FROM events`);
   const { rows: lastIndexedRows } = await pool.query(
     `SELECT COALESCE((SELECT value FROM daemon_state WHERE key = 'last_indexed_ledger'), '0') AS value`,
   );
   const maxLedger = Number(maxLedgerRows[0]?.max_ledger ?? 0);
   const lastIndexedLedger = Number(lastIndexedRows[0]?.value ?? 0);
   if (lastIndexedLedger !== maxLedger) {
-    failed.push({ check: 'last_indexed_ledger', details: { expected: maxLedger, actual: lastIndexedLedger } });
+    failed.push({ check: "last_indexed_ledger", details: { expected: maxLedger, actual: lastIndexedLedger } });
   }
 
   const { rows: txRangeRows } = await pool.query(
@@ -132,7 +134,10 @@ async function runIntegrityChecks() {
     );
     const distinctTxHashes = Number(txCountRows[0]?.distinct_tx_hashes ?? 0);
     if (distinctTxHashes !== ledgerHashCount) {
-      failed.push({ check: 'ledger_hash_count', details: { distinct_tx_hashes: distinctTxHashes, ledger_hash_count: ledgerHashCount } });
+      failed.push({
+        check: "ledger_hash_count",
+        details: { distinct_tx_hashes: distinctTxHashes, ledger_hash_count: ledgerHashCount },
+      });
     }
   }
 
@@ -140,17 +145,15 @@ async function runIntegrityChecks() {
 }
 
 function rowsToCsv(rows, columns) {
-  if (!rows.length) return columns.join(',') + '\n';
+  if (!rows.length) return columns.join(",") + "\n";
   const escape = (v) => {
-    if (v == null) return '';
+    if (v == null) return "";
     const s = String(v);
-    return s.includes(',') || s.includes('"') || s.includes('\n')
-      ? `"${s.replace(/"/g, '""')}"`
-      : s;
+    return s.includes(",") || s.includes('"') || s.includes("\n") ? `"${s.replace(/"/g, '""')}"` : s;
   };
-  const header = columns.join(',');
-  const body = rows.map((r) => columns.map((c) => escape(r[c])).join(',')).join('\n');
-  return header + '\n' + body + '\n';
+  const header = columns.join(",");
+  const body = rows.map((r) => columns.map((c) => escape(r[c])).join(",")).join("\n");
+  return header + "\n" + body + "\n";
 }
 
 export { runIntegrityChecks };
@@ -172,7 +175,7 @@ export default function registerAdminRoutes(app) {
   router.use(adminAuthMiddleware);
 
   // ── GET /api/admin/integrity ─────────────────────────────────────────────
-  router.get('/integrity', async (_req, res) => {
+  router.get("/integrity", async (_req, res) => {
     try {
       const result = await runIntegrityChecks();
       if (result.ok) {
@@ -185,7 +188,7 @@ export default function registerAdminRoutes(app) {
   });
 
   // ── POST /api/admin/alerts/:condition/resolve ─────────────────────────────
-  router.post('/alerts/:condition/resolve', (req, res) => {
+  router.post("/alerts/:condition/resolve", (req, res) => {
     const { condition } = req.params;
     const resolved = getActiveAlerts().some((alert) => alert.condition === condition);
 
@@ -194,7 +197,7 @@ export default function registerAdminRoutes(app) {
   });
 
   // ── GET /api/admin/api-keys ────────────────────────────────────────────────
-  router.get('/api-keys', async (req, res) => {
+  router.get("/api-keys", async (req, res) => {
     try {
       const page = Number(req.query.page) || 1;
       const limit = Number(req.query.limit) || 50;
@@ -206,52 +209,55 @@ export default function registerAdminRoutes(app) {
   });
 
   // ── POST /api/admin/api-keys ───────────────────────────────────────────────
-  router.post('/api-keys', async (req, res) => {
+  router.post("/api-keys", async (req, res) => {
     try {
       const result = await createKey(req.body, { allowAdmin: true });
       res.status(201).json(result);
     } catch (e) {
-      const status = /required|must be|scope/.test(e.message) ? 400 : 500;
+      const status = e.message.includes("required") || e.message.includes("must be") ? 400 : 500;
       res.status(status).json({ error: e.message });
     }
   });
 
   // ── PATCH /api/admin/api-keys/:id ─────────────────────────────────────────
-  router.patch('/api-keys/:id', async (req, res) => {
+  router.patch("/api-keys/:id", async (req, res) => {
     try {
       const record = await updateKey(req.params.id, req.body);
       res.json(record);
     } catch (e) {
-      if (e.message.includes('not found')) return res.status(404).json({ error: e.message });
-      const status = e.message.includes('required') || e.message.includes('must be') || e.message.includes('No updatable') ? 400 : 500;
+      if (e.message.includes("not found")) return res.status(404).json({ error: e.message });
+      const status =
+        e.message.includes("required") || e.message.includes("must be") || e.message.includes("No updatable")
+          ? 400
+          : 500;
       res.status(status).json({ error: e.message });
     }
   });
 
   // ── DELETE /api/admin/api-keys/:id ────────────────────────────────────────
-  router.delete('/api-keys/:id', async (req, res) => {
+  router.delete("/api-keys/:id", async (req, res) => {
     try {
       await deleteKey(req.params.id);
       res.status(204).end();
     } catch (e) {
-      if (e.message.includes('not found')) return res.status(404).json({ error: e.message });
+      if (e.message.includes("not found")) return res.status(404).json({ error: e.message });
       res.status(500).json({ error: e.message });
     }
   });
 
   // ── POST /api/admin/api-keys/:id/rotate ───────────────────────────────────
-  router.post('/api-keys/:id/rotate', async (req, res) => {
+  router.post("/api-keys/:id/rotate", async (req, res) => {
     try {
       const result = await rotateKey(req.params.id);
       res.json(result);
     } catch (e) {
-      if (e.message.includes('not found')) return res.status(404).json({ error: e.message });
+      if (e.message.includes("not found")) return res.status(404).json({ error: e.message });
       res.status(500).json({ error: e.message });
     }
   });
 
   // ── GET /api/admin/api-keys/:id/usage ─────────────────────────────────────
-  router.get('/api-keys/:id/usage', async (req, res) => {
+  router.get("/api-keys/:id/usage", async (req, res) => {
     try {
       const usage = await getKeyUsage(req.params.id);
       res.json(usage);
@@ -261,7 +267,7 @@ export default function registerAdminRoutes(app) {
   });
 
   // ── GET /api/admin/audit-log ───────────────────────────────────────────────
-  router.get('/audit-log', async (req, res) => {
+  router.get("/audit-log", async (req, res) => {
     try {
       const {
         api_key_id,
@@ -270,12 +276,49 @@ export default function registerAdminRoutes(app) {
         status_code,
         from: fromTs,
         to: toTs,
-        limit: limitParam = '100',
-        offset: offsetParam = '0',
+        limit: limitParam = "100",
+        offset: offsetParam,
+        page: pageParam,
+        cursor,
+        after,
+        before,
       } = req.query;
 
+      const hasLegacy = offsetParam !== undefined || pageParam !== undefined;
+      if (hasLegacy) {
+        if (!config.PAGINATION_LEGACY_OFFSET) {
+          return res.status(400).json({
+            error: "offset_pagination_deprecated",
+            message:
+              "OFFSET/page pagination is deprecated and disabled. Use keyset cursor pagination (cursor/after/before).",
+          });
+        }
+        res.setHeader("Deprecation", "true");
+        res.setHeader("Link", '</docs/api/pagination>; rel="deprecation"');
+      }
+
       const limit = Math.min(Number(limitParam) || 100, 1000);
-      const offset = Math.max(0, Number(offsetParam) || 0);
+      const filterHash = hashFilters({ api_key_id, ip, endpoint, status_code, from: fromTs, to: toTs });
+
+      let isBackward = false;
+      let anchorTs = null;
+      let anchorId = null;
+      let hasAnchor = false;
+
+      if (before) {
+        const decoded = decodeCursor(before, filterHash, config.CURSOR_SIGNING_SECRET);
+        anchorTs = decoded.tuple[0];
+        anchorId = decoded.tuple[1];
+        isBackward = true;
+        hasAnchor = true;
+      } else if (after || cursor) {
+        const token = after || cursor;
+        const decoded = decodeCursor(token, filterHash, config.CURSOR_SIGNING_SECRET);
+        anchorTs = decoded.tuple[0];
+        anchorId = decoded.tuple[1];
+        isBackward = decoded.direction === "backward";
+        hasAnchor = true;
+      }
 
       const conditions = [];
       const params = [];
@@ -305,28 +348,84 @@ export default function registerAdminRoutes(app) {
         conditions.push(`timestamp <= $${params.length}`);
       }
 
-      const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
-      params.push(limit, offset);
+      // If legacy offset request without cursor
+      if (!hasAnchor && hasLegacy) {
+        const offset =
+          offsetParam !== undefined
+            ? Math.max(0, Number(offsetParam) || 0)
+            : (Math.max(1, Number(pageParam) || 1) - 1) * limit;
+        const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
+        params.push(limit, offset);
+        const { rows } = await pool.query(
+          `SELECT id, timestamp, api_key_id, key_name, tier, ip, method,
+                  endpoint, status_code, response_time_ms, rate_limit_remaining,
+                  user_agent, request_body_hash
+           FROM api_audit_log
+           ${where}
+           ORDER BY timestamp DESC, id DESC
+           LIMIT $${params.length - 1} OFFSET $${params.length}`,
+          params,
+        );
+        return res.json({ data: rows, limit, offset });
+      }
 
+      if (anchorTs !== null && anchorId !== null) {
+        params.push(anchorTs, anchorId);
+        const p1 = params.length - 1;
+        const p2 = params.length;
+        if (isBackward) {
+          conditions.push(`(timestamp, id) > ($${p1}::timestamptz, $${p2}::bigint)`);
+        } else {
+          conditions.push(`(timestamp, id) < ($${p1}::timestamptz, $${p2}::bigint)`);
+        }
+      }
+
+      const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
+      params.push(limit + 1);
+
+      const orderDirection = isBackward ? "ASC" : "DESC";
       const { rows } = await pool.query(
         `SELECT id, timestamp, api_key_id, key_name, tier, ip, method,
                 endpoint, status_code, response_time_ms, rate_limit_remaining,
                 user_agent, request_body_hash
          FROM api_audit_log
          ${where}
-         ORDER BY timestamp DESC
-         LIMIT $${params.length - 1} OFFSET $${params.length}`,
+         ORDER BY timestamp ${orderDirection}, id ${orderDirection}
+         LIMIT $${params.length}`,
         params,
       );
 
-      res.json({ data: rows, limit, offset });
+      const hasExtraRow = rows.length > limit;
+      const formatted = formatPageResponse({
+        data: rows,
+        limit,
+        hasExtraRow,
+        isBackward,
+        hasAnchor,
+        extractTuple: (r) => [r.timestamp instanceof Date ? r.timestamp.toISOString() : r.timestamp, Number(r.id)],
+        filterHash,
+        secret: config.CURSOR_SIGNING_SECRET,
+      });
+
+      res.json({
+        data: formatted.data,
+        page_info: formatted.page_info,
+        next_cursor: formatted.next_cursor,
+        limit,
+      });
     } catch (e) {
+      if (e instanceof InvalidCursorError || e?.code === "invalid_cursor") {
+        return res.status(400).json({ error: "invalid_cursor", message: e.message });
+      }
+      if (e instanceof CursorFilterMismatchError || e?.code === "cursor_filter_mismatch") {
+        return res.status(400).json({ error: "cursor_filter_mismatch", message: e.message });
+      }
       res.status(500).json({ error: e.message });
     }
   });
 
   // ── GET /api/admin/audit-log/export ───────────────────────────────────────
-  router.get('/audit-log/export', async (req, res) => {
+  router.get("/audit-log/export", async (req, res) => {
     try {
       const {
         api_key_id,
@@ -335,13 +434,29 @@ export default function registerAdminRoutes(app) {
         status_code,
         from: fromTs,
         to: toTs,
-        limit: limitParam = '1000',
-        offset: offsetParam = '0',
-        format = 'json',
+        limit: limitParam = "1000",
+        offset: offsetParam,
+        page: pageParam,
+        cursor,
+        after,
+        format = "json",
       } = req.query;
 
+      const hasLegacy = offsetParam !== undefined || pageParam !== undefined;
+      if (hasLegacy) {
+        if (!config.PAGINATION_LEGACY_OFFSET) {
+          return res.status(400).json({
+            error: "offset_pagination_deprecated",
+            message:
+              "OFFSET/page pagination is deprecated and disabled. Use keyset cursor pagination (cursor/after/before).",
+          });
+        }
+        res.setHeader("Deprecation", "true");
+        res.setHeader("Link", '</docs/api/pagination>; rel="deprecation"');
+      }
+
       const limit = Math.min(Number(limitParam) || 1000, 1000);
-      const offset = Math.max(0, Number(offsetParam) || 0);
+      const filterHash = hashFilters({ api_key_id, ip, endpoint, status_code, from: fromTs, to: toTs });
 
       const conditions = [];
       const params = [];
@@ -371,8 +486,44 @@ export default function registerAdminRoutes(app) {
         conditions.push(`timestamp <= $${params.length}`);
       }
 
-      const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
-      params.push(limit, offset);
+      if (after || cursor) {
+        const token = after || cursor;
+        const decoded = decodeCursor(token, filterHash, config.CURSOR_SIGNING_SECRET);
+        params.push(decoded.tuple[0], decoded.tuple[1]);
+        const p1 = params.length - 1;
+        const p2 = params.length;
+        conditions.push(`(timestamp, id) < ($${p1}::timestamptz, $${p2}::bigint)`);
+      } else if (hasLegacy) {
+        const offset =
+          offsetParam !== undefined
+            ? Math.max(0, Number(offsetParam) || 0)
+            : (Math.max(1, Number(pageParam) || 1) - 1) * limit;
+        params.push(limit, offset);
+        const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
+        const { rows } = await pool.query(
+          `SELECT id, timestamp, api_key_id, key_name, tier, ip, method,
+                  endpoint, status_code, response_time_ms, rate_limit_remaining,
+                  user_agent, request_body_hash
+           FROM api_audit_log
+           ${where}
+           ORDER BY timestamp DESC, id DESC
+           LIMIT $${params.length - 1} OFFSET $${params.length}`,
+          params,
+        );
+
+        if (format === "csv") {
+          res.setHeader("Content-Disposition", 'attachment; filename="audit-log.csv"');
+          res.setHeader("Content-Type", "text/csv");
+          return res.send(rowsToCsv(rows, AUDIT_LOG_COLUMNS));
+        }
+
+        res.setHeader("Content-Disposition", 'attachment; filename="audit-log.json"');
+        res.setHeader("Content-Type", "application/json");
+        return res.json(rows);
+      }
+
+      const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
+      params.push(limit);
 
       const { rows } = await pool.query(
         `SELECT id, timestamp, api_key_id, key_name, tier, ip, method,
@@ -380,27 +531,33 @@ export default function registerAdminRoutes(app) {
                 user_agent, request_body_hash
          FROM api_audit_log
          ${where}
-         ORDER BY timestamp DESC
-         LIMIT $${params.length - 1} OFFSET $${params.length}`,
+         ORDER BY timestamp DESC, id DESC
+         LIMIT $${params.length}`,
         params,
       );
 
-      if (format === 'csv') {
-        res.setHeader('Content-Disposition', 'attachment; filename="audit-log.csv"');
-        res.setHeader('Content-Type', 'text/csv');
+      if (format === "csv") {
+        res.setHeader("Content-Disposition", 'attachment; filename="audit-log.csv"');
+        res.setHeader("Content-Type", "text/csv");
         return res.send(rowsToCsv(rows, AUDIT_LOG_COLUMNS));
       }
 
-      res.setHeader('Content-Disposition', 'attachment; filename="audit-log.json"');
-      res.setHeader('Content-Type', 'application/json');
+      res.setHeader("Content-Disposition", 'attachment; filename="audit-log.json"');
+      res.setHeader("Content-Type", "application/json");
       return res.json(rows);
     } catch (e) {
+      if (e instanceof InvalidCursorError || e?.code === "invalid_cursor") {
+        return res.status(400).json({ error: "invalid_cursor", message: e.message });
+      }
+      if (e instanceof CursorFilterMismatchError || e?.code === "cursor_filter_mismatch") {
+        return res.status(400).json({ error: "cursor_filter_mismatch", message: e.message });
+      }
       res.status(500).json({ error: e.message });
     }
   });
 
   // ── GET /api/admin/analytics/rate-limit-hits ──────────────────────────────
-  router.get('/analytics/rate-limit-hits', async (req, res) => {
+  router.get("/analytics/rate-limit-hits", async (req, res) => {
     try {
       const minutes = Math.min(Number(req.query.minutes) || 60, 1440);
       const { rows } = await pool.query(
@@ -420,9 +577,10 @@ export default function registerAdminRoutes(app) {
   });
 
   // ── GET /api/admin/analytics/top-users ────────────────────────────────────
-  router.get('/analytics/top-users', async (req, res) => {
+  router.get("/analytics/top-users", async (req, res) => {
     try {
-      const window = req.query.window === '7d' ? 7 : req.query.window === '24h' ? 1 : req.query.window === '1h' ? null : 1;
+      const window =
+        req.query.window === "7d" ? 7 : req.query.window === "24h" ? 1 : req.query.window === "1h" ? null : 1;
       let rows;
       if (window === null) {
         // 1 hour window — use audit log
@@ -454,7 +612,7 @@ export default function registerAdminRoutes(app) {
   });
 
   // ── GET /api/admin/analytics/violation-heatmap ────────────────────────────
-  router.get('/analytics/violation-heatmap', async (req, res) => {
+  router.get("/analytics/violation-heatmap", async (req, res) => {
     try {
       const { rows } = await pool.query(
         `SELECT EXTRACT(HOUR FROM timestamp)::INT AS hour,
@@ -473,7 +631,7 @@ export default function registerAdminRoutes(app) {
   });
 
   // ── GET /api/admin/analytics/upgrade-recommendations ─────────────────────
-  router.get('/analytics/upgrade-recommendations', async (req, res) => {
+  router.get("/analytics/upgrade-recommendations", async (req, res) => {
     try {
       const { rows } = await pool.query(
         `SELECT k.id, k.name, k.tier,
@@ -518,13 +676,13 @@ export default function registerAdminRoutes(app) {
     const importCooldowns = new Map();
     const IMPORT_COOLDOWN_MS = 10 * 60 * 1000; // 10 minutes
 
-    const GITHUB_API = 'https://api.github.com';
+    const GITHUB_API = "https://api.github.com";
 
     function githubHeaders() {
       const h = {
-        Accept: 'application/vnd.github+json',
-        'X-GitHub-Api-Version': '2022-11-28',
-        'User-Agent': 'SorobanBlockExplorer/1.0',
+        Accept: "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+        "User-Agent": "SorobanBlockExplorer/1.0",
       };
       const token = process.env.GITHUB_TOKEN;
       if (token) h.Authorization = `Bearer ${token}`;
@@ -533,22 +691,22 @@ export default function registerAdminRoutes(app) {
 
     /** Validate a parsed ABI JSON object against contractRegistry.schema.json rules. */
     function validateAbiEntry(entry) {
-      if (!entry || typeof entry !== 'object') return 'entry must be an object';
-      if (!entry.contractId || typeof entry.contractId !== 'string') return 'missing contractId';
-      if (!/^C[A-Z2-7]{55}$/.test(entry.contractId)) return 'contractId must be a 56-char C… strkey';
-      if (!entry.name || typeof entry.name !== 'string') return 'missing name';
-      if (entry.name.length > 100) return 'name exceeds 100 chars';
-      if (entry.description && entry.description.length > 500) return 'description exceeds 500 chars';
-      if (entry.functions !== undefined && !Array.isArray(entry.functions)) return 'functions must be an array';
+      if (!entry || typeof entry !== "object") return "entry must be an object";
+      if (!entry.contractId || typeof entry.contractId !== "string") return "missing contractId";
+      if (!/^C[A-Z2-7]{55}$/.test(entry.contractId)) return "contractId must be a 56-char C… strkey";
+      if (!entry.name || typeof entry.name !== "string") return "missing name";
+      if (entry.name.length > 100) return "name exceeds 100 chars";
+      if (entry.description && entry.description.length > 500) return "description exceeds 500 chars";
+      if (entry.functions !== undefined && !Array.isArray(entry.functions)) return "functions must be an array";
       return null; // valid
     }
 
-    router.post('/abi/import-github', async (req, res) => {
+    router.post("/abi/import-github", async (req, res) => {
       try {
-        const { repo, path: repoPath = 'contracts/', ref = 'main' } = req.body ?? {};
+        const { repo, path: repoPath = "contracts/", ref = "main" } = req.body ?? {};
 
-        if (!repo || typeof repo !== 'string' || !repo.includes('/')) {
-          return res.status(400).json({ error: 'repo must be in owner/repo format' });
+        if (!repo || typeof repo !== "string" || !repo.includes("/")) {
+          return res.status(400).json({ error: "repo must be in owner/repo format" });
         }
 
         // Rate-limit check
@@ -563,8 +721,8 @@ export default function registerAdminRoutes(app) {
         }
         importCooldowns.set(repo, now + IMPORT_COOLDOWN_MS);
 
-        const [owner, repoName] = repo.split('/');
-        const normalizedPath = (repoPath ?? '').replace(/^\/|\/$/g, '');
+        const [owner, repoName] = repo.split("/");
+        const normalizedPath = (repoPath ?? "").replace(/^\/|\/$/g, "");
         const dirUrl = `${GITHUB_API}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repoName)}/contents/${normalizedPath}?ref=${encodeURIComponent(ref)}`;
 
         // Fetch directory listing
@@ -581,10 +739,10 @@ export default function registerAdminRoutes(app) {
         }
 
         if (!Array.isArray(entries)) {
-          return res.status(400).json({ error: 'Path does not point to a directory or returned unexpected data' });
+          return res.status(400).json({ error: "Path does not point to a directory or returned unexpected data" });
         }
 
-        const jsonFiles = entries.filter((e) => e.type === 'file' && e.name.endsWith('.json'));
+        const jsonFiles = entries.filter((e) => e.type === "file" && e.name.endsWith(".json"));
 
         let imported = 0;
         let skipped = 0;
@@ -646,10 +804,10 @@ export default function registerAdminRoutes(app) {
   // 404 — DLQ entry not found
   // 409 — DLQ entry is already resolved
   // 200 — { ok: true, id, next_retry_at }
-  router.post('/dlq/:id/retry', async (req, res) => {
+  router.post("/dlq/:id/retry", async (req, res) => {
     const id = Number(req.params.id);
     if (!Number.isFinite(id)) {
-      return res.status(400).json({ error: 'id must be a number' });
+      return res.status(400).json({ error: "id must be a number" });
     }
     try {
       const { rows } = await pool.query(
@@ -661,13 +819,13 @@ export default function registerAdminRoutes(app) {
       }
       const entry = rows[0];
       if (entry.resolved) {
-        return res.status(409).json({ error: 'DLQ entry is already resolved' });
+        return res.status(409).json({ error: "DLQ entry is already resolved" });
       }
       const nextRetryAt = new Date().toISOString();
-      await pool.query(
-        `UPDATE dead_letter_queue SET next_retry_at = $1, updated_at = NOW() WHERE id = $2`,
-        [nextRetryAt, id],
-      );
+      await pool.query(`UPDATE dead_letter_queue SET next_retry_at = $1, updated_at = NOW() WHERE id = $2`, [
+        nextRetryAt,
+        id,
+      ]);
       return res.json({ ok: true, id, next_retry_at: nextRetryAt });
     } catch (e) {
       return res.status(500).json({ error: e.message });
@@ -675,7 +833,7 @@ export default function registerAdminRoutes(app) {
   });
 
   // Mount the router under /api/admin
-  app.use('/api/admin', router);
+  app.use("/api/admin", router);
 
   return router;
 }

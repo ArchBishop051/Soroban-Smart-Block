@@ -10,7 +10,9 @@ export function initSentry() {
   Sentry.init({
     dsn,
     environment: import.meta.env.MODE,
-    tracesSampleRate: 0.1,
+    tracesSampleRate: Number(import.meta.env.VITE_SENTRY_TRACES_SAMPLE_RATE || "0.1"),
+    tracePropagationTargets: ["localhost", /^\//, /^https?:\/\/.*\/api\//],
+    integrations: [Sentry.browserTracingIntegration()],
   });
 }
 

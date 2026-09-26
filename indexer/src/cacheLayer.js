@@ -520,3 +520,53 @@ export function getAnalytics() {
     instance_id: _instanceId,
   };
 }
+
+// ── CDN edge caching (#905) ──────────────────────────────────────────────────
+//
+// Endpoints fall into three classes:
+//   immutable     event by sequence — only changes on a reorg
+//   ledger-scoped lists, stats, contract pages — change when a ledger touches them
+//   private       per-key / admin / sandbox / live status — never cached at the edge
+// Edge TTLs go in Surrogate-Control (Fastly, Varnish) and CDN-Cache-Control
+// (Cloudflare) so they never conflict with the browser Cache-Control set by
+// handlers. Surrogate keys (`Surrogate-Key` / `Cache-Tag`) let the daemon
+// purge exactly what a new ledger changed (see cdnPurge.js).
+
+const EDGE_TTL_SECONDS = Number(process.env.CDN_EDGE_TTL_SECONDS ?? 3600);
+const EDGE_FALLBACK_TTL_SECONDS = 5;
+
+const PRIVATE_PREFIXES = [
+  "/api/admin", "/api/dashboard", "/api/webhooks", "/api/keys", "/api/csrf-token",
+  "/api/sandbox", "/api/transactions", "/api/health", "/api/metrics", "/api/rpc-",
+  "/api/setup", "/api/alerts", "/api/cache", "/api/billing", "/api/auth", "/api/jobs",
+];
+
+/**
+ * Edge caching policy for a request.
+ * @param {{ method: string, path: string }} req
+ * @param {{ purgeHealthy?: boolean }} [opts]
+ * @returns {{ class: "immutable"|"ledger"|"private", edge: string, keys: string[] }}
+ */
+export function edgeCachePolicy(req, { purgeHealthy = true } = {}) {
+  const path = req.path;
+  if (req.method !== "GET" || PRIVATE_PREFIXES.some((p) => path.startsWith(p))) {
+    return { class: "private", edge: "no-store", keys: [] };
+  }
+
+  // Purges keep ledger-scoped entries fresh, so they can live long at the edge.
+  // If purging is failing, fall back to a short TTL automatically.
+  const ttl = purgeHealthy ? EDGE_TTL_SECONDS : EDGE_FALLBACK_TTL_SECONDS;
+
+  const event = path.match(/^\/api\/(?:v1\/)?events\/(\d+)(?:\/|$)/);
+  if (event) {
+    return {
+      class: "immutable",
+      edge: `max-age=${purgeHealthy ? 86400 : EDGE_FALLBACK_TTL_SECONDS}, stale-while-revalidate=60`,
+      keys: [`event:${event[1]}`],
+    };
+  }
+
+  const contract = path.match(/^\/api\/(?:v1\/)?(?:contracts|spec|tokens)\/([^/]+)/);
+  const keys = contract ? [`contract:${contract[1]}`, "latest"] : ["latest"];
+  return { class: "ledger", edge: `max-age=${ttl}, stale-while-revalidate=30`, keys };
+}

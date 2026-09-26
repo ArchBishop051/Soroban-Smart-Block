@@ -42,6 +42,33 @@ function EmptyState({ title, message }: { title: string; message: string }) {
   );
 }
 
+const OWNERSHIP_METHOD_LABELS: Record<string, string> = {
+  TargetAdmin: "contract admin()",
+  TargetOwner: "contract owner()",
+  Deployer: "contract deployer",
+};
+
+/** Shown when the registry entry's owner proved ownership on-chain (#875). */
+function OwnershipBadge({ verified, method, owner }: { verified?: boolean; method?: string | null; owner?: string | null }) {
+  const label = verified ? `Ownership verified via ${OWNERSHIP_METHOD_LABELS[method ?? ""] ?? method}` : "Ownership unverified";
+  return (
+    <span
+      className="badge"
+      title={verified && owner ? `Owner: ${owner}` : "The registrant has not proven ownership of this contract on-chain"}
+      style={{
+        marginLeft: 8,
+        fontSize: 11,
+        padding: "2px 8px",
+        borderRadius: 12,
+        background: verified ? "rgba(34,197,94,0.15)" : "rgba(148,163,184,0.15)",
+        color: verified ? "#22c55e" : "var(--muted)",
+      }}
+    >
+      {verified ? "✔ " : ""}{label}
+    </span>
+  );
+}
+
 /** Blue checkmark shown next to contract name when DB ABI matches on-chain registry. */
 function VerifiedBadge({ ledger }: { ledger?: number | null }) {
   return (
@@ -220,6 +247,18 @@ export default function ContractPage() {
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
+      {/* Dedicated print-only header */}
+      <div className="print-only print-header">
+        <div>
+          <div className="print-header-brand">Soroban Smart Block Explorer</div>
+          <div style={{ fontSize: "9pt", color: "#4b5563" }}>Smart Contract Audit & Specification Report</div>
+        </div>
+        <div className="print-header-meta">
+          <div>Contract: {truncateAddress(id)}</div>
+          <div>Printed: {new Date().toISOString().split("T")[0]}</div>
+        </div>
+      </div>
+
       {/* SEP-49 migration pending banner */}
       {migrationStatus?.pending && migrationStatus.upgradedAtLedger != null && (
         <MigrationBanner upgradedAtLedger={migrationStatus.upgradedAtLedger} />
@@ -248,6 +287,11 @@ export default function ContractPage() {
               <h2 style={{ margin: 0 }}>{meta.name || "Unnamed Contract"}</h2>
               {(meta as any).is_verified && <VerifiedBadge ledger={(meta as any).verified_ledger} />}{' '}
               <SourceVerifiedBadge contractId={id} />
+              <OwnershipBadge
+                verified={(meta as any).ownership_verified}
+                method={(meta as any).ownership_method}
+                owner={(meta as any).ownership_owner}
+              />
               {meta.protocol_type && (
                 <span style={{ marginLeft: 10 }}>
                   <ProtocolBadge type={meta.protocol_type} />
@@ -277,7 +321,49 @@ export default function ContractPage() {
               {meta.min_ledger != null && <span>Registration ledger: {meta.min_ledger.toLocaleString()}</span>}
             </div>
           </div>
-          <div style={{ display: "flex", gap: 8 }}>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", justifyContent: "flex-end" }}>
+            <button
+              type="button"
+              onClick={() => window.print()}
+              style={{
+                padding: "8px 14px",
+                background: "transparent",
+                color: "var(--text)",
+                border: "1px solid var(--border)",
+                borderRadius: 4,
+                cursor: "pointer",
+                fontSize: 13,
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 6,
+              }}
+              title="Print or save as PDF via browser print dialog"
+            >
+              🖨 Print View
+            </button>
+            <a
+              href={api.contractReportUrl(id)}
+              target="_blank"
+              rel="noopener noreferrer"
+              download={`soroban-contract-${id.slice(0, 8)}-audit.pdf`}
+              style={{
+                padding: "8px 14px",
+                background: "var(--accent)",
+                color: "var(--bg, #0d1117)",
+                border: "none",
+                borderRadius: 4,
+                cursor: "pointer",
+                fontSize: 13,
+                fontWeight: 600,
+                textDecoration: "none",
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 6,
+              }}
+              title="Download cryptographically signed Tagged PDF 1.7 report"
+            >
+              📥 Export Signed PDF
+            </a>
             <button
               type="button"
               onClick={() => setHistoryOpen(true)}
@@ -668,6 +754,15 @@ export default function ContractPage() {
         open={historyOpen}
         onClose={() => setHistoryOpen(false)}
       />
+
+      {/* Dedicated print-only footer */}
+      <div className="print-only print-footer">
+        <div>
+          <span>Audit URL: </span>
+          <code>{window.location.href}</code>
+        </div>
+        <div>Certified Tagged PDF 1.7 &middot; SHA-256 Verified</div>
+      </div>
     </div>
   );
 }

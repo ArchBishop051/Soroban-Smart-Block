@@ -120,7 +120,6 @@ export default function AuditLogPage() {
   useEffect(() => {
     if (!adminToken) return;
     fetchLog(0);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [adminToken]);
 
   const exportLog = (format: "csv" | "json") => {
@@ -155,8 +154,8 @@ export default function AuditLogPage() {
       >
         <h2 style={{ margin: "0 0 8px", fontSize: 18 }}>Admin Login</h2>
         <p style={{ color: "#6b7280", fontSize: 13, marginBottom: 20 }}>
-          Enter your ADMIN_SECRET to access the Audit Trail. If admin 2FA is enabled, also
-          enter a current authenticator code.
+          Enter your ADMIN_SECRET to access the Audit Trail. If admin 2FA is enabled, also enter a current authenticator
+          code.
         </p>
         {error && (
           <div
@@ -341,13 +340,11 @@ export default function AuditLogPage() {
         <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
           <thead>
             <tr style={{ textAlign: "left", borderBottom: "1px solid #e5e7eb" }}>
-              {["Timestamp", "Key", "Tier", "IP", "Method", "Endpoint", "Status", "Latency", "Body Hash"].map(
-                (h) => (
-                  <th key={h} style={{ padding: "8px 12px", whiteSpace: "nowrap" }}>
-                    {h}
-                  </th>
-                ),
-              )}
+              {["Timestamp", "Key", "Tier", "IP", "Method", "Endpoint", "Status", "Latency", "Body Hash"].map((h) => (
+                <th key={h} style={{ padding: "8px 12px", whiteSpace: "nowrap" }}>
+                  {h}
+                </th>
+              ))}
             </tr>
           </thead>
           <tbody>
@@ -385,11 +382,7 @@ export default function AuditLogPage() {
         <button style={inputStyle} onClick={() => fetchLog(Math.max(0, offset - limit))} disabled={offset === 0}>
           Previous
         </button>
-        <button
-          style={inputStyle}
-          onClick={() => fetchLog(offset + limit)}
-          disabled={rows.length < limit}
-        >
+        <button style={inputStyle} onClick={() => fetchLog(offset + limit)} disabled={rows.length < limit}>
           Next
         </button>
       </div>
