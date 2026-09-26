@@ -923,6 +923,57 @@ export function createApi({ logDestination, dbOverride } = {}) {
     }
   });
 
+  // POST /api/events/filter
+  // Advanced event filtering using DSL with support for arg/topic predicates
+  // Request body: { filter: DSL object, after_seq?: number, limit?: number }
+  // Response: { data: Event[], next_cursor: number|null, cost: number }
+  app.post("/api/events/filter", async (req, res) => {
+    try {
+      const { filter, after_seq, limit } = req.body;
+
+      // Validate filter DSL
+      const validation = validateFilter(filter);
+      if (!validation.valid) {
+        return res.status(422).json({ error: validation.error });
+      }
+
+      // Convert DSL to SQL
+      const { where, params } = filterToSql(filter);
+
+      // Add pagination
+      const afterSeq = after_seq ? Number(after_seq) : 0;
+      const limitValue = limit ? Math.min(Number(limit), 200) : 25;
+
+      let sqlWhere = where;
+      let sqlParams = [...params];
+
+      if (afterSeq > 0) {
+        sqlWhere = sqlWhere ? `${sqlWhere} AND seq < $${sqlParams.length + 1}` : `seq < $${sqlParams.length + 1}`;
+        sqlParams.push(afterSeq);
+      }
+
+      const finalWhere = sqlWhere ? `WHERE ${sqlWhere}` : "";
+      sqlParams.push(limitValue + 1); // Fetch one extra to detect next page
+
+      const { rows } = await pool.query(
+        `SELECT *, CASE WHEN contract_id IS NULL OR contract_id = '' THEN 'classic' ELSE 'soroban' END AS type
+         FROM events ${finalWhere} ORDER BY seq DESC LIMIT $${sqlParams.length}`,
+        sqlParams
+      );
+
+      const data = rows.slice(0, limitValue);
+      const next_cursor = rows.length > limitValue ? rows[limitValue - 1].seq : null;
+
+      // Estimate cost for UI
+      const cost = estimateFilterCost(filter);
+
+      res.json({ data, next_cursor, cost });
+    } catch (e) {
+      logger.error("Event filter error", { error: e.message, filter: req.body.filter });
+      res.status(500).json({ error: e.message });
+    }
+  });
+
   // Transaction status server-sent events endpoint
   app.get("/api/tx/:hash", async (req, res) => {
     try {

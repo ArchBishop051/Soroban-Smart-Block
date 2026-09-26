@@ -171,6 +171,23 @@ export interface DecodedEvent {
   decode_warnings?: string[];
 }
 
+// Event filter DSL types
+export type EventFilterOperator = "and" | "or" | "not";
+export type EventConditionOperator = "eq" | "ne" | "gt" | "lt" | "gte" | "lte" | "contains" | "starts_with" | "ends_with" | "in";
+
+export interface EventCondition {
+  field: string;
+  operator: EventConditionOperator;
+  value: any;
+}
+
+export interface EventFilterGroup {
+  operator: EventFilterOperator;
+  conditions: (EventFilter | EventCondition)[];
+}
+
+export type EventFilter = EventCondition | EventFilterGroup;
+
 export interface SourceFile {
   path: string;
   content: string;

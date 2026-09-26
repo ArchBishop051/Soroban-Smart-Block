@@ -72,6 +72,7 @@ export default function App() {
             <Route path="/nft/:contractId" element={<NftGallery />} />
             <Route path="/dashboard" element={<DashboardPage />} />
             <Route path="/status" element={<Status />} />
+            <Route path="/filter-builder" element={<FilterBuilder />} />
           </Routes>
         </Suspense>
       </main>
