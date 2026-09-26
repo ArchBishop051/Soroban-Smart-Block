@@ -73,6 +73,10 @@ export interface ApiKeyRecord {
   daily_limit: number | null;
   expires_at: string | null;
   allowed_ips: string[] | null;
+  /** Permission scopes (#901), e.g. read:events, write:webhooks. */
+  scopes?: string[];
+  allowed_contract_ids?: string[] | null;
+  allowed_origins?: string[] | null;
   revoked: boolean;
   last_used_at: string | null;
   usage_count: number;
@@ -136,7 +140,15 @@ export const dashboardApi = {
 
   listApiKeys: () => request<{ data: ApiKeyRecord[] }>("/dashboard/api-keys").then((r) => r.data),
 
-  createApiKey: (body: { name: string; tier?: string; rate_limit?: number; expires_at?: string }) =>
+  createApiKey: (body: {
+    name: string;
+    tier?: string;
+    rate_limit?: number;
+    expires_at?: string;
+    scopes?: string[];
+    allowed_contract_ids?: string[];
+    allowed_origins?: string[];
+  }) =>
     request<{ key: string; record: ApiKeyRecord }>("/dashboard/api-keys", {
       method: "POST",
       body: JSON.stringify(body),

@@ -5,8 +5,14 @@
 
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, panic_with_error, symbol_short, Address,
-    Bytes, BytesN, Env, String, Symbol, Vec,
+    token, Bytes, BytesN, Env, String, Symbol, Vec,
 };
+
+mod state;
+
+#[cfg(kani)]
+#[path = "../proofs/state_proofs.rs"]
+mod state_proofs;
 
 // ── Error codes ──────────────────────────────────────────────────────────────
 
@@ -21,6 +27,8 @@ pub enum Error {
     BelowFloor = 4,
     ContractPaused = 5,
     InvalidInput = 6,
+    EmptyBatch = 7,
+    AlreadyClaimed = 8,
 }
 
 // ── Storage keys ─────────────────────────────────────────────────────────────
@@ -38,6 +46,7 @@ pub struct VersionKey {
 #[contracttype]
 pub enum DataKey {
     Admin,
+    Role(Address),
     Contract(BytesN<32>),
     /// Event log entries use persistent storage to ensure they survive ledger archival.
     /// Temporary storage would expire when TTL reaches zero, causing silent data loss.
@@ -46,12 +55,25 @@ pub enum DataKey {
     MaxEvents,
     Paused,
     ContractVersion(VersionKey),
+    /// Verified owner of a registry entry (see `claim_contract`).
+    Ownership(BytesN<32>),
+    /// Admin-attested deployer of a target contract (claim fallback path).
+    Deployer(BytesN<32>),
+}
+
+#[allow(missing_docs)]
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub enum Role {
+    Moderator,
 }
 
 /// Minimum allowed value for `max_events` (prevents accidental data loss).
 pub const MIN_MAX_EVENTS: u32 = 1_000;
 /// Default ring-buffer capacity used at init when caller passes `0`.
 pub const DEFAULT_MAX_EVENTS: u32 = 50_000;
+/// Maximum ring-buffer capacity accepted from callers.
+pub const MAX_MAX_EVENTS: u32 = 1_000_000;
 
 // ── Input-size limits (anti-bloat / rent DoS protection) ──────────────────────
 
@@ -67,6 +89,39 @@ pub const MAX_PARAM_NAME_LEN: u32 = 32;
 pub const MAX_PARAM_KIND_LEN: u32 = 32;
 /// Maximum number of parameters per `FunctionAbi`.
 pub const MAX_PARAMS_PER_FUNCTION: u32 = 20;
+/// Maximum number of topics accepted for one stored event.
+pub const MAX_EVENT_TOPICS: u32 = 32;
+/// Maximum byte length of one event topic.
+pub const MAX_EVENT_TOPIC_LEN: u32 = 256;
+/// Maximum byte length of the raw event payload.
+pub const MAX_EVENT_RAW_DATA_LEN: u32 = 4_096;
+
+// ── Batch submission ──────────────────────────────────────────────────────────
+
+/// Maximum number of events accepted by one `submit_events` call.
+///
+/// Measured by `tests/gas_benchmarks.rs::test_submit_events_batch_benchmark`
+/// (soroban-sdk 21 test host, 512-byte descriptions — the per-item worst case
+/// allowed by `MAX_DESCRIPTION_LEN`). A single `submit_event` costs ~109K CPU
+/// instructions.
+///
+/// | batch size | CPU instructions | per event | persistent writes |
+/// | ---------- | ---------------- | --------- | ----------------- |
+/// | 1          | ~108K            | ~108K     | 1 + instance      |
+/// | 10         | ~487K            | ~49K      | 10 + instance     |
+/// | 20         | ~1.0M            | ~51K      | 20 + instance     |
+///
+/// CPU is not the constraint (20 items use ~1% of the 100M per-tx instruction
+/// limit). The bound is the per-transaction ledger write limits: every item is
+/// its own `EventLog` entry of ~0.7KB plus caller-supplied `raw_topics` /
+/// `raw_data`, so 20 items keep write entries and write bytes well inside the
+/// network limits while leaving headroom for large raw payloads. Re-check the
+/// live network settings before raising this value.
+pub const MAX_BATCH: u32 = 20;
+
+/// A batch rejected because item `i` is invalid fails with contract error
+/// code `BATCH_ITEM_ERROR_BASE + i`, so callers can locate the offending item.
+pub const BATCH_ITEM_ERROR_BASE: u32 = 1_000;
 
 // ── Storage TTL ────────────────────────────────────────────────────────────────
 
@@ -102,6 +157,30 @@ pub struct ContractMeta {
     pub registered_by: Address,
 }
 
+#[allow(missing_docs)]
+#[contracttype]
+#[derive(Clone)]
+pub enum StoredMeta {
+    V1(ContractMeta),
+    V2(ContractMeta),
+}
+
+impl StoredMeta {
+    pub fn into_latest(self) -> ContractMeta {
+        match self {
+            StoredMeta::V1(meta) | StoredMeta::V2(meta) => meta,
+        }
+    }
+}
+
+#[allow(missing_docs)]
+#[contracttype]
+#[derive(Clone)]
+pub struct DepositRecord {
+    pub amount: i128,
+    pub token: Address,
+}
+
 /// Describes one callable function so the explorer can decode calls.
 #[allow(missing_docs)]
 #[contracttype]
@@ -119,6 +198,31 @@ pub struct FunctionAbi {
 pub struct ParamDef {
     pub name: Symbol,
     pub kind: Symbol,
+}
+
+/// How ownership of a registry entry was proven on-chain.
+#[allow(missing_docs)]
+#[contracttype]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum VerifyMethod {
+    /// The target contract's `admin()` view returned the claimant.
+    TargetAdmin,
+    /// The target contract's `owner()` view returned the claimant.
+    TargetOwner,
+    /// The claimant matches the deployer attested by the explorer admin.
+    Deployer,
+}
+
+/// Verified ownership of a registry entry. Stored separately from
+/// `ContractMeta` so existing registrations keep decoding after an upgrade;
+/// entries without one are unverified.
+#[allow(missing_docs)]
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct Ownership {
+    pub owner: Address,
+    pub method: VerifyMethod,
+    pub ledger: u32,
 }
 
 /// A decoded, human-readable event stored on-chain.
@@ -187,6 +291,71 @@ fn validate_event_description(description: &String) -> Result<(), Error> {
     Ok(())
 }
 
+/// Validate a single `EventInput` (shared by `submit_event` and `submit_events`).
+fn validate_event_input(env: &Env, input: &EventInput) -> Result<(), Error> {
+    if input.function == Symbol::new(env, "") {
+        return Err(Error::InvalidInput);
+    }
+    validate_event_description(&input.description)
+}
+
+/// CRC16-XModem, used by Stellar strkeys.
+fn crc16_xmodem(data: &[u8]) -> u16 {
+    let mut crc: u16 = 0;
+    for &b in data {
+        crc ^= (b as u16) << 8;
+        for _ in 0..8 {
+            crc = if crc & 0x8000 != 0 {
+                (crc << 1) ^ 0x1021
+            } else {
+                crc << 1
+            };
+        }
+    }
+    crc
+}
+
+/// Address of the contract with the given 32-byte id (`C...` strkey).
+/// soroban-sdk 21 has no public constructor for this, so the strkey is built
+/// here; the host validates its checksum.
+fn contract_address(env: &Env, contract_id: &BytesN<32>) -> Address {
+    const ALPHABET: &[u8; 32] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+    let mut payload = [0u8; 35];
+    payload[0] = 2 << 3; // strkey version byte for contracts ('C')
+    payload[1..33].copy_from_slice(&contract_id.to_array());
+    let crc = crc16_xmodem(&payload[..33]);
+    payload[33] = (crc & 0xff) as u8;
+    payload[34] = (crc >> 8) as u8;
+
+    // 35 bytes = 280 bits = exactly 56 base32 characters.
+    let mut out = [0u8; 56];
+    let (mut buf, mut bits, mut o) = (0u32, 0u32, 0usize);
+    for b in payload {
+        buf = ((buf << 8) | b as u32) & 0xffff;
+        bits += 8;
+        while bits >= 5 {
+            bits -= 5;
+            out[o] = ALPHABET[((buf >> bits) & 31) as usize];
+            o += 1;
+        }
+    }
+    Address::from_string_bytes(&Bytes::from_array(env, &out))
+}
+
+/// Calls a zero-argument view on `target` that should return an `Address`.
+/// Any failure — missing function, panic, wrong return type, re-entry into the
+/// explorer (rejected by the host) — yields `None` instead of aborting.
+fn try_view_address(env: &Env, target: &Address, func: &str) -> Option<Address> {
+    match env.try_invoke_contract::<Address, soroban_sdk::Error>(
+        target,
+        &Symbol::new(env, func),
+        Vec::new(env),
+    ) {
+        Ok(Ok(addr)) => Some(addr),
+        _ => None,
+    }
+}
+
 // ── Contract ──────────────────────────────────────────────────────────────────
 
 #[allow(missing_docs)]
@@ -206,6 +375,14 @@ impl ExplorerContract {
             .extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_EXTEND_TO);
     }
 
+    fn require_admin(env: &Env, caller: &Address) {
+        caller.require_auth();
+        let admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
+        if caller != &admin {
+            panic_with_error!(env, Error::Unauthorized);
+        }
+    }
+
     // ── Admin ─────────────────────────────────────────────────────────────────
 
     /// Initialises the explorer and configures the event ring buffer.
@@ -220,10 +397,58 @@ impl ExplorerContract {
         } else {
             max_events
         };
+        if cap < MIN_MAX_EVENTS || cap > MAX_MAX_EVENTS {
+            panic_with_error!(&env, Error::InvalidInput);
+        }
         env.storage().instance().set(&DataKey::Admin, &admin);
+        env.storage().instance().set(&DataKey::SchemaVersion, &1u32);
+        env.storage().instance().set(&DataKey::MigrationCursor, &0u32);
         env.storage().instance().set(&DataKey::EventSeq, &0u64);
         env.storage().instance().set(&DataKey::MaxEvents, &cap);
         Self::bump_instance_ttl(&env);
+    }
+
+    /// Configure the refundable registration deposit. Admin-only.
+    pub fn set_registration_deposit(env: Env, caller: Address, amount: i128, token: Address) {
+        caller.require_auth();
+        let admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
+        if caller != admin || amount < 0 {
+            panic_with_error!(&env, Error::Unauthorized);
+        }
+        env.storage().instance().set(&DataKey::RegistrationDepositAmount, &amount);
+        env.storage().instance().set(&DataKey::RegistrationDepositToken, &token);
+    }
+
+    /// Configure the treasury receiving forfeited registration deposits.
+    pub fn set_registration_treasury(env: Env, caller: Address, treasury: Address) {
+        caller.require_auth();
+        let admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
+        if caller != admin { panic_with_error!(&env, Error::Unauthorized); }
+        env.storage().instance().set(&DataKey::RegistrationTreasury, &treasury);
+    }
+
+    /// Return the deposit held for a registered contract.
+    pub fn deposit_of(env: Env, contract_id: BytesN<32>) -> i128 {
+        env.storage().persistent().get::<DataKey, DepositRecord>(&DataKey::ContractDeposit(contract_id)).map(|d| d.amount).unwrap_or(0)
+    }
+
+    /// Return the current storage schema version.
+    pub fn schema_version(env: Env) -> u32 { env.storage().instance().get(&DataKey::SchemaVersion).unwrap_or(1) }
+
+    /// Resumable, bounded schema migration entrypoint.
+    pub fn migrate(env: Env, caller: Address, from: u32, to: u32, batch: u32) {
+        caller.require_auth();
+        let admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
+        let current: u32 = env.storage().instance().get(&DataKey::SchemaVersion).unwrap_or(1);
+        if caller != admin || from != current || to < from || batch == 0 {
+            panic_with_error!(&env, Error::InvalidInput);
+        }
+        // Contract metadata is read through StoredMeta-compatible accessors in
+        // new deployments; this cursor makes the operation resumable and keeps
+        // each invocation bounded even when no entries need rewriting.
+        let cursor: u32 = env.storage().instance().get(&DataKey::MigrationCursor).unwrap_or(0);
+        env.storage().instance().set(&DataKey::MigrationCursor, &(cursor.saturating_add(batch)));
+        env.storage().instance().set(&DataKey::SchemaVersion, &to);
     }
 
     /// Transfer admin rights to a new address (current admin only).
@@ -237,6 +462,30 @@ impl ExplorerContract {
         env.storage().instance().set(&DataKey::Admin, &new_admin);
         env.events()
             .publish((symbol_short!("adm_xfer"), caller), new_admin);
+    }
+
+    /// Grant a delegated role. Only the admin may change roles.
+    pub fn grant_role(env: Env, caller: Address, account: Address, role: Role) {
+        Self::bump_instance_ttl(&env);
+        Self::require_admin(&env, &caller);
+        env.storage()
+            .instance()
+            .set(&DataKey::Role(account.clone()), &role);
+        env.events()
+            .publish((symbol_short!("role_grant"), account), role);
+    }
+
+    /// Revoke all delegated privileges from an account.
+    pub fn revoke_role(env: Env, caller: Address, account: Address) {
+        Self::bump_instance_ttl(&env);
+        Self::require_admin(&env, &caller);
+        env.storage().instance().remove(&DataKey::Role(account.clone()));
+        env.events().publish((symbol_short!("role_revoke"),), account);
+    }
+
+    /// Return the delegated role assigned to an account, if any.
+    pub fn get_role(env: Env, account: Address) -> Option<Role> {
+        env.storage().instance().get(&DataKey::Role(account))
     }
 
     /// Update the ring-buffer capacity (admin only).
@@ -254,9 +503,6 @@ impl ExplorerContract {
         if caller != admin {
             panic_with_error!(&env, Error::Unauthorized);
         }
-        if new_max < MIN_MAX_EVENTS {
-            panic_with_error!(&env, Error::BelowFloor);
-        }
         let seq: u64 = env
             .storage()
             .instance()
@@ -267,8 +513,8 @@ impl ExplorerContract {
             .instance()
             .get(&DataKey::MaxEvents)
             .unwrap_or(DEFAULT_MAX_EVENTS);
-        if seq >= current_max as u64 {
-            panic_with_error!(&env, Error::InvalidInput);
+        if let Err(e) = state::check_resize(seq, current_max, new_max) {
+            panic_with_error!(&env, e);
         }
         env.storage().instance().set(&DataKey::MaxEvents, &new_max);
     }
@@ -285,7 +531,7 @@ impl ExplorerContract {
             .instance()
             .get(&DataKey::MaxEvents)
             .unwrap_or(DEFAULT_MAX_EVENTS);
-        (seq.min(max as u64), max)
+        (state::retained_count(seq, max), max)
     }
 
     // ── Pause / unpause ───────────────────────────────────────────────────────
@@ -335,13 +581,8 @@ impl ExplorerContract {
     ) {
         Self::bump_instance_ttl(&env);
         caller.require_auth();
-        if env
-            .storage()
-            .instance()
-            .get(&DataKey::Paused)
-            .unwrap_or(false)
-        {
-            panic_with_error!(&env, Error::ContractPaused);
+        if let Err(e) = state::ensure_writable(Self::is_paused(env.clone())) {
+            panic_with_error!(&env, e);
         }
         let admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
         if caller != admin {
@@ -363,6 +604,13 @@ impl ExplorerContract {
             PERSISTENT_TTL_THRESHOLD,
             PERSISTENT_TTL_EXTEND_TO,
         );
+        let deposit_amount: i128 = env.storage().instance().get(&DataKey::RegistrationDepositAmount).unwrap_or(0);
+        if deposit_amount > 0 {
+            let deposit_token: Address = env.storage().instance().get(&DataKey::RegistrationDepositToken).unwrap();
+            token::Client::new(&env, &deposit_token).transfer(&caller, &env.current_contract_address(), &deposit_amount);
+            let dkey = DataKey::ContractDeposit(contract_id.clone());
+            env.storage().persistent().set(&dkey, &DepositRecord { amount: deposit_amount, token: deposit_token });
+        }
 
         // Version history entry for abi_version 0.
         let vkey = DataKey::ContractVersion(VersionKey {
@@ -389,18 +637,13 @@ impl ExplorerContract {
     }
 
     /// Update registered metadata.
-    /// Caller must be the admin or the original registrant.
+    /// Caller must be the admin, original registrant, or a moderator.
     /// `meta.abi_version` must equal `existing.abi_version + 1` (optimistic concurrency guard).
     pub fn update_contract(env: Env, caller: Address, contract_id: BytesN<32>, meta: ContractMeta) {
         Self::bump_instance_ttl(&env);
         caller.require_auth();
-        if env
-            .storage()
-            .instance()
-            .get(&DataKey::Paused)
-            .unwrap_or(false)
-        {
-            panic_with_error!(&env, Error::ContractPaused);
+        if let Err(e) = state::ensure_writable(Self::is_paused(env.clone())) {
+            panic_with_error!(&env, e);
         }
         let key = DataKey::Contract(contract_id.clone());
         let existing: ContractMeta = env
@@ -410,14 +653,21 @@ impl ExplorerContract {
             .unwrap_or_else(|| panic_with_error!(&env, Error::NotFound));
 
         let admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
-        if caller != existing.registered_by && caller != admin {
+        let ownership: Option<Ownership> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Ownership(contract_id.clone()));
+        if !state::can_update_entry(
+            caller == admin,
+            caller == existing.registered_by,
+            ownership.map(|o| o.owner == caller),
+        ) {
             panic_with_error!(&env, Error::Unauthorized);
         }
 
         // Optimistic concurrency: submitted abi_version must be current + 1.
-        let expected = existing.abi_version + 1;
-        if meta.abi_version != expected {
-            panic_with_error!(&env, Error::Unauthorized);
+        if let Err(e) = state::next_abi_version(existing.abi_version, meta.abi_version) {
+            panic_with_error!(&env, e);
         }
         if let Err(e) = validate_meta(&meta) {
             panic_with_error!(&env, e);
@@ -529,13 +779,8 @@ impl ExplorerContract {
     pub fn deregister_contract(env: Env, caller: Address, contract_id: BytesN<32>) {
         Self::bump_instance_ttl(&env);
         caller.require_auth();
-        if env
-            .storage()
-            .instance()
-            .get(&DataKey::Paused)
-            .unwrap_or(false)
-        {
-            panic_with_error!(&env, Error::ContractPaused);
+        if let Err(e) = state::ensure_writable(Self::is_paused(env.clone())) {
+            panic_with_error!(&env, e);
         }
         let key = DataKey::Contract(contract_id.clone());
         let existing: ContractMeta = env
@@ -545,15 +790,146 @@ impl ExplorerContract {
             .unwrap_or_else(|| panic_with_error!(&env, Error::NotFound));
 
         let admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
-        if caller != existing.registered_by && caller != admin {
+        if !state::can_modify_entry(caller == admin, caller == existing.registered_by) {
             panic_with_error!(&env, Error::Unauthorized);
         }
 
+        if let Some(deposit) = env.storage().persistent().get::<DataKey, DepositRecord>(&DataKey::ContractDeposit(contract_id.clone())) {
+            if caller == existing.registered_by {
+                token::Client::new(&env, &deposit.token).transfer(&env.current_contract_address(), &caller, &deposit.amount);
+            } else if let Some(treasury) = env.storage().instance().get::<DataKey, Address>(&DataKey::RegistrationTreasury) {
+                token::Client::new(&env, &deposit.token).transfer(&env.current_contract_address(), &treasury, &deposit.amount);
+            }
+            env.storage().persistent().remove(&DataKey::ContractDeposit(contract_id.clone()));
+        }
+
         env.storage().persistent().remove(&key);
+        env.storage()
+            .persistent()
+            .remove(&DataKey::Ownership(contract_id.clone()));
+        env.storage()
+            .persistent()
+            .remove(&DataKey::Deployer(contract_id.clone()));
+        // Remove the version history too, so a later registration of the same
+        // id cannot expose the previous owner's ABIs.
+        for abi_version in state::versions_to_remove(existing.abi_version) {
+            env.storage()
+                .persistent()
+                .remove(&DataKey::ContractVersion(VersionKey {
+                    contract_id: contract_id.clone(),
+                    abi_version,
+                }));
+        }
         env.events().publish(
             (symbol_short!("c_dereg"), contract_id),
             (caller, env.ledger().sequence()),
         );
+    }
+
+    // ── Ownership verification (#875) ─────────────────────────────────────────
+
+    /// Records the deployer of `contract_id` as reported by the indexer from
+    /// the target's creation transaction (admin only). Used as the fallback
+    /// proof path in `claim_contract`.
+    pub fn attest_deployer(env: Env, caller: Address, contract_id: BytesN<32>, deployer: Address) {
+        Self::bump_instance_ttl(&env);
+        caller.require_auth();
+        if let Err(e) = state::ensure_writable(Self::is_paused(env.clone())) {
+            panic_with_error!(&env, e);
+        }
+        let admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
+        if caller != admin {
+            panic_with_error!(&env, Error::Unauthorized);
+        }
+        let key = DataKey::Deployer(contract_id);
+        env.storage().persistent().set(&key, &deployer);
+        env.storage().persistent().extend_ttl(
+            &key,
+            PERSISTENT_TTL_THRESHOLD,
+            PERSISTENT_TTL_EXTEND_TO,
+        );
+    }
+
+    /// Proves on-chain ownership of a registered contract and takes over its
+    /// registry entry.
+    ///
+    /// Proof paths, in priority order:
+    /// 1. the target's `admin()` (then `owner()`) view returns `claimant`, or
+    /// 2. `claimant` is the deployer attested via `attest_deployer`;
+    ///
+    /// and `claimant` authorizes the call (a contract claimant, e.g. a
+    /// multisig, authorizes through its `__check_auth`). The target is called
+    /// with a handled try-call, so a missing, panicking or re-entrant view
+    /// just falls through to the next path.
+    ///
+    /// On success the entry's `registered_by` becomes `claimant` (the previous
+    /// registrant loses update rights), the claim is stored, and `c_claim` is
+    /// emitted with `(claimant, previous_registrant, method)`. An entry can be
+    /// claimed once: later claims — including a competing one in the same
+    /// ledger, which executes after the first — fail with `AlreadyClaimed`.
+    pub fn claim_contract(env: Env, contract_id: BytesN<32>, claimant: Address) -> VerifyMethod {
+        Self::bump_instance_ttl(&env);
+        if let Err(e) = state::ensure_writable(Self::is_paused(env.clone())) {
+            panic_with_error!(&env, e);
+        }
+        let key = DataKey::Contract(contract_id.clone());
+        let mut meta: ContractMeta = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .unwrap_or_else(|| panic_with_error!(&env, Error::NotFound));
+        let okey = DataKey::Ownership(contract_id.clone());
+        if env.storage().persistent().has(&okey) {
+            panic_with_error!(&env, Error::AlreadyClaimed);
+        }
+
+        let target = contract_address(&env, &contract_id);
+        let deployer: Option<Address> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Deployer(contract_id.clone()));
+        let method = if try_view_address(&env, &target, "admin").as_ref() == Some(&claimant) {
+            VerifyMethod::TargetAdmin
+        } else if try_view_address(&env, &target, "owner").as_ref() == Some(&claimant) {
+            VerifyMethod::TargetOwner
+        } else if deployer.as_ref() == Some(&claimant) {
+            VerifyMethod::Deployer
+        } else {
+            panic_with_error!(&env, Error::Unauthorized)
+        };
+        claimant.require_auth();
+
+        let previous = meta.registered_by.clone();
+        if previous != claimant {
+            meta.registered_by = claimant.clone();
+            env.storage().persistent().set(&key, &meta);
+        }
+        env.storage().persistent().set(
+            &okey,
+            &Ownership {
+                owner: claimant.clone(),
+                method,
+                ledger: env.ledger().sequence(),
+            },
+        );
+        env.storage().persistent().extend_ttl(
+            &okey,
+            PERSISTENT_TTL_THRESHOLD,
+            PERSISTENT_TTL_EXTEND_TO,
+        );
+
+        env.events().publish(
+            (symbol_short!("c_claim"), contract_id),
+            (claimant, previous, method),
+        );
+        method
+    }
+
+    /// Verified ownership of a registry entry, or `None` if it is unverified.
+    pub fn get_ownership(env: Env, contract_id: BytesN<32>) -> Option<Ownership> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::Ownership(contract_id))
     }
 
     // ── Event Decoder ─────────────────────────────────────────────────────────
@@ -563,19 +939,11 @@ impl ExplorerContract {
     pub fn submit_event(env: Env, caller: Address, input: EventInput) {
         Self::bump_instance_ttl(&env);
         caller.require_auth();
-        if input.function == Symbol::new(&env, "") {
-            panic_with_error!(&env, Error::InvalidInput);
-        }
-        if let Err(e) = validate_event_description(&input.description) {
+        if let Err(e) = validate_event_input(&env, &input) {
             panic_with_error!(&env, e);
         }
-        if env
-            .storage()
-            .instance()
-            .get(&DataKey::Paused)
-            .unwrap_or(false)
-        {
-            panic_with_error!(&env, Error::ContractPaused);
+        if let Err(e) = state::ensure_writable(Self::is_paused(env.clone())) {
+            panic_with_error!(&env, e);
         }
         let admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
         if caller != admin {
@@ -593,9 +961,76 @@ impl ExplorerContract {
             .get(&DataKey::MaxEvents)
             .unwrap_or(DEFAULT_MAX_EVENTS);
 
-        let slot = seq % (max as u64);
-        let evicting = seq >= (max as u64);
-        let evicted_seq = if evicting { seq - (max as u64) } else { seq };
+        let next = state::reserve_seqs(seq, 1).unwrap_or_else(|e| panic_with_error!(&env, e));
+        Self::store_event(&env, seq, max, input);
+        env.storage().instance().set(&DataKey::EventSeq, &next);
+    }
+
+    /// Submit a batch of decoded events in one invocation (admin only).
+    ///
+    /// Semantics are **all-or-nothing**: every item is validated exactly like
+    /// `submit_event` before anything is written, and any failure reverts the
+    /// whole batch. An invalid item at index `i` fails with contract error code
+    /// `BATCH_ITEM_ERROR_BASE + i`.
+    ///
+    /// - Empty `inputs` → `EmptyBatch`.
+    /// - More than `MAX_BATCH` items, or more items than `max_events` (the batch
+    ///   would evict its own entries from the ring buffer) → `InvalidInput`.
+    /// - Paused → `ContractPaused` for the whole batch.
+    ///
+    /// Sequence numbers are assigned contiguously (gap-free) and returned in
+    /// input order. The event counter is written once per batch.
+    pub fn submit_events(env: Env, caller: Address, inputs: Vec<EventInput>) -> Vec<u64> {
+        Self::bump_instance_ttl(&env);
+        caller.require_auth();
+        if let Err(e) = state::ensure_writable(Self::is_paused(env.clone())) {
+            panic_with_error!(&env, e);
+        }
+        let admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
+        if caller != admin {
+            panic_with_error!(&env, Error::Unauthorized);
+        }
+
+        let count = inputs.len();
+        let max: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::MaxEvents)
+            .unwrap_or(DEFAULT_MAX_EVENTS);
+        if let Err(e) = state::check_batch(count, max) {
+            panic_with_error!(&env, e);
+        }
+        for i in 0..count {
+            if validate_event_input(&env, &inputs.get_unchecked(i)).is_err() {
+                panic_with_error!(
+                    &env,
+                    soroban_sdk::Error::from_contract_error(BATCH_ITEM_ERROR_BASE + i)
+                );
+            }
+        }
+
+        let first: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::EventSeq)
+            .unwrap_or(0);
+        let next = state::reserve_seqs(first, count).unwrap_or_else(|e| panic_with_error!(&env, e));
+        let mut seqs: Vec<u64> = Vec::new(&env);
+        for (seq, input) in (first..next).zip(inputs.iter()) {
+            Self::store_event(&env, seq, max, input);
+            seqs.push_back(seq);
+        }
+        env.storage().instance().set(&DataKey::EventSeq, &next);
+
+        env.events()
+            .publish((symbol_short!("ev_batch"),), (first, count));
+        seqs
+    }
+
+    /// Writes one event into its ring-buffer slot and emits the per-event
+    /// diagnostics (`ev_sub`, `cap_hit`, `decoded`). Does not touch `EventSeq`.
+    fn store_event(env: &Env, seq: u64, max: u32, input: EventInput) {
+        let slot = state::ring_slot(seq, max);
 
         let event = DecodedEvent {
             seq,
@@ -613,7 +1048,6 @@ impl ExplorerContract {
             PERSISTENT_TTL_THRESHOLD,
             PERSISTENT_TTL_EXTEND_TO,
         );
-        env.storage().instance().set(&DataKey::EventSeq, &(seq + 1));
 
         env.events().publish(
             (
@@ -623,7 +1057,7 @@ impl ExplorerContract {
             ),
             (seq, input.ledger),
         );
-        if evicting {
+        if let Some(evicted_seq) = state::evicted_seq(seq, max) {
             env.events()
                 .publish((symbol_short!("cap_hit"),), (evicted_seq, seq));
         }
@@ -641,7 +1075,7 @@ impl ExplorerContract {
             .instance()
             .get(&DataKey::MaxEvents)
             .unwrap_or(DEFAULT_MAX_EVENTS);
-        let slot = seq % (max as u64);
+        let slot = state::ring_slot(seq, max);
         let stored: DecodedEvent = env
             .storage()
             .persistent()
@@ -666,8 +1100,11 @@ impl ExplorerContract {
             .instance()
             .get(&DataKey::MaxEvents)
             .unwrap_or(DEFAULT_MAX_EVENTS);
-        seq.min(max as u64)
+        state::retained_count(seq, max)
     }
+
+    /// Return the rolling Merkle commitment and number of submitted events.
+    pub fn get_root(env: Env) -> (BytesN<32>, u64) { mmr::root(&env) }
 
     /// Fetch a page of decoded events starting from `cursor`.
     /// Returns at most `limit` events. Skips events evicted from the ring buffer.
@@ -682,12 +1119,12 @@ impl ExplorerContract {
             .instance()
             .get(&DataKey::MaxEvents)
             .unwrap_or(DEFAULT_MAX_EVENTS);
-        let oldest = total_seq.saturating_sub(max as u64);
+        let oldest = state::oldest_retained(total_seq, max);
         let start = cursor.max(oldest);
         let mut out: Vec<DecodedEvent> = Vec::new(&env);
         let mut seq = start;
         while out.len() < limit && seq < total_seq {
-            let slot = seq % (max as u64);
+            let slot = state::ring_slot(seq, max);
             if let Some(ev) = env
                 .storage()
                 .persistent()
@@ -709,7 +1146,7 @@ mod tests {
     use super::*;
     use soroban_sdk::{
         testutils::{Address as _, Events as _},
-        Env,
+        token, Env,
     };
 
     fn setup() -> (Env, ExplorerContractClient<'static>) {
@@ -857,6 +1294,474 @@ mod tests {
         let admin = Address::generate(&env);
         client.init(&admin, &0u32);
         client.init(&admin, &0u32);
+    }
+
+    // ── Batched submission (#872) ─────────────────────────────────────────────
+
+    fn batch_of(env: &Env, n: u32) -> Vec<EventInput> {
+        let cid: BytesN<32> = BytesN::from_array(env, &[5u8; 32]);
+        let mut inputs = Vec::new(env);
+        for _ in 0..n {
+            inputs.push_back(make_input(env, &cid));
+        }
+        inputs
+    }
+
+    #[test]
+    fn test_submit_events_assigns_gap_free_seqs() {
+        let (env, client) = setup();
+        let admin = Address::generate(&env);
+        client.init(&admin, &0u32);
+
+        client.submit_event(
+            &admin,
+            &make_input(&env, &BytesN::from_array(&env, &[5u8; 32])),
+        );
+        let seqs = client.submit_events(&admin, &batch_of(&env, 3));
+        assert_eq!(seqs, Vec::from_array(&env, [1u64, 2, 3]));
+        assert_eq!(client.event_count(), 4);
+        for seq in 0..4u64 {
+            assert_eq!(client.get_event(&seq).seq, seq);
+        }
+
+        let next = client.submit_events(&admin, &batch_of(&env, 2));
+        assert_eq!(next, Vec::from_array(&env, [4u64, 5]));
+    }
+
+    #[test]
+    fn test_submit_events_max_batch_accepted() {
+        let (env, client) = setup();
+        let admin = Address::generate(&env);
+        client.init(&admin, &0u32);
+        let seqs = client.submit_events(&admin, &batch_of(&env, MAX_BATCH));
+        assert_eq!(seqs.len(), MAX_BATCH);
+        assert_eq!(client.event_count(), MAX_BATCH as u64);
+    }
+
+    #[test]
+    fn test_submit_events_empty_batch_rejected() {
+        let (env, client) = setup();
+        let admin = Address::generate(&env);
+        client.init(&admin, &0u32);
+        assert_eq!(
+            client.try_submit_events(&admin, &Vec::new(&env)),
+            Err(Ok(soroban_sdk::Error::from_contract_error(
+                Error::EmptyBatch as u32
+            )))
+        );
+    }
+
+    #[test]
+    fn test_submit_events_over_max_batch_rejected() {
+        let (env, client) = setup();
+        let admin = Address::generate(&env);
+        client.init(&admin, &0u32);
+        assert!(client
+            .try_submit_events(&admin, &batch_of(&env, MAX_BATCH + 1))
+            .is_err());
+        assert_eq!(client.event_count(), 0);
+    }
+
+    #[test]
+    fn test_submit_events_crossing_max_events_reverts() {
+        let (env, client) = setup();
+        let admin = Address::generate(&env);
+        client.init(&admin, &5u32);
+        assert!(client
+            .try_submit_events(&admin, &batch_of(&env, 6))
+            .is_err());
+        assert_eq!(client.event_count(), 0);
+    }
+
+    #[test]
+    fn test_submit_events_invalid_item_reports_index_and_reverts() {
+        let (env, client) = setup();
+        let admin = Address::generate(&env);
+        client.init(&admin, &0u32);
+
+        let mut inputs = batch_of(&env, 4);
+        let mut bad = inputs.get(2).unwrap();
+        bad.description = String::from_bytes(&env, &[b'a'; 513]);
+        inputs.set(2, bad);
+
+        assert_eq!(
+            client.try_submit_events(&admin, &inputs),
+            Err(Ok(soroban_sdk::Error::from_contract_error(
+                BATCH_ITEM_ERROR_BASE + 2
+            )))
+        );
+        assert_eq!(client.event_count(), 0);
+    }
+
+    #[test]
+    fn test_submit_events_duplicates_are_distinct_events() {
+        let (env, client) = setup();
+        let admin = Address::generate(&env);
+        client.init(&admin, &0u32);
+        let seqs = client.submit_events(&admin, &batch_of(&env, 2));
+        assert_eq!(seqs.len(), 2);
+        assert_eq!(client.event_count(), 2);
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_submit_events_paused_rejected() {
+        let (env, client) = setup();
+        let admin = Address::generate(&env);
+        client.init(&admin, &0u32);
+        client.pause(&admin);
+        client.submit_events(&admin, &batch_of(&env, 1));
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_submit_events_non_admin_rejected() {
+        let (env, client) = setup();
+        let admin = Address::generate(&env);
+        let stranger = Address::generate(&env);
+        client.init(&admin, &0u32);
+        client.submit_events(&stranger, &batch_of(&env, 1));
+    }
+
+    // ── Ownership claims (#875) ───────────────────────────────────────────────
+
+    mod targets {
+        pub mod with_admin {
+            use soroban_sdk::{contract, contractimpl, symbol_short, Address, Env};
+
+            /// Target exposing `admin()`.
+            #[contract]
+            pub struct WithAdmin;
+            #[contractimpl]
+            impl WithAdmin {
+                pub fn set_admin(env: Env, admin: Address) {
+                    env.storage()
+                        .instance()
+                        .set(&symbol_short!("admin"), &admin);
+                }
+                pub fn admin(env: Env) -> Address {
+                    env.storage()
+                        .instance()
+                        .get(&symbol_short!("admin"))
+                        .unwrap()
+                }
+            }
+        }
+
+        pub mod without_admin {
+            use soroban_sdk::{contract, contractimpl};
+
+            /// Target without `admin()` / `owner()`.
+            #[contract]
+            pub struct WithoutAdmin;
+            #[contractimpl]
+            impl WithoutAdmin {
+                pub fn ping() -> u32 {
+                    1
+                }
+            }
+        }
+
+        pub mod panicking_admin {
+            use soroban_sdk::{contract, contractimpl, Address, Env};
+
+            /// Target whose `admin()` panics.
+            #[contract]
+            pub struct PanickingAdmin;
+            #[contractimpl]
+            impl PanickingAdmin {
+                pub fn admin(_env: Env) -> Address {
+                    panic!("admin() is broken")
+                }
+            }
+        }
+
+        pub mod reentrant_admin {
+            use soroban_sdk::{contract, contractimpl, symbol_short, Address, BytesN, Env};
+
+            /// Target whose `admin()` re-enters the explorer to claim itself.
+            #[contract]
+            pub struct ReentrantAdmin;
+            #[contractimpl]
+            impl ReentrantAdmin {
+                pub fn set_explorer(env: Env, explorer: Address, cid: BytesN<32>) {
+                    env.storage()
+                        .instance()
+                        .set(&symbol_short!("exp"), &explorer);
+                    env.storage().instance().set(&symbol_short!("cid"), &cid);
+                }
+                pub fn admin(env: Env) -> Address {
+                    let explorer: Address =
+                        env.storage().instance().get(&symbol_short!("exp")).unwrap();
+                    let cid: BytesN<32> =
+                        env.storage().instance().get(&symbol_short!("cid")).unwrap();
+                    let me = env.current_contract_address();
+                    crate::ExplorerContractClient::new(&env, &explorer).claim_contract(&cid, &me);
+                    me
+                }
+            }
+        }
+
+        pub use panicking_admin::PanickingAdmin;
+        pub use reentrant_admin::{ReentrantAdmin, ReentrantAdminClient};
+        pub use with_admin::{WithAdmin, WithAdminClient};
+        pub use without_admin::WithoutAdmin;
+    }
+
+    /// Registers `cid` in the explorer with `registrant` as owner.
+    fn register_as(
+        env: &Env,
+        client: &ExplorerContractClient,
+        admin: &Address,
+        cid: &BytesN<32>,
+        registrant: &Address,
+    ) {
+        client.register_contract(admin, cid, &make_meta(env, "Target", registrant));
+    }
+
+    /// Contract error code returned by a failed `try_claim_contract`.
+    fn claim_err<T, C: core::fmt::Debug>(
+        res: Result<Result<T, C>, Result<soroban_sdk::Error, soroban_sdk::InvokeError>>,
+    ) -> Error {
+        let Err(Ok(e)) = res else {
+            panic!("expected a contract error");
+        };
+        match e.get_code() {
+            1 => Error::NotFound,
+            2 => Error::Unauthorized,
+            5 => Error::ContractPaused,
+            8 => Error::AlreadyClaimed,
+            code => panic!("unexpected error code {code}"),
+        }
+    }
+
+    #[test]
+    fn test_contract_address_round_trips_host_strkey() {
+        let env = Env::default();
+        let real = env.register_contract(None, targets::WithoutAdmin);
+
+        // Decode the host's `C...` strkey back to the 32-byte contract id.
+        let strkey = real.to_string();
+        let mut chars = [0u8; 56];
+        strkey.copy_into_slice(&mut chars);
+        let (mut buf, mut bits, mut raw) = (0u32, 0u32, [0u8; 35]);
+        let mut o = 0;
+        for c in chars {
+            let v = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ234567"
+                .iter()
+                .position(|&x| x == c)
+                .unwrap() as u32;
+            buf = ((buf << 5) | v) & 0xffff;
+            bits += 5;
+            if bits >= 8 {
+                bits -= 8;
+                raw[o] = (buf >> bits) as u8;
+                o += 1;
+            }
+        }
+        let mut id = [0u8; 32];
+        id.copy_from_slice(&raw[1..33]);
+
+        assert_eq!(contract_address(&env, &BytesN::from_array(&env, &id)), real);
+    }
+
+    #[test]
+    fn test_squatter_loses_update_rights_after_admin_claim() {
+        let (env, client) = setup();
+        let admin = Address::generate(&env);
+        client.init(&admin, &0u32);
+        let squatter = Address::generate(&env);
+        let owner = Address::generate(&env);
+
+        let cid: BytesN<32> = BytesN::from_array(&env, &[80u8; 32]);
+        env.register_contract(&contract_address(&env, &cid), targets::WithAdmin);
+        targets::WithAdminClient::new(&env, &contract_address(&env, &cid)).set_admin(&owner);
+
+        register_as(&env, &client, &admin, &cid, &squatter);
+        assert!(client.get_ownership(&cid).is_none());
+
+        assert_eq!(
+            client.claim_contract(&cid, &owner),
+            VerifyMethod::TargetAdmin
+        );
+        let ownership = client.get_ownership(&cid).unwrap();
+        assert_eq!(ownership.owner, owner);
+        assert_eq!(client.get_contract(&cid).registered_by, owner);
+
+        let update = ContractMeta {
+            abi_version: 1,
+            ..make_meta(&env, "Poisoned", &squatter)
+        };
+        assert!(client
+            .try_update_contract(&squatter, &cid, &update)
+            .is_err());
+        // Verified entries are not editable by the explorer admin either.
+        assert!(client.try_update_contract(&admin, &cid, &update).is_err());
+        client.update_contract(
+            &owner,
+            &cid,
+            &ContractMeta {
+                abi_version: 1,
+                ..make_meta(&env, "Real", &owner)
+            },
+        );
+        assert_eq!(
+            client.get_contract(&cid).name,
+            String::from_str(&env, "Real")
+        );
+    }
+
+    #[test]
+    fn test_claim_requires_claimant_auth() {
+        let env = Env::default();
+        let id = env.register_contract(None, ExplorerContract);
+        let client = ExplorerContractClient::new(&env, &id);
+        let admin = Address::generate(&env);
+        let owner = Address::generate(&env);
+        env.mock_all_auths();
+        client.init(&admin, &0u32);
+        let cid: BytesN<32> = BytesN::from_array(&env, &[81u8; 32]);
+        env.register_contract(&contract_address(&env, &cid), targets::WithAdmin);
+        targets::WithAdminClient::new(&env, &contract_address(&env, &cid)).set_admin(&owner);
+        register_as(&env, &client, &admin, &cid, &admin);
+
+        env.set_auths(&[]);
+        assert!(client.try_claim_contract(&cid, &owner).is_err());
+    }
+
+    #[test]
+    fn test_claim_without_admin_view_falls_back_to_deployer() {
+        let (env, client) = setup();
+        let admin = Address::generate(&env);
+        client.init(&admin, &0u32);
+        let deployer = Address::generate(&env);
+        let cid: BytesN<32> = BytesN::from_array(&env, &[82u8; 32]);
+        env.register_contract(&contract_address(&env, &cid), targets::WithoutAdmin);
+        register_as(&env, &client, &admin, &cid, &admin);
+
+        // No admin() and no attestation → stays unverified.
+        assert_eq!(
+            claim_err(client.try_claim_contract(&cid, &deployer)),
+            Error::Unauthorized
+        );
+        assert!(client.get_ownership(&cid).is_none());
+
+        client.attest_deployer(&admin, &cid, &deployer);
+        assert_eq!(
+            client.claim_contract(&cid, &deployer),
+            VerifyMethod::Deployer
+        );
+    }
+
+    #[test]
+    fn test_claim_with_panicking_admin_is_handled() {
+        let (env, client) = setup();
+        let admin = Address::generate(&env);
+        client.init(&admin, &0u32);
+        let deployer = Address::generate(&env);
+        let cid: BytesN<32> = BytesN::from_array(&env, &[83u8; 32]);
+        env.register_contract(&contract_address(&env, &cid), targets::PanickingAdmin);
+        register_as(&env, &client, &admin, &cid, &admin);
+
+        assert_eq!(
+            claim_err(client.try_claim_contract(&cid, &deployer)),
+            Error::Unauthorized
+        );
+        client.attest_deployer(&admin, &cid, &deployer);
+        assert_eq!(
+            client.claim_contract(&cid, &deployer),
+            VerifyMethod::Deployer
+        );
+    }
+
+    #[test]
+    fn test_claim_with_reentrant_admin_is_handled() {
+        let (env, client) = setup();
+        let admin = Address::generate(&env);
+        client.init(&admin, &0u32);
+        let cid: BytesN<32> = BytesN::from_array(&env, &[84u8; 32]);
+        let target = contract_address(&env, &cid);
+        env.register_contract(&target, targets::ReentrantAdmin);
+        targets::ReentrantAdminClient::new(&env, &target).set_explorer(&client.address, &cid);
+        register_as(&env, &client, &admin, &cid, &admin);
+
+        // Re-entry is rejected by the host, so the view yields nothing and
+        // the target cannot claim itself.
+        assert_eq!(
+            claim_err(client.try_claim_contract(&cid, &target)),
+            Error::Unauthorized
+        );
+        assert!(client.get_ownership(&cid).is_none());
+    }
+
+    #[test]
+    fn test_second_claim_fails_with_already_claimed() {
+        let (env, client) = setup();
+        let admin = Address::generate(&env);
+        client.init(&admin, &0u32);
+        let owner = Address::generate(&env);
+        let cid: BytesN<32> = BytesN::from_array(&env, &[85u8; 32]);
+        env.register_contract(&contract_address(&env, &cid), targets::WithAdmin);
+        targets::WithAdminClient::new(&env, &contract_address(&env, &cid)).set_admin(&owner);
+        register_as(&env, &client, &admin, &cid, &admin);
+
+        client.claim_contract(&cid, &owner);
+        assert_eq!(
+            claim_err(client.try_claim_contract(&cid, &owner)),
+            Error::AlreadyClaimed
+        );
+    }
+
+    #[test]
+    fn test_claim_unregistered_and_paused() {
+        let (env, client) = setup();
+        let admin = Address::generate(&env);
+        client.init(&admin, &0u32);
+        let owner = Address::generate(&env);
+        let cid: BytesN<32> = BytesN::from_array(&env, &[86u8; 32]);
+        assert_eq!(
+            claim_err(client.try_claim_contract(&cid, &owner)),
+            Error::NotFound
+        );
+
+        register_as(&env, &client, &admin, &cid, &admin);
+        client.pause(&admin);
+        assert_eq!(
+            claim_err(client.try_claim_contract(&cid, &owner)),
+            Error::ContractPaused
+        );
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_attest_deployer_admin_only() {
+        let (env, client) = setup();
+        let admin = Address::generate(&env);
+        let stranger = Address::generate(&env);
+        client.init(&admin, &0u32);
+        let cid: BytesN<32> = BytesN::from_array(&env, &[87u8; 32]);
+        client.attest_deployer(&stranger, &cid, &stranger);
+    }
+
+    #[test]
+    fn test_deregister_clears_ownership() {
+        let (env, client) = setup();
+        let admin = Address::generate(&env);
+        client.init(&admin, &0u32);
+        let deployer = Address::generate(&env);
+        let cid: BytesN<32> = BytesN::from_array(&env, &[88u8; 32]);
+        register_as(&env, &client, &admin, &cid, &admin);
+        client.attest_deployer(&admin, &cid, &deployer);
+        client.claim_contract(&cid, &deployer);
+
+        client.deregister_contract(&deployer, &cid);
+        assert!(client.get_ownership(&cid).is_none());
+        register_as(&env, &client, &admin, &cid, &admin);
+        assert!(client.get_ownership(&cid).is_none());
+        assert_eq!(
+            claim_err(client.try_claim_contract(&cid, &deployer)),
+            Error::Unauthorized
+        );
     }
 
     // ── Ring buffer ───────────────────────────────────────────────────────────
@@ -1182,6 +2087,24 @@ mod tests {
 
         let cid: BytesN<32> = BytesN::from_array(&env, &[99u8; 32]);
         client.deregister_contract(&admin, &cid);
+    }
+
+    #[test]
+    fn test_moderator_can_deregister_but_cannot_pause() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let id = env.register_contract(None, ExplorerContract);
+        let client = ExplorerContractClient::new(&env, &id);
+        let admin = Address::generate(&env);
+        let moderator = Address::generate(&env);
+        let cid = BytesN::from_array(&env, &[13; 32]);
+
+        client.init(&admin, &1000u32);
+        client.grant_role(&admin, &moderator, &Role::Moderator);
+        client.register_contract(&admin, &cid, &make_meta(&env, "Moderated", &admin));
+        client.deregister_contract(&moderator, &cid);
+        assert!(client.get_latest_contract(&cid).is_none());
+        assert!(client.try_pause(&moderator).is_err());
     }
 
     #[test]
@@ -1552,5 +2475,22 @@ mod tests {
             ..meta_v0
         };
         client.update_contract(&admin, &cid, &meta_v1);
+    }
+
+    #[test]
+    fn test_registration_deposit_refunds_owner_on_deregister() {
+        let (env, client) = setup();
+        let admin = Address::generate(&env);
+        client.init(&admin, &0u32);
+        let sac = env.register_stellar_asset_contract_v2(admin.clone());
+        let token = sac.address();
+        token::StellarAssetClient::new(&env, &token).mint(&admin, &100);
+        client.set_registration_deposit(&admin, &25, &token);
+        let cid = BytesN::from_array(&env, &[71u8; 32]);
+        client.register_contract(&admin, &cid, &make_meta(&env, "Deposited", &admin));
+        assert_eq!(client.deposit_of(&cid), 25);
+        client.deregister_contract(&admin, &cid);
+        assert_eq!(client.deposit_of(&cid), 0);
+        assert_eq!(token::Client::new(&env, &token).balance(&admin), 100);
     }
 }

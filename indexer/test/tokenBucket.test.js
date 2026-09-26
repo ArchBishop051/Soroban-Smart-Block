@@ -2,25 +2,25 @@ import { jest } from '@jest/globals';
 import request from 'supertest';
 import express from 'express';
 
+// tokenBucket.js calls its own getRedisClient() internally, so the seam is the
+// `redis` package: createClient() hands back this controllable fake client.
 const mockRedisClient = {
   isReady: true,
+  on: jest.fn(),
+  connect: jest.fn(),
   sendCommand: jest.fn(),
 };
 
-let mockGetRedisClient = jest.fn().mockResolvedValue(mockRedisClient);
-
-jest.unstable_mockModule('../src/rateLimit/tokenBucket.js', async () => {
-  const actual = await import('../src/rateLimit/tokenBucket.js');
-  return {
-    ...actual,
-    getRedisClient: mockGetRedisClient,
-  };
-});
+jest.unstable_mockModule('redis', () => ({
+  createClient: jest.fn(() => mockRedisClient),
+}));
 
 jest.unstable_mockModule('../src/rateLimit/endpointGroups.js', () => ({
   resolveEndpointGroup: jest.fn((_path) => 'default'),
   getTierLimits: jest.fn((_group, _tier) => ({ rpm: 100, burst: 10 })),
 }));
+
+process.env.REDIS_URL = 'redis://mock:6379';
 
 const { tokenBucketMiddleware } = await import('../src/rateLimit/tokenBucket.js');
 
@@ -41,7 +41,8 @@ describe('tokenBucket middleware (issue #763)', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     mockRedisClient.sendCommand.mockReset();
-    mockGetRedisClient.mockResolvedValue(mockRedisClient);
+    mockRedisClient.isReady = true;
+    mockRedisClient.connect.mockResolvedValue(undefined);
   });
 
   describe('Allow path: tokens available', () => {
@@ -121,7 +122,7 @@ describe('tokenBucket middleware (issue #763)', () => {
 
   describe('Fallback: Redis unavailable', () => {
     it('uses in-process fallback when Redis is unavailable', async () => {
-      mockGetRedisClient.mockResolvedValue(null);
+      mockRedisClient.isReady = false;
 
       const res = await request(app).get('/api/test');
 
@@ -130,7 +131,8 @@ describe('tokenBucket middleware (issue #763)', () => {
     });
 
     it('fails open on Redis error', async () => {
-      mockGetRedisClient.mockRejectedValue(new Error('Redis connection failed'));
+      mockRedisClient.isReady = false;
+      mockRedisClient.connect.mockRejectedValue(new Error('Redis connection failed'));
 
       const res = await request(app).get('/api/test');
 
@@ -150,7 +152,7 @@ describe('tokenBucket middleware (issue #763)', () => {
     it('correctly refills tokens over elapsed time', async () => {
       // Mock scenario: bucket with capacity 10, rpm 100 (so ~1.67 tokens/sec)
       // After 1 second, should have ~1 token refilled
-      mockGetRedisClient.mockResolvedValue(null);
+      mockRedisClient.isReady = false;
 
       const res1 = await request(app).get('/api/test');
       expect(res1.status).toBe(200);

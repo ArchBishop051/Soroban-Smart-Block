@@ -31,7 +31,7 @@ const CIDR_RE = /^(\d{1,3}\.){3}\d{1,3}(\/(3[0-2]|[12]?\d))?$/;
 function statusForError(message) {
   if (/not found/i.test(message)) return 404;
   if (/not authorized/i.test(message)) return 403;
-  if (/required|must be/i.test(message)) return 400;
+  if (/required|must be|scope/i.test(message)) return 400;
   return 500;
 }
 
@@ -103,12 +103,15 @@ router.post("/api-keys", async (req, res) => {
     const owner = await getKeyById(req.rateContext.keyId);
     if (!owner) return res.status(404).json({ error: "API key not found" });
 
-    const { name, tier, rate_limit, expires_at } = req.body ?? {};
+    const { name, tier, rate_limit, expires_at, scopes, allowed_contract_ids, allowed_origins } = req.body ?? {};
     const result = await createKey({
       name,
       tier,
       rate_limit,
       expires_at,
+      scopes, // defaults to read-only; admin:* is never granted from the dashboard
+      allowed_contract_ids,
+      allowed_origins,
       email: owner.email ?? null,
       verified: true, // created from an already-authenticated session — no email round-trip needed
     });

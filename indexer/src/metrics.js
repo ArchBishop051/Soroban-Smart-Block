@@ -114,6 +114,9 @@ export const apiRequestDuration = new Histogram({
   registers: [registry],
 });
 
+export const replicaLagMs = new Gauge({ name: "soroban_replica_lag_ms", help: "Read replica replay lag in milliseconds", labelNames: ["replica"], registers: [registry] });
+export const replicaHealthy = new Gauge({ name: "soroban_replica_healthy", help: "Whether a read replica is eligible for routing", labelNames: ["replica"], registers: [registry] });
+
 /**
  * Update DB pool gauges from a pg.Pool instance.
  * Call this periodically (e.g. every 15 s).

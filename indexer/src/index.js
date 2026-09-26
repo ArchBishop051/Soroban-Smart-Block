@@ -1,4 +1,6 @@
 import "dotenv/config";
+import { invalidateContract as invalidateContractSpec } from "./contractSpecCache.js";
+import { initRuntimeConfig } from "./runtimeConfig.js";
 import "./tracing.js";
 import { pathToFileURL } from "node:url";
 import { rpc as SorobanRpc } from "@stellar/stellar-sdk";
@@ -12,6 +14,7 @@ import { decode, getDecodeStats } from "./decoder.js";
 import { startAbiSync } from "./githubAbiSync.js";
 import { seedBuiltinAbis } from "./abiSeeder.js";
 import { startContractVerifier } from "./contractVerifier.js";
+import { startQueryJobMaintenance } from "./jobs/queryJobs.js";
 import { withRetry } from "./rpcRetry.js";
 import { isHighBloatRisk } from "./bloatDetector.js";
 import { detectUpgrade } from "./upgradeDetector.js";
@@ -21,10 +24,14 @@ import { multiNodeRpc, startNodeRecoveryPoll } from "./rpcMultiNode.js";
 import { startMetricsCollector } from "./rpcMetrics.js";
 import { startPruner } from "./pruner.js";
 import { extractStateDiffs } from "./stateDiffIndexer.js";
+import { extractStateVersions } from "./stateHistoryIndexer.js";
+import { observeProtocolVersion, protocolVersionFromLedger, isProtocolDegraded } from "./protocolReadiness.js";
 import { parseFeeBump } from "./feeBumpParser.js";
+import { extractTransactionRecord } from "./transactions.js";
 import { detectEvictions } from "./archivalEvictionDetector.js";
 import { parseAndDescribeRestore } from "./restoreFootprintParser.js";
-import { publish, publishTransactionStatus } from "./wsEvents.js";
+import { publishTransactionStatus } from "./wsEvents.js";
+import { enqueueOutbox, startOutboxRelay } from "./outboxRelay.js";
 import { extractBuildMetadata } from "./wasmBuildMetadata.js";
 import { scanFootprintContention } from "./footprintContentionScanner.js";
 import { handleVaultEvent, refreshAllVaults } from "./vaultIndexer.js";
@@ -34,6 +41,7 @@ import { checkForReorg, recordLedgerHash } from "./reorgWorker.js";
 import { startReDecodeWorker } from "./reDecodeWorker.js";
 import { warmCache } from "./cacheWarming.js";
 import { cacheInvalidate } from "./cacheLayer.js";
+import { enqueuePurge } from "./cdnPurge.js";
 import {
   eventsIngested,
   decodeLatency,
@@ -50,8 +58,9 @@ import { logger } from "./logger.js";
 import * as alertManager from "./alertManager.js";
 import { processRetries as dlqProcessRetries, enqueue as dlqEnqueue, getDlqDepth } from "./deadLetterQueue.js";
 import { recordLedger as gapRecordLedger } from "./predictiveGapDetector.js";
-import { deliverWebhooksForEvent, retryWebhookDelivery } from "./webhookDelivery.js";
+import { retryWebhookDelivery } from "./webhookDelivery.js";
 import { runIntegrityChecks } from "./routes/admin.js";
+import { createIngestPipeline } from "./ingestPipeline.js";
 
 const RPC_URL = config.SOROBAN_RPC_URL;
 const START_LEDGER = config.START_LEDGER;
@@ -60,6 +69,9 @@ const REORG_CHECK_INTERVAL = config.REORG_CHECK_INTERVAL;
 // Max events per RPC page — Soroban caps at 200
 const PAGE_LIMIT = 200;
 const MAX_GAP_RETRIES = 3;
+const INGEST_CONCURRENCY = 4;
+const INGEST_BATCH_SIZE = 64;
+const INGEST_MAX_QUEUE = 2000;
 
 const rpc = new SorobanRpc.Server(RPC_URL, { allowHttp: true });
 
@@ -145,11 +157,12 @@ export async function loadTransactionContext(
     },
   } = {},
 ) {
-  const context = { feeBump: null, archivalInfo: null };
+  const context = { feeBump: null, archivalInfo: null, transaction: null };
   if (!txHash) return context;
 
   try {
     const txResult = await fetchTransaction(txHash);
+    context.transaction = txResult;
     if (txResult?.envelopeXdr) {
       context.feeBump = parseFeeBumpEnvelope(txResult.envelopeXdr);
       const restore = parseRestoreEnvelope(txResult.envelopeXdr, txResult.resultMetaXdr ?? null);
@@ -188,10 +201,19 @@ export async function loadTransactionContext(
  */
 export async function processSingleEvent(rawSorobanEvent, context = undefined) {
   const { feeBump, archivalInfo } = context ?? (await loadTransactionContext(rawSorobanEvent.txHash));
+  await observeProtocolVersion(protocolVersionFromLedger(rawSorobanEvent));
   const decodeStart = Date.now();
-  const decoded = await decode(rawSorobanEvent);
+  let decoded;
+  try {
+    decoded = await decode(rawSorobanEvent);
+  } catch (error) {
+    if (!/unknown|arm|union|xdr/i.test(error.message)) throw error;
+    decoded = { contract_id: rawSorobanEvent.contractId, ledger: Number(rawSorobanEvent.ledger), tx_hash: rawSorobanEvent.txHash ?? "unknown", function: "unknown", description: "Deferred: unsupported protocol XDR", raw_topics: rawSorobanEvent.topic ?? [], raw_data: typeof rawSorobanEvent.value === "string" ? rawSorobanEvent.value : JSON.stringify(rawSorobanEvent.value ?? null), protocol_degraded: true, raw_xdr: rawSorobanEvent.rawXdr ?? rawSorobanEvent.xdr ?? null };
+  }
   const contractMeta = await db.getContractMeta(rawSorobanEvent.contractId).catch(() => null);
   decoded.abi_version = Number(contractMeta?.abi_version ?? 0);
+  decoded.protocol_version = protocolVersionFromLedger(rawSorobanEvent);
+  decoded.protocol_degraded = decoded.protocol_degraded || isProtocolDegraded();
   decodeLatency.observe(Date.now() - decodeStart);
   eventsIngested.inc({ function: decoded.function });
   decoded.is_high_bloat_risk = isHighBloatRisk(rawSorobanEvent, rawSorobanEvent.contractId);
@@ -203,6 +225,7 @@ export async function processSingleEvent(rawSorobanEvent, context = undefined) {
       `[${rawSorobanEvent.ledger}] CONTRACT UPGRADE ${rawSorobanEvent.contractId}: ${upgrade.oldHash} → ${upgrade.newHash}`,
     );
     decoded.upgrade = upgrade;
+    invalidateContractSpec(rawSorobanEvent.contractId); // new WASM → new spec from this ledger on (#895)
     if (decoded.abi_version > 0) {
       await db.markNeedsRedecode(rawSorobanEvent.contractId, decoded.abi_version);
     }
@@ -211,17 +234,41 @@ export async function processSingleEvent(rawSorobanEvent, context = undefined) {
   decoded.storage_tiers = classifyStorageWrites(rawSorobanEvent);
   decoded.fee_bump = feeBump;
   decoded.archival_info = archivalInfo;
+  if (context?.transaction && rawSorobanEvent.txHash) {
+    const tx = context.transaction;
+    db.upsertTransaction(await extractTransactionRecord({
+      hash: rawSorobanEvent.txHash,
+      ledger: tx.ledger ?? rawSorobanEvent.ledger,
+      source: tx.sourceAccount ?? tx.source_account,
+      status: tx.status,
+      resultCode: tx.resultCode ?? tx.result_code,
+      envelopeXdr: tx.envelopeXdr,
+      resultMetaXdr: tx.resultMetaXdr,
+      fee: tx.feeBreakdown ?? tx.fee,
+      diagnostics: tx.resultMetaXdr,
+    })).catch((err) => logger.warn({ err: err.message }, "transaction indexing failed"));
+  }
   await db.upsertEventValidated(decoded);
+  // The event row is committed before it is exposed to consumers. The outbox
+  // relay provides durable retries and stable event IDs for deduplication.
+  const outboxClient = await pool.connect();
+  try {
+    await outboxClient.query("BEGIN");
+    await enqueueOutbox(outboxClient, { topic: "event", payload: decoded }, { eventId: String(decoded.seq ?? `${decoded.contract_id}:${decoded.ledger}:${decoded.tx_hash}`) });
+    await outboxClient.query("COMMIT");
+  } catch (error) {
+    await outboxClient.query("ROLLBACK").catch(() => {});
+    logger.error({ err: error.message, ledger: decoded.ledger }, "outbox enqueue failed");
+  } finally { outboxClient.release(); }
   // Bust wallet event caches (#534) — any new event may reference a wallet address.
   cacheInvalidate("wallet:events:*").catch(() => {});
-  // Notify matching webhook subscriptions (non-blocking; failures retry via the DLQ).
-  deliverWebhooksForEvent(decoded).catch((err) =>
-    logger.error("[webhookDelivery] dispatch failed:", err.message),
-  );
+  // WebSocket/webhook fan-out is performed by the post-commit relay.
 
   // Persist per-key state diffs for the timeline.
   const diffs = extractStateDiffs(rawSorobanEvent, decoded);
   if (diffs.length) await db.insertStateDiffs(diffs).catch(() => {});
+  const stateVersions = extractStateVersions({ ...rawSorobanEvent, txMeta: rawSorobanEvent.txMeta });
+  if (stateVersions.length) await db.upsertStateVersions(stateVersions).catch((err) => logger.error("[state-history] insert failed:", err.message));
 
   // Detect evicted ledger keys (TTL → 0) in this transaction.
   const evictions = detectEvictions(rawSorobanEvent, rawSorobanEvent.ledger, rawSorobanEvent.txHash);
@@ -234,7 +281,6 @@ export async function processSingleEvent(rawSorobanEvent, context = undefined) {
     );
   }
 
-  publish(decoded); // push to WS clients
   handleVaultEvent(decoded); // vault ratio update (async, non-blocking)
 
   // Process circuit breaker events.
@@ -246,6 +292,73 @@ export async function processSingleEvent(rawSorobanEvent, context = undefined) {
 
   logger.info(`[${rawSorobanEvent.ledger}] ${decoded.function}: ${decoded.description}`);
   return decoded;
+}
+
+export async function processEventBatch(batch, contextByTx = new Map()) {
+  if (!Array.isArray(batch) || batch.length === 0) return [];
+
+  const resolved = await Promise.all(
+    batch.map(async (rawSorobanEvent) => {
+      const { feeBump, archivalInfo } = contextByTx.get(rawSorobanEvent.txHash) ??
+        (await loadTransactionContext(rawSorobanEvent.txHash));
+      const decodeStart = Date.now();
+      const decoded = await decode(rawSorobanEvent);
+      const contractMeta = await db.getContractMeta(rawSorobanEvent.contractId).catch(() => null);
+      decoded.abi_version = Number(contractMeta?.abi_version ?? 0);
+      decodeLatency.observe(Date.now() - decodeStart);
+      eventsIngested.inc({ function: decoded.function });
+      decoded.is_high_bloat_risk = isHighBloatRisk(rawSorobanEvent, rawSorobanEvent.contractId);
+      decoded.footprint_contention = rawSorobanEvent.footprint_contention ?? false;
+
+      const upgrade = detectUpgrade(rawSorobanEvent);
+      if (upgrade) {
+        decoded.upgrade = upgrade;
+        if (decoded.abi_version > 0) {
+          await db.markNeedsRedecode(rawSorobanEvent.contractId, decoded.abi_version).catch(() => {});
+        }
+      }
+
+      decoded.storage_tiers = classifyStorageWrites(rawSorobanEvent);
+      decoded.fee_bump = feeBump;
+      decoded.archival_info = archivalInfo;
+      return { rawSorobanEvent, decoded, contractMeta };
+    }),
+  );
+
+  await db.upsertEventsValidatedBatch(
+    resolved.map(({ decoded }) => decoded),
+    logger,
+  );
+
+  for (const { rawSorobanEvent, decoded, contractMeta } of resolved) {
+    cacheInvalidate("wallet:events:*").catch(() => {});
+    deliverWebhooksForEvent(decoded).catch((err) =>
+      logger.error("[webhookDelivery] dispatch failed:", err.message),
+    );
+
+    const diffs = extractStateDiffs(rawSorobanEvent, decoded);
+    if (diffs.length) await db.insertStateDiffs(diffs).catch(() => {});
+
+    const evictions = detectEvictions(rawSorobanEvent, rawSorobanEvent.ledger, rawSorobanEvent.txHash);
+    if (evictions.length) {
+      await db
+        .insertArchivalEvictions(evictions)
+        .catch((err) => logger.error("[archivalEviction] insert failed:", err.message));
+    }
+
+    publish(decoded);
+    handleVaultEvent(decoded);
+
+    if (contractMeta) {
+      processCircuitBreakerEvent(decoded, contractMeta).catch((err) =>
+        logger.error("[circuitBreakerIndexer] Error:", err.message),
+      );
+    }
+
+    logger.info(`[${rawSorobanEvent.ledger}] ${decoded.function}: ${decoded.description}`);
+  }
+
+  return resolved.map(({ decoded }) => decoded);
 }
 
 /**
@@ -299,8 +412,28 @@ async function indexLedger(ledger) {
       }),
     );
 
-    for (const ev of res.events) {
-      await processSingleEvent(ev, transactionContextCache.get(ev.txHash));
+    const ingestPipeline = createIngestPipeline({
+      concurrency: INGEST_CONCURRENCY,
+      batchSize: INGEST_BATCH_SIZE,
+      maxQueue: INGEST_MAX_QUEUE,
+      processBatch: async (batch) => {
+        await processEventBatch(batch, transactionContextCache);
+      },
+    });
+
+    const { accepted, dropped } = ingestPipeline.enqueue(res.events);
+    if (dropped > 0) {
+      logger.warn(
+        { ledger, dropped, accepted, total: res.events.length, maxQueue: INGEST_MAX_QUEUE },
+        "ingest queue overflow: shed events to protect lag budget",
+      );
+    }
+    await ingestPipeline.drain();
+
+    // Purge the CDN entries this page changed: "latest" lists plus every
+    // contract it touched (debounced/batched in cdnPurge.js).
+    if (res.events.length) {
+      enqueuePurge(["latest", ...new Set(res.events.map((e) => `contract:${e.contractId}`).filter((k) => k !== "contract:undefined"))]);
     }
 
     // Scan transactions for UploadContractWasm operations (non-blocking)
@@ -346,13 +479,16 @@ async function run() {
   warmCache().catch((e) => logger.warn({ err: e.message }, "cache warm failed"));
   seedBuiltinAbis().catch((e) => logger.warn({ err: e.message }, "builtin ABI seed failed"));
   startAbiSync();
+  initRuntimeConfig(pool).catch((err) => logger.error("[runtimeConfig] init failed:", err.message)); // hot-reloadable config (#894)
   startContractVerifier(); // periodically verify DB ABI hashes against on-chain registry
+  startQueryJobMaintenance().catch((err) => logger.error("[jobs] startup failed:", err.message)); // async query jobs (#906)
   startBurnDetector();
   startMetricsCollector(); // RPC latency probes
   startNodeRecoveryPoll(); // re-check unhealthy multi-node RPC failover nodes
   startPruner(); // daily temporary-storage cleanup
   startGasGuzzlersWorker(); // daily gas consumption leaderboard
   startReDecodeWorker(); // low-priority ABI refresh for superseded events
+  startOutboxRelay(); // post-commit WS/SSE/webhook fan-out
 
   // ── Auth & Rate Limiting cron jobs ─────────────────────────────────────────
   startUsageFlushCron();       // flush Redis usage counters → DB every minute
