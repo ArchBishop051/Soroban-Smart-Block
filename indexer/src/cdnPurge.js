@@ -1,4 +1,5 @@
 import { logger } from "./logger.js";
+import { safeFetch } from "./safeHttp.js";
 /**
  * CDN surrogate-key purging (#905).
  *
@@ -20,7 +21,7 @@ import { logger } from "./logger.js";
 
 const MAX_KEYS_PER_REQUEST = 256; // Fastly's per-request surrogate-key limit
 
-function createAdapter(env = process.env, fetchImpl = globalThis.fetch) {
+function createAdapter(env = process.env, fetchImpl = safeFetch) {
   const provider = (env.CDN_PROVIDER || "none").toLowerCase();
 
   const post = async (url, headers, body) => {

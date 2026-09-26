@@ -75,8 +75,10 @@ export function publishContractLink(link) {
 }
 
 export function attachWebSocketServer(httpServer) {
+  // noServer + explicit routing so /collab/ upgrades (collab/server.js) are
+  // left to the collaborative sandbox server.
   const wss = new WebSocketServer({
-    server: httpServer,
+    noServer: true,
     maxPayload: 64 * 1024,
     verifyClient: (info, cb) => {
       const params = new url.URL(info.req.url || "", "http://localhost").searchParams;
@@ -301,6 +303,11 @@ export function attachWebSocketServer(httpServer) {
 
     send({ type: "connected", message: "Soroban event stream ready", network, cursor });
     replay();
+  });
+
+  httpServer.on("upgrade", (req, socket, head) => {
+    if ((req.url || "").startsWith("/collab/")) return;
+    wss.handleUpgrade(req, socket, head, (ws) => wss.emit("connection", ws, req));
   });
 
   logger.info("[ws] WebSocket server attached");

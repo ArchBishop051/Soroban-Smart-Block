@@ -19,6 +19,7 @@ import { logger } from "./logger.js";
 
 import { get as getRuntimeConfig } from "./runtimeConfig.js";
 import config from "./config.js";
+import { safeFetch } from "./safeHttp.js";
 
 const SLACK_WEBHOOK_URL = process.env.SLACK_WEBHOOK_URL ?? "";
 const PAGERDUTY_ROUTING_KEY = process.env.PAGERDUTY_ROUTING_KEY ?? "";
@@ -74,7 +75,7 @@ async function sendSlack(condition, message) {
   try {
     const severity = SEVERITY[condition] ?? "warning";
     const emoji = severity === "critical" ? ":red_circle:" : ":warning:";
-    await fetch(SLACK_WEBHOOK_URL, {
+    await safeFetch(SLACK_WEBHOOK_URL, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ text: `${emoji} *[${condition}]* ${message}` }),
@@ -87,7 +88,7 @@ async function sendSlack(condition, message) {
 async function sendPagerDuty(condition, message) {
   if (!PAGERDUTY_ROUTING_KEY) return;
   try {
-    await fetch(PAGERDUTY_EVENTS_URL, {
+    await safeFetch(PAGERDUTY_EVENTS_URL, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({

@@ -9,6 +9,7 @@ import cors from "cors";
 import rateLimit from "express-rate-limit";
 import swaggerUi from "swagger-ui-express";
 import { db as defaultDb, pool } from "./db.js";
+import { safeFetch } from "./safeHttp.js";
 import config from "./config.js";
 import { InvalidCursorError, CursorFilterMismatchError } from "./cursor.js";
 
@@ -83,6 +84,7 @@ import {
 } from "./cacheLayer.js";
 import { recordAccess, schedulePrefetch } from "./prefetchEngine.js";
 import { attachGraphQL } from "./graphql.js";
+import { attachCollabServer, createSession as createCollabSession, authorize as authorizeCollab, rotateToken as rotateCollabToken, kickParticipants as kickCollabParticipants } from "./collab/server.js";
 import { requestContext } from "./logger.js";
 import { runAllChecks } from "./doctor-lib.js";
 import { registry } from "./metrics.js";
@@ -1485,6 +1487,48 @@ export function createApi({ logDestination, dbOverride } = {}) {
     }
   });
 
+  // ── Collaborative sandbox sessions (#926) ───────────────────────────────────
+  // Sync runs over WebSocket at /collab/:sessionId (collab/server.js); these
+  // routes create sessions and let the owner rotate link tokens / kick.
+  app.post("/api/collab/sessions", async (req, res) => {
+    try {
+      const sandboxId = typeof req.body?.sandboxId === "string" ? req.body.sandboxId.slice(0, 128) : null;
+      res.status(201).json(await createCollabSession({ sandboxId }));
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  const requireCollabOwner = async (req, res) => {
+    const role = await authorizeCollab(req.params.id, req.get("x-collab-token"));
+    if (role !== "owner") {
+      res.status(403).json({ error: "Only the session owner can do this" });
+      return false;
+    }
+    return true;
+  };
+
+  app.post("/api/collab/sessions/:id/rotate", async (req, res) => {
+    try {
+      const role = req.body?.role;
+      if (role !== "edit" && role !== "view") return res.status(400).json({ error: "role must be edit or view" });
+      if (!(await requireCollabOwner(req, res))) return;
+      res.json({ role, token: await rotateCollabToken(req.params.id, role) });
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.post("/api/collab/sessions/:id/kick", async (req, res) => {
+    try {
+      if (!(await requireCollabOwner(req, res))) return;
+      kickCollabParticipants(req.params.id);
+      res.json({ ok: true });
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
   app.get("/api/sandboxes", async (req, res) => {
     try {
       if (handleLegacyOffset(req, res)) return;
@@ -1501,6 +1545,36 @@ export function createApi({ logDestination, dbOverride } = {}) {
       res.json(result);
     } catch (e) {
       if (handleCursorError(e, res)) return;
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // POST /api/sandbox/ledger-entries — RPC proxy used by the in-browser host
+  // (#925) to import contract state: { keys: [LedgerKey XDR base64] }.
+  app.post("/api/sandbox/ledger-entries", writeLimiter, requireApiKey, async (req, res) => {
+    try {
+      const keys = req.body?.keys;
+      if (!Array.isArray(keys) || keys.length === 0 || keys.length > 200 || !keys.every((k) => typeof k === "string")) {
+        return res.status(400).json({ error: "keys must be an array of 1-200 base64 LedgerKey XDR strings" });
+      }
+      const { rpc: SorobanRpc, xdr } = await import("@stellar/stellar-sdk");
+      const server = new SorobanRpc.Server(RPC_URL);
+      const [found, network, latest] = await Promise.all([
+        server.getLedgerEntries(...keys.map((k) => xdr.LedgerKey.fromXDR(k, "base64"))),
+        server.getNetwork(),
+        server.getLatestLedger(),
+      ]);
+      res.json({
+        entries: found.entries.map((e) => ({
+          key: e.key.toXDR("base64"),
+          entry: new xdr.LedgerEntry({ lastModifiedLedgerSeq: e.lastModifiedLedgerSeq ?? 0, data: e.val, ext: new xdr.LedgerEntryExt(0) }).toXDR("base64"),
+          liveUntilLedgerSeq: e.liveUntilLedgerSeq ?? null,
+        })),
+        latestLedger: latest.sequence,
+        protocolVersion: latest.protocolVersion ?? network.protocolVersion,
+        networkPassphrase: network.passphrase,
+      });
+    } catch (e) {
       res.status(500).json({ error: e.message });
     }
   });
@@ -1534,6 +1608,10 @@ export function createApi({ logDestination, dbOverride } = {}) {
         },
         minResourceFee: sim.minResourceFee ?? null,
         latestLedger: sim.latestLedger ?? null,
+        // Footprint (SorobanTransactionData XDR) so the in-browser host (#925)
+        // can import exactly the entries an invocation touches.
+        transactionData: sim.transactionData ? sim.transactionData.build().toXDR("base64") : undefined,
+        events: (sim.events ?? []).map((e) => e.toXDR("base64")),
       });
     } catch (e) {
       res.status(500).json({ success: false, error: e.message });
@@ -2857,7 +2935,9 @@ export function createApi({ logDestination, dbOverride } = {}) {
         return res.status(400).json({ error: "requests must be an array" });
       }
 
-      const base = `http://${req.headers.host}`;
+      // Dispatch to this server over loopback; never trust the client-supplied
+      // Host header as the target (that would be an SSRF vector).
+      const base = `http://127.0.0.1:${req.socket.localPort}`;
       const apiKey = req.headers["x-api-key"];
 
       // Promise.all preserves array order; each sub-request resolves to its own
@@ -2873,7 +2953,10 @@ export function createApi({ logDestination, dbOverride } = {}) {
               init.headers["content-type"] = "application/json";
               init.body = JSON.stringify(item.body);
             }
-            const r = await fetch(base + subPath, init);
+            if (typeof subPath !== "string" || !subPath.startsWith("/") || subPath.startsWith("//")) {
+              return { status: 400, body: { error: "path must be a relative API path" } };
+            }
+            const r = await safeFetch(base + subPath, { ...init, allowPrivate: true, allowHttp: true });
             const contentType = r.headers.get("content-type") || "";
             const body = contentType.includes("application/json") ? await r.json() : await r.text();
             return { status: r.status, body };
@@ -2980,7 +3063,10 @@ export function createApi({ logDestination, dbOverride } = {}) {
 
   // ── Start HTTP + WebSocket server ───────────────────────────────────────────
   const server = http.createServer(app);
-  if (!runningUnderTest) attachWebSocketServer(server);
+  if (!runningUnderTest) {
+    attachCollabServer(server, pool);
+    attachWebSocketServer(server);
+  }
 
   server.on("close", () => logger.info("[api] server closed"));
 
