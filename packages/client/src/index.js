@@ -132,8 +132,12 @@ export function createClient(opts = {}) {
       if (params.contract) q.set("contract", params.contract);
       if (params.fn) q.set("fn", params.fn);
       if (params.type) q.set("type", params.type);
+      if (params.cursor) q.set("cursor", params.cursor);
+      if (params.after) q.set("after", String(params.after));
+      if (params.before) q.set("before", params.before);
       if (params.after_seq) q.set("after_seq", String(params.after_seq));
       if (params.limit) q.set("limit", String(params.limit));
+      if (params.count) q.set("count", params.count);
       return request(`/events?${q}`);
     },
 

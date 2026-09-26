@@ -150,6 +150,36 @@ describe("@soroban-explorer/client", () => {
       await client.events({ type: "soroban" });
       assert.ok(capturedUrl.includes("type=soroban"));
     });
+
+    it("should pass cursor, after, before, and count pagination params", async () => {
+      let capturedUrl = "";
+      const fetch = async (url) => {
+        capturedUrl = url;
+        return {
+          ok: true,
+          status: 200,
+          headers: new Map([["content-type", "application/json"]]),
+          json: async () => ({
+            data: [],
+            page_info: { has_next: false, has_previous: false, start_cursor: null, end_cursor: null },
+            next_cursor: null,
+          }),
+        };
+      };
+      const client = createClient({ fetch });
+      await client.events({
+        contract: "CDA2...",
+        after: "cur_after_token",
+        before: "cur_before_token",
+        cursor: "cur_token",
+        count: "exact",
+      });
+      assert.ok(capturedUrl.includes("contract=CDA2..."));
+      assert.ok(capturedUrl.includes("after=cur_after_token"));
+      assert.ok(capturedUrl.includes("before=cur_before_token"));
+      assert.ok(capturedUrl.includes("cursor=cur_token"));
+      assert.ok(capturedUrl.includes("count=exact"));
+    });
   });
 
   describe("event()", () => {
@@ -254,10 +284,7 @@ describe("@soroban-explorer/client", () => {
         text: async () => JSON.stringify({ error: "Internal server error" }),
       });
       const client = createClient({ fetch });
-      await assert.rejects(
-        () => client.events(),
-        /Internal server error/,
-      );
+      await assert.rejects(() => client.events(), /Internal server error/);
     });
 
     it("should handle non-JSON error bodies", async () => {
@@ -268,10 +295,7 @@ describe("@soroban-explorer/client", () => {
         text: async () => "Bad Gateway",
       });
       const client = createClient({ fetch });
-      await assert.rejects(
-        () => client.events(),
-        /Bad Gateway/,
-      );
+      await assert.rejects(() => client.events(), /Bad Gateway/);
     });
   });
 });
