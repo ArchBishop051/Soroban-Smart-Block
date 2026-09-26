@@ -334,6 +334,10 @@ jobs:
         env:
           TEST_DATABASE_URL: postgres://soroban:soroban_secret@localhost:5432/soroban_explorer
 
+      - name: Decoder golden snapshots (version bump required on output change)
+        working-directory: indexer
+        run: node --test test/golden.test.js
+
       - name: Upload indexer coverage to CodeCov
         uses: codecov/codecov-action@v4
         with:

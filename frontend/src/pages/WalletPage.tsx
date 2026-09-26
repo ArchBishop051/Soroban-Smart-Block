@@ -6,6 +6,7 @@ import type { ContractMeta, DecodedEvent } from "../api";
 import EventTable from "../components/EventTable";
 import ExportButton from "../components/ExportButton";
 import WalletBalances from "../components/WalletBalances";
+import SmartWalletPanel from "../components/SmartWalletPanel";
 import ProtocolBadge from "../components/ProtocolBadge";
 import {
   isMuxedAddress,
@@ -497,6 +498,7 @@ export default function WalletPage() {
       {/* Wallet token balances */}
       <div className="card">
         <WalletBalances address={address} />
+        <SmartWalletPanel address={address} />
       </div>
 
       {/* Events section */}
