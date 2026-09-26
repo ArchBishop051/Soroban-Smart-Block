@@ -46,16 +46,26 @@ export async function startLineageBatch(
   );
   const id = Number(rows[0].id);
   trace.getActiveSpan()?.setAttribute("lineage.id", id);
-  logger.info(`[lineage] batch ${id} started (${runType} run ${runId}, ledgers ${ledgerFrom ?? "?"}-${ledgerTo ?? "?"})`);
+  logger.info(
+    `[lineage] batch ${id} started (${runType} run ${runId}, ledgers ${ledgerFrom ?? "?"}-${ledgerTo ?? "?"})`,
+  );
   return { id, runId };
 }
 
 /** Append a lineage event (re-decode, reconcile, ...) for an existing row. */
-export async function recordLineageEvent(eventSeq, batchId, action, detail = {}, query = (...args) => pool.query(...args)) {
-  await query(
-    `INSERT INTO lineage_events (event_seq, batch_id, action, detail) VALUES ($1, $2, $3, $4)`,
-    [eventSeq, batchId, action, JSON.stringify(detail)],
-  );
+export async function recordLineageEvent(
+  eventSeq,
+  batchId,
+  action,
+  detail = {},
+  query = (...args) => pool.query(...args),
+) {
+  await query(`INSERT INTO lineage_events (event_seq, batch_id, action, detail) VALUES ($1, $2, $3, $4)`, [
+    eventSeq,
+    batchId,
+    action,
+    JSON.stringify(detail),
+  ]);
   logger.info(`[lineage] batch ${batchId} ${action} event ${eventSeq}`);
 }
 
@@ -72,7 +82,10 @@ function formatBatch(row, { full }) {
     ...batch,
     run_id: row.run_id,
     source: row.source,
-    ledger_range: [row.ledger_from == null ? null : Number(row.ledger_from), row.ledger_to == null ? null : Number(row.ledger_to)],
+    ledger_range: [
+      row.ledger_from == null ? null : Number(row.ledger_from),
+      row.ledger_to == null ? null : Number(row.ledger_to),
+    ],
   };
 }
 

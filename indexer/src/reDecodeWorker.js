@@ -130,7 +130,10 @@ export function startReDecodeWorker({
     }
   };
 
-  const timer = setInterval(() => tick().catch((error) => logger.error("[redecode] worker failed:", error.message)), intervalMs);
+  const timer = setInterval(
+    () => tick().catch((error) => logger.error("[redecode] worker failed:", error.message)),
+    intervalMs,
+  );
   timer.unref?.();
   tick().catch((error) => logger.error("[redecode] initial run failed:", error.message));
   return () => clearInterval(timer);

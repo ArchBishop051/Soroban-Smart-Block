@@ -12,13 +12,30 @@ function fakeStore() {
   const query = async (sql, params) => {
     if (sql.includes("INSERT INTO lineage_batches")) {
       const [run_type, run_id, source, ledger_from, ledger_to, code_version, decoder_versions] = params;
-      const row = { id: batches.length + 1, run_type, run_id, source, ledger_from, ledger_to, code_version, decoder_versions: JSON.parse(decoder_versions), created_at: new Date() };
+      const row = {
+        id: batches.length + 1,
+        run_type,
+        run_id,
+        source,
+        ledger_from,
+        ledger_to,
+        code_version,
+        decoder_versions: JSON.parse(decoder_versions),
+        created_at: new Date(),
+      };
       batches.push(row);
       return { rows: [{ id: row.id }] };
     }
     if (sql.includes("INSERT INTO lineage_events")) {
       const [event_seq, batch_id, action, detail] = params;
-      lineageEvents.push({ id: lineageEvents.length + 1, event_seq, batch_id, action, detail: JSON.parse(detail), created_at: new Date() });
+      lineageEvents.push({
+        id: lineageEvents.length + 1,
+        event_seq,
+        batch_id,
+        action,
+        detail: JSON.parse(detail),
+        created_at: new Date(),
+      });
       return { rows: [] };
     }
     if (sql.includes("FROM events e")) {
@@ -43,12 +60,17 @@ describe("lineage", () => {
   it("returns the full chain across live → re-decode → reconcile", async () => {
     const { query, events } = fakeStore();
 
-    const live = await startLineageBatch({ runType: "live", source: "https://user:secret@rpc.example/?key=abc", ledgerFrom: 10, ledgerTo: 12 }, query);
+    const live = await startLineageBatch(
+      { runType: "live", source: "https://user:secret@rpc.example/?key=abc", ledgerFrom: 10, ledgerTo: 12 },
+      query,
+    );
     events.set(7, { seq: 7, lineage_batch_id: live.id });
 
     await runReDecodeBatch({
       dbModule: {
-        getEventsNeedingRedecode: async () => [{ seq: 7, contract_id: "C1", ledger: 11, tx_hash: "tx", raw_topics: "[]", raw_data: null, abi_version: 1 }],
+        getEventsNeedingRedecode: async () => [
+          { seq: 7, contract_id: "C1", ledger: 11, tx_hash: "tx", raw_topics: "[]", raw_data: null, abi_version: 1 },
+        ],
         getContractMeta: async () => ({ abi_version: 2 }),
         updateRedecodedEvent: async () => {},
       },
@@ -64,7 +86,14 @@ describe("lineage", () => {
 
     const full = await getEventLineage(7, { full: true }, query);
     assert.equal(full.lineage, "tracked");
-    assert.deepEqual(full.chain.map((s) => [s.action, s.run_type]), [["ingest", "live"], ["redecode", "redecode"], ["reconcile", "reconcile"]]);
+    assert.deepEqual(
+      full.chain.map((s) => [s.action, s.run_type]),
+      [
+        ["ingest", "live"],
+        ["redecode", "redecode"],
+        ["reconcile", "reconcile"],
+      ],
+    );
     assert.equal(full.chain[0].source, "https://rpc.example/");
     assert.deepEqual(full.chain[0].ledger_range, [10, 12]);
     assert.deepEqual(full.chain[1].detail, { from_abi_version: 1, to_abi_version: 2 });
