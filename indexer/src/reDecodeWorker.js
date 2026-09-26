@@ -38,6 +38,7 @@ function rawEventFromRow(row) {
 }
 
 export async function runReDecodeBatch({ dbModule = db, decodeFn = decode, batchSize = DEFAULT_BATCH_SIZE } = {}) {
+  await dbModule.markStaleAbiEvents?.();
   const rows = await dbModule.getEventsNeedingRedecode(parseBatchSize(batchSize));
   let processed = 0;
 

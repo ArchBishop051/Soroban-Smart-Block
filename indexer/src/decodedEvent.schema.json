@@ -25,6 +25,10 @@
       "description": "Transaction hash.",
       "minLength": 1
     },
+    "ingestion_id": {
+      "type": ["string", "null"],
+      "description": "Network-scoped Soroban RPC event identity used for idempotent ingestion."
+    },
     "description": {
       "type": "string",
       "description": "Human-readable decoded event text.",

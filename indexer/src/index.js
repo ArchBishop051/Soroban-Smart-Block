@@ -517,11 +517,14 @@ async function run() {
       .catch((err) => logger.error({ err: err.message }, "dlq depth check failed"));
   }, 60_000);
 
-  // resume from the highest indexed ledger so no events are missed
-  // after a restart. Fall back to START_LEDGER or (latest - 100) for first run.
-  const dbMax = await db.getMaxLedger();
-  _cursor =
-    dbMax > 0 ? dbMax + 1 : START_LEDGER || (await withRetry(() => multiNodeRpc.getLatestLedger())).sequence - 100;
+  // Resume from the durable cursor. Legacy databases without one replay the
+  // highest indexed ledger so a partially written ledger is not skipped.
+  const savedCursor = await db.loadCursor();
+  const dbMax = savedCursor == null || savedCursor <= 0 ? await db.getMaxLedger() : 0;
+  const initialCursor =
+    START_LEDGER || (await withRetry(() => multiNodeRpc.getLatestLedger())).sequence - 100;
+  _cursor = resolveStartupCursor(savedCursor, dbMax, initialCursor);
+  await db.saveCursor(_cursor);
 
   logger.info({ ledger: _cursor }, "daemon starting");
 

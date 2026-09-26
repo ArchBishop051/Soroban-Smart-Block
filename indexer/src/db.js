@@ -609,6 +609,18 @@ export const db = {
     );
   },
 
+  async markStaleAbiEvents() {
+    const { rowCount } = await pool.query(
+      `UPDATE events AS e
+       SET needs_redecode = TRUE
+       FROM contracts AS c
+       WHERE e.contract_id = c.id
+         AND e.abi_version < c.abi_version
+         AND e.needs_redecode = FALSE`,
+    );
+    return rowCount ?? 0;
+  },
+
   async markNeedsRedecode(contractId, newAbiVersion) {
     if (!contractId || !Number.isInteger(Number(newAbiVersion)) || Number(newAbiVersion) < 0) {
       throw new Error("contractId and a non-negative ABI version are required");
@@ -1498,6 +1510,19 @@ export const db = {
   },
 
   async upsertContractMeta(meta) {
+    const { rows: existingRows } = await pool.query(
+      "SELECT abi_version, functions FROM contracts WHERE id = $1",
+      [meta.id],
+    );
+    const existing = existingRows[0] ?? null;
+    const previousAbiVersion = Number(existing?.abi_version ?? 0);
+    const functionsChanged =
+      existing != null &&
+      JSON.stringify(existing.functions ?? []) !== JSON.stringify(meta.functions ?? []);
+    const incomingAbiVersion = Number(meta.abi_version ?? previousAbiVersion);
+    const abiVersion = Math.max(incomingAbiVersion, previousAbiVersion + (functionsChanged ? 1 : 0));
+    const versionedMeta = { ...meta, abi_version: abiVersion };
+
     // Auto-tag protocol_type from function names if not explicitly provided
     const functionNames = (meta.functions ?? []).map((f) => (typeof f === "string" ? f : (f?.name ?? "")));
     const protocol_type = meta.protocol_type ?? this.inferProtocolType(functionNames);
@@ -1507,18 +1532,18 @@ export const db = {
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
        ON CONFLICT (id) DO UPDATE SET name=$2, description=$3, functions=$4, source_files=$6, has_circuit_breaker=$7, is_rwa=$8, rwa_type=$9, version=$10, abi_version=$11, min_ledger=$12, protocol_type=$13`,
       [
-        meta.id,
-        meta.name,
-        meta.description,
-        JSON.stringify(meta.functions),
-        meta.registered_by,
-        meta.source_files ? JSON.stringify(meta.source_files) : null,
-        meta.has_circuit_breaker ?? false,
-        meta.is_rwa ?? false,
-        meta.rwa_type ?? null,
-        meta.version ?? 1,
-        meta.abi_version ?? 0,
-        meta.min_ledger ?? 0,
+        versionedMeta.id,
+        versionedMeta.name,
+        versionedMeta.description,
+        JSON.stringify(versionedMeta.functions),
+        versionedMeta.registered_by,
+        versionedMeta.source_files ? JSON.stringify(versionedMeta.source_files) : null,
+        versionedMeta.has_circuit_breaker ?? false,
+        versionedMeta.is_rwa ?? false,
+        versionedMeta.rwa_type ?? null,
+        versionedMeta.version ?? 1,
+        versionedMeta.abi_version,
+        versionedMeta.min_ledger ?? 0,
         protocol_type,
         meta.is_private ?? false,
         meta.registered_by_key_id ?? null,
@@ -1526,7 +1551,7 @@ export const db = {
     );
 
     // Also store in contract_abi_versions history if abi_version is provided
-    if (meta.abi_version != null) {
+    if (versionedMeta.abi_version != null) {
       await pool.query(
         `INSERT INTO contract_abi_versions (contract_id, abi_version, min_ledger, functions, registered_by)
          VALUES ($1,$2,$3,$4,$5)
@@ -1542,21 +1567,25 @@ export const db = {
     }
 
     // Also store in contract_versions (legacy) if abi_version is provided
-    if (meta.abi_version != null) {
+    if (versionedMeta.abi_version != null) {
       await pool.query(
         `INSERT INTO contract_versions (contract_id, abi_version, min_ledger, name, description, functions, registered_by)
          VALUES ($1,$2,$3,$4,$5,$6,$7)
          ON CONFLICT DO NOTHING`,
         [
-          meta.id,
-          meta.abi_version,
-          meta.min_ledger ?? 0,
-          meta.name,
-          meta.description,
-          JSON.stringify(meta.functions),
-          meta.registered_by,
+          versionedMeta.id,
+          versionedMeta.abi_version,
+          versionedMeta.min_ledger ?? 0,
+          versionedMeta.name,
+          versionedMeta.description,
+          JSON.stringify(versionedMeta.functions),
+          versionedMeta.registered_by,
         ],
       );
+    }
+
+    if (existing && abiVersion > previousAbiVersion) {
+      await this.markNeedsRedecode(versionedMeta.id, abiVersion);
     }
   },
 
