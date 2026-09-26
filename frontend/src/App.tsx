@@ -26,6 +26,7 @@ const RegistrationSuccessPage = lazy(() => import("./pages/RegistrationSuccessPa
 const AbiDiffPage = lazy(() => import("./pages/AbiDiffPage"));
 const DashboardPage = lazy(() => import("./pages/DashboardPage"));
 const Status = lazy(() => import("./pages/Status"));
+const FilterBuilder = lazy(() => import("./pages/FilterBuilder"));
 
 function Fallback() {
   return <p style={{ padding: 32, textAlign: "center", color: "var(--muted)" }}>Loading…</p>;
@@ -64,6 +65,7 @@ export default function App() {
             <Route path="/nft/:contractId" element={<NftGallery />} />
             <Route path="/dashboard" element={<DashboardPage />} />
             <Route path="/status" element={<Status />} />
+            <Route path="/filter-builder" element={<FilterBuilder />} />
           </Routes>
         </Suspense>
       </main>

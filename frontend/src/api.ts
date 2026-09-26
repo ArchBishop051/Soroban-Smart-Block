@@ -129,6 +129,23 @@ export interface DecodedEvent {
   slippage_bps?: number | null;
 }
 
+// Event filter DSL types
+export type EventFilterOperator = "and" | "or" | "not";
+export type EventConditionOperator = "eq" | "ne" | "gt" | "lt" | "gte" | "lte" | "contains" | "starts_with" | "ends_with" | "in";
+
+export interface EventCondition {
+  field: string;
+  operator: EventConditionOperator;
+  value: any;
+}
+
+export interface EventFilterGroup {
+  operator: EventFilterOperator;
+  conditions: (EventFilter | EventCondition)[];
+}
+
+export type EventFilter = EventCondition | EventFilterGroup;
+
 export interface SourceFile {
   path: string;
   content: string;
@@ -1027,5 +1044,20 @@ export const api = {
       const data = await r.json();
       if (!r.ok) throw Object.assign(new Error(data.error ?? `API ${r.status}`), { status: r.status, data });
       return data as { ok: boolean };
+    }),
+
+  // Event filter DSL API
+  filterEvents: (body: {
+    filter: EventFilter;
+    after_seq?: number;
+    limit?: number;
+  }) =>
+    mutationFetch(`${BASE}/events/filter`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }).then(async (r) => {
+      const data = await r.json();
+      if (!r.ok) throw Object.assign(new Error(data.error ?? `API ${r.status}`), { status: r.status, data });
+      return data as { data: DecodedEvent[]; next_cursor: number | null; cost: number };
     }),
 };
