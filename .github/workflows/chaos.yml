@@ -1,0 +1,53 @@
+name: Chaos — staging
+
+on:
+  schedule:
+    - cron: "0 3 * * 2"    # weekly, Tuesday 03:00 UTC
+  workflow_dispatch:
+    inputs:
+      experiment:
+        description: "Single experiment name (blank = all)"
+        required: false
+
+# Shares the deploy concurrency group used for staging so a chaos run and a
+# deploy never overlap; run.sh also checks for in-flight rollouts.
+concurrency:
+  group: staging-deploy-lock
+  cancel-in-progress: false
+
+jobs:
+  chaos:
+    runs-on: ubuntu-latest
+    environment: staging
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: grafana/setup-k6-action@v1
+      - name: Install tools
+        run: |
+          sudo snap install yq
+          curl -sLo kubectl-argo-rollouts https://github.com/argoproj/argo-rollouts/releases/download/v1.7.2/kubectl-argo-rollouts-linux-amd64
+          sudo install kubectl-argo-rollouts /usr/local/bin/
+      - name: Run chaos suite
+        env:
+          API_URL: ${{ vars.APP_URL }}
+          PROM_URL: ${{ vars.PROM_URL }}
+          REPORT: chaos-report.md
+        run: |
+          echo "${{ secrets.KUBECONFIG }}" | base64 -d > "$RUNNER_TEMP/kubeconfig"
+          export KUBECONFIG="$RUNNER_TEMP/kubeconfig"
+          deploy/chaos/run.sh ${{ github.event.inputs.experiment }}
+      - name: Summary
+        if: always()
+        run: cat chaos-report.md >> "$GITHUB_STEP_SUMMARY" || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: chaos-report-${{ github.run_id }}
+          path: chaos-report.md
+          retention-days: 400
+      - name: Abort switch
+        if: cancelled()
+        env:
+          API_URL: ${{ vars.APP_URL }}
+        run: KUBECONFIG="$RUNNER_TEMP/kubeconfig" deploy/chaos/run.sh abort

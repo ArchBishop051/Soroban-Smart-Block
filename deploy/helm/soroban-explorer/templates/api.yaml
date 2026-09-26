@@ -1,0 +1,42 @@
+{{- $name := printf "%s-api" (include "se.name" .) }}
+apiVersion: argoproj.io/v1alpha1
+kind: Rollout
+metadata:
+  name: {{ $name }}
+  labels: {{- include "se.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.api.replicas }}
+  revisionHistoryLimit: 5
+  selector:
+    matchLabels: {app: {{ $name }}}
+  strategy: {{- include "se.strategy" (dict "name" $name "root" .) | nindent 4 }}
+  template:
+    metadata:
+      labels: {app: {{ $name }}, role: api}
+    spec:
+      containers:
+        - name: api
+          image: "{{ .Values.image.registry }}/indexer:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports: [{containerPort: {{ .Values.api.port }}, name: http}]
+          env:
+            {{- include "se.dbEnv" . | nindent 12 }}
+            - name: INDEXER_ROLE
+              value: api
+          readinessProbe:
+            httpGet: {path: /health, port: http}
+          livenessProbe:
+            httpGet: {path: /health, port: http}
+            initialDelaySeconds: 20
+---
+{{- range $svc := list $name (printf "%s-canary" $name) }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $svc }}
+  labels: {{- include "se.labels" $ | nindent 4 }}
+spec:
+  selector: {app: {{ $name }}}
+  ports: [{port: 80, targetPort: http, name: http}]
+---
+{{- end }}

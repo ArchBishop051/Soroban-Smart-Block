@@ -1,0 +1,45 @@
+image:
+  registry: ghcr.io/soroban-smart-block-explorer/soroban-smart-block
+  tag: latest
+  pullPolicy: IfNotPresent
+
+# Region this release runs in. Standby regions set ingest.enabled=false and
+# replicas to 0/1 until promoted (see docs/guides/disaster-recovery.md).
+region: primary
+
+databaseUrlSecret: soroban-explorer-db   # Secret with key DATABASE_URL
+
+api:
+  replicas: 3
+  port: 3001
+frontend:
+  replicas: 2
+  port: 8080
+
+ingest:
+  enabled: true
+  # Shadow canary: runs the new image against the chain without writing, and
+  # compares its decode output with the live ingester (see deploy/rollouts).
+  shadowCanary: true
+
+canary:
+  enabled: true
+  prometheusAddress: http://prometheus.monitoring:9090
+  # Minimum requests in the analysis window before a step may pass.
+  minSampleSize: 200
+  maxErrorRate: "0.01"      # 5xx ratio
+  maxP99LatencySeconds: "1.5"
+  maxNewIssueRate: "0"      # new error-tracking issues / min
+  maxIngestLagLedgers: "30"
+  maxDecodeFailureRate: "0.02"
+
+# Preview environments (pr-<n> namespaces) run their own throwaway Postgres
+# seeded from seed-data/.
+preview:
+  enabled: false
+  host: ""
+
+ingress:
+  enabled: true
+  host: explorer.example.com
+  className: nginx
