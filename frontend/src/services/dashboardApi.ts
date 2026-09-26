@@ -80,10 +80,25 @@ export interface ApiKeyRecord {
   updated_at: string;
 }
 
+export interface BillingStatus {
+  provider: string;
+  tier: string;
+  status: string;
+  plan: string;
+  cancel_at_period_end: boolean;
+  subscription_id: string | null;
+  customer_id: string | null;
+  last_updated_at: string | null;
+}
+
 export interface UsageStats {
   today: number;
   this_month: number;
   limit_daily: number;
+  remaining_daily: number;
+  rate_limit: number;
+  rate_limit_window: string;
+  remaining_rate_limit: number;
   events_received: number;
 }
 
@@ -117,7 +132,7 @@ export interface Paginated<T> {
 }
 
 export const dashboardApi = {
-  me: () => request<ApiKeyRecord & { usage: UsageStats }>("/dashboard/me"),
+  me: () => request<ApiKeyRecord & { usage: UsageStats; billing: BillingStatus }>("/dashboard/me"),
 
   listApiKeys: () => request<{ data: ApiKeyRecord[] }>("/dashboard/api-keys").then((r) => r.data),
 

@@ -736,11 +736,27 @@ export const api = {
   },
 
   /** #528: Download wallet event history as CSV.
-   *  Triggers a browser file download directly. */
-  exportWalletCsv: (address: string, params: { fn?: string } = {}) => {
+   *  Supports one-off downloads or email-based recurring exports. */
+  exportWalletCsv: (
+    address: string,
+    params: { fn?: string; email?: string; schedule?: "daily" | "weekly" } = {},
+  ) => {
     const q = new URLSearchParams({ format: "csv", wallet: address });
     if (params.fn) q.set("fn", params.fn);
+    if (params.email) q.set("email", params.email);
+    if (params.schedule) q.set("schedule", params.schedule);
+
     const url = `/api/export/events?${q}`;
+    if (params.schedule && params.email) {
+      return fetch(url, { headers: { Accept: "application/json" } }).then(async (res) => {
+        if (!res.ok) {
+          const body = await res.json().catch(() => ({}));
+          throw new Error(body?.error || "Failed to schedule export");
+        }
+        return res.json();
+      });
+    }
+
     const a = document.createElement("a");
     a.href = url;
     a.download = `wallet-${address}-events.csv`;
