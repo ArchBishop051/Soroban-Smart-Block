@@ -15,7 +15,7 @@ import { fetchWalletBalances, fetchAccountMeta, AccountNotFoundError } from "./h
 import { attachWebSocketServer, getTransactionStatus, onTransactionStatus, offTransactionStatus } from "./wsEvents.js";
 import { verifyAbi } from "./verify_abi.js";
 import { getMetrics } from "./rpcMetrics.js";
-import { getRpcNodeStatus, getProviderStats } from "./rpcMultiNode.js";
+import { getRpcNodeStatus, getProviderStats, multiNodeRpc } from "./rpcMultiNode.js";
 import { cacheHitTotal, cacheMissTotal, apiRequestDuration } from "./metrics.js";
 import { tracer } from "./tracing.js";
 import { context, propagation } from "@opentelemetry/api";
@@ -761,6 +761,54 @@ export function createApi({ logDestination, dbOverride } = {}) {
         return res.status(404).json({ error: "Not found" });
       }
       res.status(500).json({ error: e.message });
+    }
+  });
+
+  // Transaction detail payload for the transaction explorer page.
+  app.get("/api/transactions/:hash", async (req, res) => {
+    const txHash = req.params.hash;
+    if (!/^[a-fA-F0-9]{64}$/.test(txHash)) {
+      return res.status(400).json({ error: "Invalid transaction hash" });
+    }
+
+    try {
+      const transaction = await multiNodeRpc.getTransaction(txHash);
+      if (transaction.status === "NOT_FOUND") {
+        return res.json({
+          tx_hash: txHash,
+          status: "pending",
+          latest_ledger: transaction.latestLedger,
+          oldest_ledger: transaction.oldestLedger,
+          events: [],
+          invocations: [],
+        });
+      }
+
+      const [events, invocations] = await Promise.all([
+        db.getTransactionEvents(txHash, 200),
+        db.getSubInvocationsByTransaction(txHash, 200),
+      ]);
+      const toBase64 = (value) => value?.toXDR?.("base64") ?? null;
+
+      res.json({
+        tx_hash: transaction.txHash,
+        status: transaction.status === "SUCCESS" ? "success" : "failed",
+        ledger: transaction.ledger,
+        created_at: transaction.createdAt,
+        application_order: transaction.applicationOrder,
+        fee_bump: transaction.feeBump,
+        envelope_xdr: toBase64(transaction.envelopeXdr),
+        result_xdr: toBase64(transaction.resultXdr),
+        result_meta_xdr: toBase64(transaction.resultMetaXdr),
+        diagnostic_events_xdr: transaction.diagnosticEventsXdr?.map(toBase64) ?? [],
+        events,
+        invocations,
+      });
+    } catch (e) {
+      if (e?.message?.includes("404") || e?.message?.includes("not found")) {
+        return res.status(404).json({ error: "Transaction not found" });
+      }
+      res.status(502).json({ error: "Failed to load transaction from Soroban RPC" });
     }
   });
 

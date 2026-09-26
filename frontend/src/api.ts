@@ -459,6 +459,21 @@ export interface TxStatusResponse {
   error?: string | null;
 }
 
+export interface TransactionDetails extends TxStatusResponse {
+  latest_ledger?: number;
+  oldest_ledger?: number;
+  created_at?: number;
+  application_order?: number;
+  fee_bump?: boolean;
+  fee_source?: string | null;
+  envelope_xdr?: string | null;
+  result_xdr?: string | null;
+  result_meta_xdr?: string | null;
+  diagnostic_events_xdr?: string[];
+  events: DecodedEvent[];
+  invocations: SubInvocation[];
+}
+
 // Live TTL status for contract instance and code entries
 export interface ContractTTL {
   contract_id: string;
@@ -783,6 +798,7 @@ export const api = {
 
   // transaction status (polling fallback; SSE via useTxStatus hook)
   txStatus: (txHash: string) => get<TxStatusResponse>(`/transactions/${txHash}/status`),
+  transaction: (txHash: string) => get<TransactionDetails>(`/transactions/${txHash}`),
 
   // Circuit breaker status
   circuitBreakerStatus: (id: string) => get<CircuitBreakerStatus>(`/contracts/${id}/circuit-breaker`),

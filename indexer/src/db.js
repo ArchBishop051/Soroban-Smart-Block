@@ -330,6 +330,19 @@ export const db = {
     return rows[0] ?? null;
   },
 
+  async getTransactionEvents(txHash, limit = 200) {
+    const { rows } = await pool.query(
+      `SELECT seq, contract_id, function, ledger, tx_hash, description, raw_topics,
+              raw_data, cpu_instructions, mem_bytes, fee_charged, created_at
+       FROM events
+       WHERE tx_hash = $1
+       ORDER BY seq ASC
+       LIMIT $2`,
+      [txHash, limit],
+    );
+    return rows;
+  },
+
   // Function-name categories recognised by the wallet event-type filter (issue #532).
   // Each category matches by prefix (e.g. "swap" also matches "swap_exact", "swap_tokens").
   WALLET_EVENT_CATEGORIES: ["transfer", "swap", "mint", "burn", "stake"],
@@ -1194,6 +1207,18 @@ export const db = {
        VALUES ${values} ON CONFLICT DO NOTHING`,
       params,
     );
+  },
+
+  async getSubInvocationsByTransaction(txHash, limit = 200) {
+    const { rows } = await pool.query(
+      `SELECT id, parent_tx_hash, depth, contract_id, function, args, ledger
+       FROM sub_invocations
+       WHERE parent_tx_hash = $1
+       ORDER BY depth ASC, id ASC
+       LIMIT $2`,
+      [txHash, limit],
+    );
+    return rows;
   },
 
   /** aggregate caller→callee edges for the global dependency graph. */
