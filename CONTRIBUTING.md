@@ -30,6 +30,17 @@ The repo ships a fully configured dev container that provides Rust, Node 20,
    ```
    Frontend: http://localhost:5173 · API: http://localhost:3001
 
+**Codespace stuck in "recovery mode"?** A codespace created before the dev
+container config was fixed keeps trying to restart its original (never
+created) container. Open the Command Palette and run
+**Codespaces: Full Rebuild Container**, or delete the codespace and create a
+new one from the latest `main`. In recovery mode there is no Node/Rust, so
+`npm install` and AI assistants will not work until you rebuild. If a rebuild
+still fails, check **Codespaces: View Creation Log**.
+
+If your fork is behind, click **Sync fork** on GitHub first so the codespace
+picks up the current `.devcontainer/` config.
+
 ### Option B — Local setup
 
 1. Fork the repository and clone your fork.
