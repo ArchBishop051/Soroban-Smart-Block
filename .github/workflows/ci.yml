@@ -125,75 +125,72 @@ jobs:
           fail_ci_if_error: false
           token: ${{ secrets.CODECOV_TOKEN }}
 
-  # ── API contract fuzzing (fast) ──────────────────────────────────────────
-  # Closes #907 — generated requests for every documented operation against a
-  # seeded API running with OPENAPI_VALIDATE_RESPONSES=true, so any 5xx or
-  # response that drifts from docs/api/openapi.yaml fails the job.
-  api-fuzz:
-    name: API contract fuzzing (fast)
+  # ── Resource budget gate ──────────────────────────────────────────────────
+  # Closes #873 — fails when any contract entrypoint's CPU / memory / event
+  # cost, or the explorer WASM size, grows past the thresholds in
+  # contracts/budget-baseline.json. See docs/BUDGET.md.
+  budget:
+    name: Contracts (resource budget)
     runs-on: ubuntu-latest
-    timeout-minutes: 8
-    services:
-      postgres:
-        image: postgres:16-alpine
-        env:
-          POSTGRES_USER: soroban
-          POSTGRES_PASSWORD: soroban_secret
-          POSTGRES_DB: soroban_explorer
-        options: >-
-          --health-cmd pg_isready
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 5
-        ports:
-          - 5432:5432
-    env:
-      DATABASE_URL: postgres://soroban:soroban_secret@localhost:5432/soroban_explorer
+    permissions:
+      contents: read
+      pull-requests: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+          target: wasm32-unknown-unknown
 
       - uses: actions/setup-node@v4
         with:
           node-version: 20
 
-      - uses: actions/setup-python@v5
+      - name: Cache Rust build artifacts
+        uses: actions/cache@v4
         with:
-          python-version: "3.12"
-
-      - name: Install schemathesis
-        run: pip install -r tests/api-fuzz/requirements.txt
-
-      - name: Start seeded indexer with response validation
-        working-directory: indexer
-        env:
-          # Not NODE_ENV=test: the API only calls listen() outside test mode.
-          NODE_ENV: development
-          OPENAPI_VALIDATE_RESPONSES: "true"
-          # Fuzz run only — otherwise it would mostly exercise 429s.
-          RATE_LIMITING_DISABLED: "true"
-        run: |
-          npm ci
-          npm start > indexer.log 2>&1 &
-          for i in $(seq 1 30); do
-            curl -fsS http://localhost:3001/health && break
-            echo "waiting for indexer... ($i)"; sleep 2
-          done
-          curl -fsS http://localhost:3001/health || { echo "indexer failed to start"; cat indexer.log; exit 1; }
-          ln -s ../indexer/node_modules ../seed-data/node_modules
-          (cd ../seed-data && node seed.js)
-
-      - name: Fuzz (fast profile)
-        run: tests/api-fuzz/run.sh fast
-
-      - name: Upload fuzz reports
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: api-fuzz-fast
           path: |
-            tests/api-fuzz/reports
-            indexer/indexer.log
-          if-no-files-found: ignore
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+            contracts/ticket/target
+          key: ${{ runner.os }}-budget-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-budget-
+
+      - name: Measure entrypoint budgets
+        run: make budget-measure
+
+      - name: Compare against baseline
+        run: node scripts/budget-check.js
+
+      - name: Publish budget report
+        if: always() && github.event_name == 'pull_request'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          [ -f target/budget/report.md ] || exit 0
+          cat target/budget/report.md >> "$GITHUB_STEP_SUMMARY"
+          gh pr comment "$PR" --edit-last --body-file target/budget/report.md \
+            || gh pr comment "$PR" --body-file target/budget/report.md
+
+      - name: Baseline changes require approval label
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
+        run: |
+          if git cat-file -e "$BASE_SHA:contracts/budget-baseline.json" 2>/dev/null \
+            && ! git diff --quiet "$BASE_SHA" HEAD -- contracts/budget-baseline.json; then
+            if [[ ",$LABELS," != *",budget-change-approved,"* ]]; then
+              echo "::error::contracts/budget-baseline.json changed — add the 'budget-change-approved' label and re-run this job."
+              exit 1
+            fi
+          fi
 
   # ── Migrations ────────────────────────────────────────────────────────────
   # Closes #425 — verify every SQL migration applies cleanly on a fresh

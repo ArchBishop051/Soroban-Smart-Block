@@ -3,6 +3,8 @@ import { runMigrations } from "./migrate.js";
 import { validateAndSanitizeDecodedEvent } from "./decoderValidator.js";
 import { withSpan } from "./tracing.js";
 import { getIndexerNetwork } from "./networkConfig.js";
+import { decodeCursor, hashFilters, formatPageResponse } from "./cursor.js";
+import config from "./config.js";
 
 // Migration 031 made `daemon_state` and `ledger_hashes` network-scoped:
 // their primary keys are now (network, key) and (network, ledger). Every
@@ -59,19 +61,18 @@ export const db = {
   },
 
   async saveCursor(ledger) {
-    await this.saveDaemonState('cursor', ledger);
+    await this.saveDaemonState("cursor", ledger);
   },
 
   async loadCursor() {
-    const { rows } = await pool.query(
-      "SELECT value FROM daemon_state WHERE network = $1 AND key = 'cursor'",
-      [getIndexerNetwork()],
-    );
+    const { rows } = await pool.query("SELECT value FROM daemon_state WHERE network = $1 AND key = 'cursor'", [
+      getIndexerNetwork(),
+    ]);
     return rows[0] ? Number(rows[0].value) : null;
   },
 
   async saveLastIndexedLedger(ledger) {
-    await this.saveDaemonState('last_indexed_ledger', ledger);
+    await this.saveDaemonState("last_indexed_ledger", ledger);
   },
 
   async getLastIndexedLedger() {
@@ -218,10 +219,7 @@ export const db = {
     try {
       await client.query("BEGIN");
       await client.query("DELETE FROM events WHERE ledger >= $1", [forkLedger]);
-      await client.query("DELETE FROM ledger_hashes WHERE network = $1 AND ledger >= $2", [
-        network,
-        forkLedger,
-      ]);
+      await client.query("DELETE FROM ledger_hashes WHERE network = $1 AND ledger >= $2", [network, forkLedger]);
       await client.query(
         `INSERT INTO daemon_state (network, key, value) VALUES ($1, 'cursor', $2)
          ON CONFLICT (network, key) DO UPDATE SET value = $2`,
@@ -247,55 +245,134 @@ export const db = {
    *               Omit (or pass 0) for the first page.
    * @returns {{ data: object[], next_cursor: number|null }}
    */
-  async getEventsCursor({ contract, fn, type, after_seq = 0, limit = 25 } = {}) {
-    const conditions = [];
-    const params = [];
+  async getEventsCursor({ contract, fn, type, cursor, after, before, after_seq = 0, limit = 25, count } = {}) {
+    const filterHash = hashFilters({ contract, fn, type });
+    const safeLimit = Math.min(Math.max(1, Number(limit) || 25), 200);
+
+    let isBackward = false;
+    let anchorSeq = null;
+    let hasAnchor = false;
+
+    if (before) {
+      const decoded = decodeCursor(before, filterHash, config.CURSOR_SIGNING_SECRET);
+      anchorSeq = Number(decoded.tuple[0]);
+      isBackward = true;
+      hasAnchor = true;
+    } else if (after || cursor) {
+      const token = after || cursor;
+      if (typeof token === "number" || (/^\d+$/.test(String(token)) && String(token).length < 20)) {
+        anchorSeq = Number(token);
+        isBackward = false;
+        hasAnchor = anchorSeq > 0;
+      } else {
+        const decoded = decodeCursor(token, filterHash, config.CURSOR_SIGNING_SECRET);
+        anchorSeq = Number(decoded.tuple[0]);
+        isBackward = decoded.direction === "backward";
+        hasAnchor = true;
+      }
+    } else if (after_seq > 0) {
+      anchorSeq = Number(after_seq);
+      isBackward = false;
+      hasAnchor = true;
+    }
+
+    const filterConditions = [];
+    const filterParams = [];
 
     if (contract) {
-      params.push(contract);
-      conditions.push(`contract_id = $${params.length}`);
+      filterParams.push(contract);
+      filterConditions.push(`contract_id = $${filterParams.length}`);
     }
     if (fn) {
-      // Comma-separated list of exact function names (e.g. "swap,swap_exact_tokens_for_tokens"
-      // for the DEX function-filter chips, issue #555). A single value keeps the
-      // plain equality comparison for backward compatibility.
-      const fns = String(fn).split(",").map((s) => s.trim()).filter(Boolean);
+      const fns = String(fn)
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean);
       if (fns.length === 1) {
-        params.push(fns[0]);
-        conditions.push(`function = $${params.length}`);
+        filterParams.push(fns[0]);
+        filterConditions.push(`function = $${filterParams.length}`);
       } else if (fns.length > 1) {
-        params.push(fns);
-        conditions.push(`function = ANY($${params.length})`);
+        filterParams.push(fns);
+        filterConditions.push(`function = ANY($${filterParams.length})`);
       }
     }
     if (type === "soroban") {
-      conditions.push(`contract_id IS NOT NULL AND contract_id <> ''`);
+      filterConditions.push(`contract_id IS NOT NULL AND contract_id <> ''`);
     }
     if (type === "classic") {
-      conditions.push(`(contract_id IS NULL OR contract_id = '')`);
+      filterConditions.push(`(contract_id IS NULL OR contract_id = '')`);
     }
 
-    // Keyset: fetch rows with seq < after_seq (descending) or all rows for first page
-    if (after_seq > 0) {
-      params.push(after_seq);
-      conditions.push(`seq < $${params.length}`);
+    const queryConditions = [...filterConditions];
+    const queryParams = [...filterParams];
+
+    if (anchorSeq !== null && anchorSeq > 0) {
+      queryParams.push(anchorSeq);
+      queryConditions.push(isBackward ? `seq > $${queryParams.length}` : `seq < $${queryParams.length}`);
     }
 
-    const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
-    params.push(limit + 1); // fetch one extra to detect next page
+    const where = queryConditions.length ? `WHERE ${queryConditions.join(" AND ")}` : "";
+    queryParams.push(safeLimit + 1);
 
+    const orderDirection = isBackward ? "ASC" : "DESC";
     const { rows } = await pool.query(
       `SELECT *, CASE WHEN contract_id IS NULL OR contract_id = '' THEN 'classic' ELSE 'soroban' END AS type
-       FROM events ${where} ORDER BY seq DESC LIMIT $${params.length}`,
-      params,
+       FROM events ${where} ORDER BY seq ${orderDirection} LIMIT $${queryParams.length}`,
+      queryParams,
     );
 
-    const hasMore = rows.length > limit;
-    const data = hasMore ? rows.slice(0, limit) : rows;
-    // seq is BIGINT so pg returns it as a string — coerce for a numeric cursor
-    const next_cursor = hasMore ? Number(data[data.length - 1].seq) : null;
+    // Calculate total count (exact opt-in via count=exact, or approximate reltuples)
+    let total;
+    let countIsEstimate = true;
+    const filterWhere = filterConditions.length ? `WHERE ${filterConditions.join(" AND ")}` : "";
 
-    return { data, next_cursor };
+    if (count === "exact") {
+      const { rows: countRows } = await pool.query(
+        `SELECT COUNT(*)::BIGINT AS total FROM events ${filterWhere}`,
+        filterParams,
+      );
+      total = Number(countRows[0]?.total ?? 0);
+      countIsEstimate = false;
+    } else {
+      if (!filterConditions.length) {
+        const { rows: relRows } = await pool.query(
+          `SELECT reltuples::BIGINT AS estimate FROM pg_class WHERE relname = 'events'`,
+        );
+        const est = Number(relRows[0]?.estimate ?? -1);
+        if (est >= 0) {
+          total = est;
+        } else {
+          const { rows: countRows } = await pool.query(`SELECT COUNT(*)::BIGINT AS total FROM events`);
+          total = Number(countRows[0]?.total ?? 0);
+        }
+      } else {
+        try {
+          const { rows: expRows } = await pool.query(`EXPLAIN SELECT 1 FROM events ${filterWhere}`, filterParams);
+          const match = expRows[0]?.["QUERY PLAN"]?.match(/rows=(\d+)/);
+          total = match ? Number(match[1]) : 0;
+        } catch {
+          const { rows: countRows } = await pool.query(
+            `SELECT COUNT(*)::BIGINT AS total FROM events ${filterWhere}`,
+            filterParams,
+          );
+          total = Number(countRows[0]?.total ?? 0);
+        }
+      }
+    }
+
+    const hasExtraRow = rows.length > safeLimit;
+    return formatPageResponse({
+      data: rows,
+      limit: safeLimit,
+      hasExtraRow,
+      isBackward,
+      hasAnchor,
+      extractTuple: (r) => [Number(r.seq)],
+      filterHash,
+      secret: config.CURSOR_SIGNING_SECRET,
+      total,
+      countIsEstimate,
+    });
   },
 
   async upsertEvent(ev) {
@@ -371,14 +448,7 @@ export const db = {
            abi_version = $6,
            needs_redecode = FALSE
        WHERE seq = $1 AND needs_redecode = TRUE`,
-      [
-        seq,
-        decoded.function,
-        decoded.description,
-        JSON.stringify(decoded.raw_topics),
-        decoded.raw_data,
-        abiVersion,
-      ],
+      [seq, decoded.function, decoded.description, JSON.stringify(decoded.raw_topics), decoded.raw_data, abiVersion],
     );
   },
 
@@ -397,6 +467,73 @@ export const db = {
   async upsertEventValidated(ev, logger) {
     const validated = validateAndSanitizeDecodedEvent(ev, logger);
     await this.upsertEvent(validated);
+  },
+
+  async upsertEventsValidatedBatch(events, logger = console) {
+    if (!Array.isArray(events) || events.length === 0) return 0;
+
+    const validated = events.map((ev) => validateAndSanitizeDecodedEvent(ev, logger));
+    const columns = [
+      "contract_id",
+      "function",
+      "ledger",
+      "tx_hash",
+      "description",
+      "raw_topics",
+      "raw_data",
+      "cpu_instructions",
+      "mem_bytes",
+      "fee_charged",
+      "is_high_bloat_risk",
+      "upgrade_info",
+      "storage_tiers",
+      "is_clawback",
+      "footprint_contention",
+      "ttl_extension",
+      "fee_bump",
+      "archival_info",
+      "zk_host_calls",
+      "abi_version",
+      "slippage_bps",
+    ];
+
+    const placeholders = [];
+    const params = [];
+
+    for (const ev of validated) {
+      const row = [
+        ev.contract_id,
+        ev.function,
+        ev.ledger,
+        ev.tx_hash,
+        ev.description,
+        JSON.stringify(ev.raw_topics ?? []),
+        ev.raw_data,
+        ev.cpu_instructions ?? null,
+        ev.mem_bytes ?? null,
+        ev.fee_charged ?? null,
+        ev.is_high_bloat_risk ?? false,
+        ev.upgrade ? JSON.stringify(ev.upgrade) : null,
+        ev.storage_tiers ? JSON.stringify(ev.storage_tiers) : null,
+        ev.is_clawback ?? false,
+        ev.footprint_contention ?? false,
+        ev.ttl_extension ? JSON.stringify(ev.ttl_extension) : null,
+        ev.fee_bump ? JSON.stringify(ev.fee_bump) : null,
+        ev.archival_info ? JSON.stringify(ev.archival_info) : null,
+        ev.zk_host_calls ? JSON.stringify(ev.zk_host_calls) : null,
+        ev.abi_version ?? 0,
+        ev.slippage_bps ?? null,
+      ];
+
+      const start = params.length + 1;
+      const rowPlaceholders = row.map((_, idx) => `$${start + idx}`).join(", ");
+      placeholders.push(`(${rowPlaceholders})`);
+      params.push(...row);
+    }
+
+    const sql = `INSERT INTO events (${columns.join(", ")}) VALUES ${placeholders.join(", ")} ON CONFLICT (contract_id, ledger, tx_hash) DO NOTHING`;
+    const result = await pool.query(sql, params);
+    return result.rowCount ?? 0;
   },
 
   /**
@@ -700,40 +837,171 @@ export const db = {
     ].slice(0, limitN);
   },
 
-  async listContracts({ page = 1, limit = 25, type } = {}) {
-    const offset = (page - 1) * limit;
-    const params = [];
-    const conditions = [];
+  async listContracts({ page, limit = 25, type, q, cursor, after, before, count } = {}) {
+    const filterHash = hashFilters({ type, q });
+    const safeLimit = Math.min(Math.max(1, Number(limit) || 25), 100);
 
-    if (type) {
-      params.push(type);
-      conditions.push(`protocol_type = $${params.length}`);
+    let isBackward = false;
+    let anchorCreatedAt = null;
+    let anchorId = null;
+    let hasAnchor = false;
+
+    if (before) {
+      const decoded = decodeCursor(before, filterHash, config.CURSOR_SIGNING_SECRET);
+      anchorCreatedAt = decoded.tuple[0];
+      anchorId = decoded.tuple[1];
+      isBackward = true;
+      hasAnchor = true;
+    } else if (after || cursor) {
+      const token = after || cursor;
+      const decoded = decodeCursor(token, filterHash, config.CURSOR_SIGNING_SECRET);
+      anchorCreatedAt = decoded.tuple[0];
+      anchorId = decoded.tuple[1];
+      isBackward = decoded.direction === "backward";
+      hasAnchor = true;
     }
 
-    const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
+    const filterConditions = [];
+    const filterParams = [];
 
-    params.push(limit);
-    const limitIdx = params.length;
-    params.push(offset);
-    const offsetIdx = params.length;
+    if (q) {
+      filterParams.push(`%${q}%`);
+      const idx = filterParams.length;
+      filterConditions.push(`(name ILIKE $${idx} OR description ILIKE $${idx})`);
+    }
 
-    const [{ rows }, { rows: countRows }] = await Promise.all([
-      pool.query(
-        `SELECT id, name, description, registered_by, has_circuit_breaker, is_paused,
-                is_rwa, rwa_type, protocol_type, is_verified, verified_ledger, created_at
-         FROM contracts ${where} ORDER BY created_at DESC LIMIT $${limitIdx} OFFSET $${offsetIdx}`,
-        params,
-      ),
-      pool.query(`SELECT COUNT(*)::INT AS total FROM contracts ${where}`, type ? [type] : []),
-    ]);
-    const total = countRows[0].total;
+    if (type && type !== "all") {
+      if (type === "verified") {
+        filterConditions.push(`id IN (SELECT DISTINCT contract_id FROM source_verifications)`);
+      } else {
+        filterParams.push(type);
+        filterConditions.push(
+          `(protocol_type = $${filterParams.length} OR LOWER(COALESCE(protocol_type, '')) = $${filterParams.length})`,
+        );
+      }
+    }
+
+    // Support legacy offset pagination if requested without cursor
+    if (!hasAnchor && page !== undefined && Number(page) > 1) {
+      const safePage = Math.max(1, Number(page) || 1);
+      const offset = (safePage - 1) * safeLimit;
+      const where = filterConditions.length ? `WHERE ${filterConditions.join(" AND ")}` : "";
+      const queryParams = [...filterParams, safeLimit, offset];
+      const [{ rows }, { rows: countRows }] = await Promise.all([
+        pool.query(
+          `SELECT id, name, description, registered_by, has_circuit_breaker, is_paused,
+                  is_rwa, rwa_type, protocol_type, is_verified, verified_ledger, created_at
+           FROM contracts ${where}
+           ORDER BY created_at DESC, id DESC
+           LIMIT $${queryParams.length - 1} OFFSET $${queryParams.length}`,
+          queryParams,
+        ),
+        pool.query(`SELECT COUNT(*)::INT AS total FROM contracts ${where}`, filterParams),
+      ]);
+      const total = countRows[0]?.total ?? 0;
+      return {
+        contracts: rows,
+        data: rows,
+        pagination: {
+          page: safePage,
+          limit: safeLimit,
+          total,
+          total_pages: Math.ceil(total / safeLimit),
+        },
+      };
+    }
+
+    const queryConditions = [...filterConditions];
+    const queryParams = [...filterParams];
+
+    if (anchorCreatedAt !== null && anchorId !== null) {
+      queryParams.push(anchorCreatedAt, anchorId);
+      const p1 = queryParams.length - 1;
+      const p2 = queryParams.length;
+      if (isBackward) {
+        queryConditions.push(`(created_at, id) > ($${p1}::timestamptz, $${p2})`);
+      } else {
+        queryConditions.push(`(created_at, id) < ($${p1}::timestamptz, $${p2})`);
+      }
+    }
+
+    const where = queryConditions.length ? `WHERE ${queryConditions.join(" AND ")}` : "";
+    queryParams.push(safeLimit + 1);
+
+    const orderDirection = isBackward ? "ASC" : "DESC";
+    const { rows } = await pool.query(
+      `SELECT id, name, description, registered_by, has_circuit_breaker, is_paused,
+              is_rwa, rwa_type, protocol_type, is_verified, verified_ledger, created_at
+       FROM contracts ${where}
+       ORDER BY created_at ${orderDirection}, id ${orderDirection}
+       LIMIT $${queryParams.length}`,
+      queryParams,
+    );
+
+    let total;
+    let countIsEstimate = true;
+    const filterWhere = filterConditions.length ? `WHERE ${filterConditions.join(" AND ")}` : "";
+
+    if (count === "exact") {
+      const { rows: countRows } = await pool.query(
+        `SELECT COUNT(*)::INT AS total FROM contracts ${filterWhere}`,
+        filterParams,
+      );
+      total = countRows[0]?.total ?? 0;
+      countIsEstimate = false;
+    } else {
+      if (!filterConditions.length) {
+        const { rows: relRows } = await pool.query(
+          `SELECT reltuples::BIGINT AS estimate FROM pg_class WHERE relname = 'contracts'`,
+        );
+        const est = Number(relRows[0]?.estimate ?? -1);
+        if (est >= 0) {
+          total = est;
+        } else {
+          const { rows: countRows } = await pool.query(`SELECT COUNT(*)::INT AS total FROM contracts`);
+          total = countRows[0]?.total ?? 0;
+        }
+      } else {
+        try {
+          const { rows: expRows } = await pool.query(`EXPLAIN SELECT 1 FROM contracts ${filterWhere}`, filterParams);
+          const match = expRows[0]?.["QUERY PLAN"]?.match(/rows=(\d+)/);
+          total = match ? Number(match[1]) : 0;
+        } catch {
+          const { rows: countRows } = await pool.query(
+            `SELECT COUNT(*)::INT AS total FROM contracts ${filterWhere}`,
+            filterParams,
+          );
+          total = countRows[0]?.total ?? 0;
+        }
+      }
+    }
+
+    const hasExtraRow = rows.length > safeLimit;
+    const formatted = formatPageResponse({
+      data: rows,
+      limit: safeLimit,
+      hasExtraRow,
+      isBackward,
+      hasAnchor,
+      extractTuple: (r) => [r.created_at instanceof Date ? r.created_at.toISOString() : r.created_at, r.id],
+      filterHash,
+      secret: config.CURSOR_SIGNING_SECRET,
+      total,
+      countIsEstimate,
+    });
+
     return {
-      contracts: rows,
+      contracts: formatted.data,
+      data: formatted.data,
+      page_info: formatted.page_info,
+      next_cursor: formatted.next_cursor,
+      total,
+      count_is_estimate: countIsEstimate,
       pagination: {
-        page,
-        limit,
+        page: Number(page) || 1,
+        limit: safeLimit,
         total,
-        total_pages: Math.ceil(total / limit),
+        total_pages: Math.ceil(total / safeLimit),
       },
     };
   },
@@ -744,12 +1012,158 @@ export const db = {
     return rows[0] ?? null;
   },
 
+  async listSandboxes({ cursor, after, before, page, limit = 25, offset, count } = {}) {
+    const filterHash = hashFilters({});
+    const safeLimit = Math.min(Math.max(1, Number(limit) || 25), 100);
+
+    let isBackward = false;
+    let anchorUpdatedAt = null;
+    let anchorId = null;
+    let hasAnchor = false;
+
+    if (before) {
+      const decoded = decodeCursor(before, filterHash, config.CURSOR_SIGNING_SECRET);
+      anchorUpdatedAt = decoded.tuple[0];
+      anchorId = decoded.tuple[1];
+      isBackward = true;
+      hasAnchor = true;
+    } else if (after || cursor) {
+      const token = after || cursor;
+      const decoded = decodeCursor(token, filterHash, config.CURSOR_SIGNING_SECRET);
+      anchorUpdatedAt = decoded.tuple[0];
+      anchorId = decoded.tuple[1];
+      isBackward = decoded.direction === "backward";
+      hasAnchor = true;
+    }
+
+    // If legacy offset request without cursor
+    if (!hasAnchor && (offset !== undefined || (page !== undefined && Number(page) > 1))) {
+      const safeOffset =
+        offset !== undefined ? Math.max(0, Number(offset) || 0) : (Math.max(1, Number(page) || 1) - 1) * safeLimit;
+      const { rows } = await pool.query(
+        `SELECT sandbox_id, template_id, updated_at, created_at
+         FROM sandboxes ORDER BY updated_at DESC, sandbox_id DESC LIMIT $1 OFFSET $2`,
+        [safeLimit, safeOffset],
+      );
+      const { rows: countRows } = await pool.query("SELECT COUNT(*)::INT AS total FROM sandboxes");
+      const total = countRows[0]?.total ?? 0;
+      return {
+        sandboxes: rows,
+        data: rows,
+        total,
+        pagination: {
+          page: Math.floor(safeOffset / safeLimit) + 1,
+          limit: safeLimit,
+          total,
+          total_pages: Math.ceil(total / safeLimit),
+        },
+      };
+    }
+
+    const queryConditions = [];
+    const queryParams = [];
+
+    if (anchorUpdatedAt !== null && anchorId !== null) {
+      queryParams.push(anchorUpdatedAt, anchorId);
+      const p1 = queryParams.length - 1;
+      const p2 = queryParams.length;
+      if (isBackward) {
+        queryConditions.push(`(updated_at, sandbox_id) > ($${p1}::timestamptz, $${p2})`);
+      } else {
+        queryConditions.push(`(updated_at, sandbox_id) < ($${p1}::timestamptz, $${p2})`);
+      }
+    }
+
+    const where = queryConditions.length ? `WHERE ${queryConditions.join(" AND ")}` : "";
+    queryParams.push(safeLimit + 1);
+
+    const orderDirection = isBackward ? "ASC" : "DESC";
+    const { rows } = await pool.query(
+      `SELECT sandbox_id, template_id, updated_at, created_at
+       FROM sandboxes ${where}
+       ORDER BY updated_at ${orderDirection}, sandbox_id ${orderDirection}
+       LIMIT $${queryParams.length}`,
+      queryParams,
+    );
+
+    let total;
+    let countIsEstimate = true;
+    if (count === "exact") {
+      const { rows: countRows } = await pool.query(`SELECT COUNT(*)::INT AS total FROM sandboxes`);
+      total = countRows[0]?.total ?? 0;
+      countIsEstimate = false;
+    } else {
+      const { rows: relRows } = await pool.query(
+        `SELECT reltuples::BIGINT AS estimate FROM pg_class WHERE relname = 'sandboxes'`,
+      );
+      const est = Number(relRows[0]?.estimate ?? -1);
+      if (est >= 0) {
+        total = est;
+      } else {
+        const { rows: countRows } = await pool.query(`SELECT COUNT(*)::INT AS total FROM sandboxes`);
+        total = countRows[0]?.total ?? 0;
+      }
+    }
+
+    const hasExtraRow = rows.length > safeLimit;
+    const formatted = formatPageResponse({
+      data: rows,
+      limit: safeLimit,
+      hasExtraRow,
+      isBackward,
+      hasAnchor,
+      extractTuple: (r) => [r.updated_at instanceof Date ? r.updated_at.toISOString() : r.updated_at, r.sandbox_id],
+      filterHash,
+      secret: config.CURSOR_SIGNING_SECRET,
+      total,
+      countIsEstimate,
+    });
+
+    return {
+      sandboxes: formatted.data,
+      data: formatted.data,
+      page_info: formatted.page_info,
+      next_cursor: formatted.next_cursor,
+      total,
+      count_is_estimate: countIsEstimate,
+    };
+  },
+
   /**
    * paginated contract transaction history with optional filters.
    * @param {string} contractId
-   * @param {{ function_name?: string, start_ledger?: number, end_ledger?: number, page?: number, limit?: number }} opts
+   * @param {{ function_name?: string, start_ledger?: number, end_ledger?: number, page?: number, limit?: number, cursor?: string, after?: string, before?: string }} opts
    */
-  async getContractTransactions(contractId, { function_name, start_ledger, end_ledger, page = 1, limit = 25 } = {}) {
+  async getContractTransactions(
+    contractId,
+    { function_name, start_ledger, end_ledger, page = 1, limit = 25, cursor, after, before } = {},
+  ) {
+    const filterHash = hashFilters({ contractId, function_name, start_ledger, end_ledger });
+    const safeLimit = Math.min(Math.max(1, Number(limit) || 25), 100);
+
+    let isBackward = false;
+    let anchorSeq = null;
+    let hasAnchor = false;
+
+    if (before) {
+      const decoded = decodeCursor(before, filterHash, config.CURSOR_SIGNING_SECRET);
+      anchorSeq = Number(decoded.tuple[0]);
+      isBackward = true;
+      hasAnchor = true;
+    } else if (after || cursor) {
+      const token = after || cursor;
+      if (typeof token === "number" || (/^\d+$/.test(String(token)) && String(token).length < 20)) {
+        anchorSeq = Number(token);
+        isBackward = false;
+        hasAnchor = anchorSeq > 0;
+      } else {
+        const decoded = decodeCursor(token, filterHash, config.CURSOR_SIGNING_SECRET);
+        anchorSeq = Number(decoded.tuple[0]);
+        isBackward = decoded.direction === "backward";
+        hasAnchor = true;
+      }
+    }
+
     const params = [contractId];
     const conditions = ["contract_id = $1"];
 
@@ -766,26 +1180,74 @@ export const db = {
       conditions.push(`ledger <= $${params.length}`);
     }
 
-    const where = conditions.join(" AND ");
-    const offset = (page - 1) * limit;
+    if (!hasAnchor && page && Number(page) > 1) {
+      const offset = (Number(page) - 1) * safeLimit;
+      const where = conditions.join(" AND ");
+      const [{ rows }, { rows: countRows }] = await Promise.all([
+        pool.query(
+          `SELECT * FROM events WHERE ${where} ORDER BY ledger DESC, seq DESC LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
+          [...params, safeLimit, offset],
+        ),
+        pool.query(`SELECT COUNT(*)::INT AS total FROM events WHERE ${where}`, params),
+      ]);
+      const total = countRows[0]?.total ?? 0;
+      return {
+        data: rows,
+        pagination: {
+          page: Number(page),
+          limit: safeLimit,
+          total,
+          total_pages: Math.ceil(total / safeLimit),
+          has_next: Number(page) * safeLimit < total,
+        },
+      };
+    }
 
+    const queryConditions = [...conditions];
+    const queryParams = [...params];
+
+    if (anchorSeq !== null && anchorSeq > 0) {
+      queryParams.push(anchorSeq);
+      queryConditions.push(isBackward ? `seq > $${queryParams.length}` : `seq < $${queryParams.length}`);
+    }
+
+    const where = queryConditions.join(" AND ");
+    queryParams.push(safeLimit + 1);
+
+    const orderDirection = isBackward ? "ASC" : "DESC";
     const [{ rows }, { rows: countRows }] = await Promise.all([
       pool.query(
-        `SELECT * FROM events WHERE ${where} ORDER BY ledger DESC LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
-        [...params, limit, offset],
+        `SELECT * FROM events WHERE ${where} ORDER BY seq ${orderDirection} LIMIT $${queryParams.length}`,
+        queryParams,
       ),
-      pool.query(`SELECT COUNT(*)::INT AS total FROM events WHERE ${where}`, params),
+      pool.query(`SELECT COUNT(*)::INT AS total FROM events WHERE ${conditions.join(" AND ")}`, params),
     ]);
 
-    const total = countRows[0].total;
-    return {
+    const total = countRows[0]?.total ?? 0;
+    const hasExtraRow = rows.length > safeLimit;
+    const formatted = formatPageResponse({
       data: rows,
+      limit: safeLimit,
+      hasExtraRow,
+      isBackward,
+      hasAnchor,
+      extractTuple: (r) => [Number(r.seq)],
+      filterHash,
+      secret: config.CURSOR_SIGNING_SECRET,
+      total,
+      countIsEstimate: false,
+    });
+
+    return {
+      data: formatted.data,
+      page_info: formatted.page_info,
+      next_cursor: formatted.next_cursor,
       pagination: {
-        page,
-        limit,
+        page: Number(page) || 1,
+        limit: safeLimit,
         total,
-        total_pages: Math.ceil(total / limit),
-        has_next: page * limit < total,
+        total_pages: Math.ceil(total / safeLimit),
+        has_next: formatted.page_info.has_next,
       },
     };
   },
@@ -831,7 +1293,7 @@ export const db = {
 
   async upsertContractMeta(meta) {
     // Auto-tag protocol_type from function names if not explicitly provided
-    const functionNames = (meta.functions ?? []).map((f) => (typeof f === 'string' ? f : f?.name ?? ''));
+    const functionNames = (meta.functions ?? []).map((f) => (typeof f === "string" ? f : (f?.name ?? "")));
     const protocol_type = meta.protocol_type ?? this.inferProtocolType(functionNames);
 
     await pool.query(
@@ -866,7 +1328,7 @@ export const db = {
           meta.abi_version,
           meta.min_ledger ?? 0,
           JSON.stringify(meta.functions ?? []),
-          meta.registered_by ?? '',
+          meta.registered_by ?? "",
         ],
       );
     }
@@ -1683,10 +2145,10 @@ export const db = {
    * @param {string} status  "closed" | "failed" | "pending"
    */
   async updateGapLogStatus(id, status) {
-    await pool.query(
-      `UPDATE gap_log SET status = $1, closed_at = NOW(), updated_at = NOW() WHERE id = $2`,
-      [status, id],
-    );
+    await pool.query(`UPDATE gap_log SET status = $1, closed_at = NOW(), updated_at = NOW() WHERE id = $2`, [
+      status,
+      id,
+    ]);
   },
 
   /**
@@ -1792,10 +2254,7 @@ export const db = {
    * @returns {Promise<number[]>}  Sorted ascending array of ledger numbers
    */
   async getRecentLedgers(n = 100) {
-    const { rows } = await pool.query(
-      `SELECT DISTINCT ledger FROM events ORDER BY ledger DESC LIMIT $1`,
-      [n],
-    );
+    const { rows } = await pool.query(`SELECT DISTINCT ledger FROM events ORDER BY ledger DESC LIMIT $1`, [n]);
     return rows.map((r) => Number(r.ledger)).sort((a, b) => a - b);
   },
 
@@ -1817,30 +2276,21 @@ export const db = {
    * Mark a gap_log entry as closed (successfully re-indexed).
    */
   async closeGapLog(id) {
-    await pool.query(
-      `UPDATE gap_log SET status = 'closed', closed_at = NOW() WHERE id = $1`,
-      [id],
-    );
+    await pool.query(`UPDATE gap_log SET status = 'closed', closed_at = NOW() WHERE id = $1`, [id]);
   },
 
   /**
    * Mark a gap_log entry as sent to the dead-letter queue after exhausting retries.
    */
   async dlqGapLog(id) {
-    await pool.query(
-      `UPDATE gap_log SET status = 'dlq', closed_at = NOW() WHERE id = $1`,
-      [id],
-    );
+    await pool.query(`UPDATE gap_log SET status = 'dlq', closed_at = NOW() WHERE id = $1`, [id]);
   },
 
   /**
    * Increment the retry counter on a gap_log entry.
    */
   async incrementGapRetries(id) {
-    await pool.query(
-      `UPDATE gap_log SET retries = retries + 1 WHERE id = $1`,
-      [id],
-    );
+    await pool.query(`UPDATE gap_log SET retries = retries + 1 WHERE id = $1`, [id]);
   },
 
   /**
@@ -1858,6 +2308,29 @@ export const db = {
            verified_ledger = CASE WHEN $2 THEN $3 ELSE verified_ledger END
        WHERE id = $1`,
       [contractId, isVerified, ledger],
+    );
+  },
+
+  /**
+   * Issue #875 — mirror the explorer contract's `get_ownership` result.
+   * @param {string} contractId
+   * @param {{ owner: string, method: string, ledger: number } | null} ownership
+   */
+  async setContractOwnership(contractId, ownership) {
+    await pool.query(
+      `UPDATE contracts
+       SET ownership_verified = $2,
+           ownership_owner = $3,
+           ownership_method = $4,
+           ownership_ledger = $5
+       WHERE id = $1`,
+      [
+        contractId,
+        ownership !== null,
+        ownership?.owner ?? null,
+        ownership?.method ?? null,
+        ownership?.ledger ?? null,
+      ],
     );
   },
 
@@ -1904,7 +2377,7 @@ export const db = {
         entry.contract_id,
         entry.abi_version,
         JSON.stringify(entry.functions ?? []),
-        entry.registered_by ?? '',
+        entry.registered_by ?? "",
         entry.min_ledger ?? 0,
       ],
     );
@@ -1926,10 +2399,10 @@ export const db = {
    */
   inferProtocolType(functionNames) {
     const names = (functionNames ?? []).map((n) => String(n).toLowerCase());
-    if (names.some((n) => n === 'swap' || n === 'swap_exact')) return 'dex';
-    if (names.some((n) => n === 'supply' || n === 'borrow')) return 'lending';
-    if (names.includes('mint') && names.includes('transfer')) return 'token';
-    return 'other';
+    if (names.some((n) => n === "swap" || n === "swap_exact")) return "dex";
+    if (names.some((n) => n === "supply" || n === "borrow")) return "lending";
+    if (names.includes("mint") && names.includes("transfer")) return "token";
+    return "other";
   },
 
   /**
@@ -2079,7 +2552,16 @@ export const db = {
    * Record the outcome of a delivery attempt, and update the subscription's
    * consecutive-failure counter — auto-disabling it once the threshold is hit.
    */
-  async recordWebhookDelivery({ webhook_id, event_seq, url, request_body, response_status, response_body, duration_ms, success }) {
+  async recordWebhookDelivery({
+    webhook_id,
+    event_seq,
+    url,
+    request_body,
+    response_status,
+    response_body,
+    duration_ms,
+    success,
+  }) {
     const { rows } = await pool.query(
       `INSERT INTO webhook_deliveries
          (webhook_id, event_seq, url, request_body, response_status, response_body, duration_ms, delivered_at)
@@ -2098,10 +2580,9 @@ export const db = {
     );
 
     if (success) {
-      await pool.query(
-        `UPDATE webhook_subscriptions SET failure_count = 0, last_triggered_at = NOW() WHERE id = $1`,
-        [webhook_id],
-      );
+      await pool.query(`UPDATE webhook_subscriptions SET failure_count = 0, last_triggered_at = NOW() WHERE id = $1`, [
+        webhook_id,
+      ]);
     } else {
       await pool.query(
         `UPDATE webhook_subscriptions
@@ -2134,7 +2615,10 @@ export const db = {
     ]);
 
     const total = countRows[0].total;
-    return { data: rows, pagination: { page: safePage, limit: safeLimit, total, total_pages: Math.ceil(total / safeLimit) } };
+    return {
+      data: rows,
+      pagination: { page: safePage, limit: safeLimit, total, total_pages: Math.ceil(total / safeLimit) },
+    };
   },
 
   /** Total webhook delivery attempts ever made across all of one API key's subscriptions ("events received"). */

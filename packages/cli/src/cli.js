@@ -12,10 +12,10 @@
  *   npx soroban-explorer contract <id>
  *   npx soroban-explorer search <query>
  *   npx soroban-explorer tail [--contract <id>]
- *   npx soroban-explorer verify <file.json> [--keys <file-or-url>]
+ *   npx soroban-explorer submit --file events.json --explorer-id <C...> --source <identity>
  */
 
-import crypto from "crypto";
+import { execFileSync } from "child_process";
 import http from "http";
 import https from "https";
 import fs from "fs/promises";
@@ -43,7 +43,8 @@ Commands:
   contract   Show contract metadata and registered functions
   search     Search across contracts, events, and wallets
   tail       Stream live events to the terminal
-  verify     Verify a signed response (?signed=1) saved to a file (supports --keys)
+  submit     Submit events from a JSON file to the explorer contract in batches
+             (requires the stellar CLI; --file, --explorer-id, --source, --network)
   help       Show this help
 
 Global options:
@@ -60,7 +61,8 @@ Examples:
   soroban-explorer contract CDA2...
   soroban-explorer search "swap"
   soroban-explorer tail --contract CDA2...
-  soroban-explorer events --json --limit 10`;
+  soroban-explorer events --json --limit 10
+  soroban-explorer submit --file events.json --explorer-id CDA2... --source admin`;
 
 // ── ANSI color helpers ───────────────────────────────────────────────────
 const RESET = "\x1b[0m";
@@ -86,7 +88,8 @@ function parseArgs(argv) {
       i++;
     } else if (
       (arg === "--base-url" || arg === "--api-key" || arg === "--contract" ||
-       arg === "--fn" || arg === "--limit" || arg === "--type" || arg === "--keys") &&
+       arg === "--fn" || arg === "--limit" || arg === "--type" || arg === "--file" ||
+       arg === "--explorer-id" || arg === "--source" || arg === "--network") &&
       i + 1 < argv.length
     ) {
       flags[arg.slice(2).replace(/-([a-z])/g, (_, c) => c.toUpperCase())] = argv[i + 1];
@@ -448,58 +451,68 @@ async function cmdTail(baseUrl, apiKey, flags) {
   await poll();
 }
 
-// ── Signed response verification (#904) ─────────────────────────────────
+// Must match MAX_BATCH in contracts/explorer/src/lib.rs.
+const MAX_BATCH = 20;
 
-/** RFC 8785 JSON Canonicalization Scheme (matches indexer/src/signing.js). */
-function canonicalize(value) {
-  if (value === null || typeof value === "boolean" || typeof value === "string") return JSON.stringify(value);
-  if (typeof value === "number") {
-    if (!Number.isFinite(value)) throw new TypeError("JCS: non-finite numbers are not allowed");
-    return JSON.stringify(value);
-  }
-  if (Array.isArray(value)) return `[${value.map((v) => (v === undefined ? "null" : canonicalize(v))).join(",")}]`;
-  if (typeof value === "object") {
-    const keys = Object.keys(value).filter((k) => value[k] !== undefined).sort();
-    return `{${keys.map((k) => `${JSON.stringify(k)}:${canonicalize(value[k])}`).join(",")}}`;
-  }
-  throw new TypeError(`JCS: unsupported type ${typeof value}`);
-}
-
-async function loadKeys(source, baseUrl) {
-  const url = source || `${baseUrl.replace(/\/+$/, "")}/.well-known/explorer-keys.json`;
-  if (/^https?:\/\//.test(url)) {
-    const res = await fetch(url);
-    if (!res.ok) throw new Error(`failed to fetch keys from ${url}: HTTP ${res.status}`);
-    return (await res.json()).keys;
-  }
-  return JSON.parse(await fs.readFile(url, "utf-8")).keys;
-}
-
-async function cmdVerify(baseUrl, flags, positional) {
-  const file = positional[1];
-  if (!file) {
-    console.error("Error: usage: soroban-explorer verify <file.json> [--keys <file-or-url>]");
+/**
+ * Submit events from a JSON file (an array of EventInput objects) to the
+ * explorer contract via `stellar contract invoke ... submit_events`, split into
+ * MAX_BATCH-sized batches. Each batch is all-or-nothing on-chain; if a batch
+ * fails, earlier batches stay committed and the error names the failed batch.
+ */
+async function cmdSubmit(flags) {
+  if (!flags.file || !flags.explorerId || !flags.source) {
+    console.error(
+      "Error: usage: soroban-explorer submit --file <events.json> --explorer-id <id> --source <identity> [--network <name>]",
+    );
     process.exit(1);
   }
-  const { signature, ...unsigned } = JSON.parse(await fs.readFile(file, "utf-8"));
-  const keys = await loadKeys(flags.keys, baseUrl);
-  const key = keys.find((k) => k.key_id === unsigned.key_id);
-  if (!key) {
-    console.error(`INVALID: unknown signing key "${unsigned.key_id}"`);
+
+  const events = JSON.parse(await fs.readFile(flags.file, "utf-8"));
+  if (!Array.isArray(events) || events.length === 0) {
+    console.error("Error: --file must contain a non-empty JSON array of events");
     process.exit(1);
   }
-  const publicKey = crypto.createPublicKey({
-    key: Buffer.concat([Buffer.from("302a300506032b6570032100", "hex"), Buffer.from(key.public_key, "base64")]),
-    format: "der",
-    type: "spki",
-  });
-  const ok = crypto.verify(null, Buffer.from(canonicalize(unsigned)), publicKey, Buffer.from(String(signature), "base64url"));
-  if (!ok) {
-    console.error("INVALID: signature does not match the payload");
-    process.exit(1);
+
+  const stellar = process.env.STELLAR_BIN || "stellar";
+  const network = flags.network || "testnet";
+  const run = (args) => execFileSync(stellar, args, { encoding: "utf-8" }).trim();
+
+  const caller = run(["keys", "address", flags.source]);
+  const seqs = [];
+  const batches = Math.ceil(events.length / MAX_BATCH);
+
+  for (let b = 0; b < batches; b++) {
+    const batch = events.slice(b * MAX_BATCH, (b + 1) * MAX_BATCH);
+    let assigned;
+    try {
+      assigned = JSON.parse(
+        run([
+          "contract", "invoke",
+          "--id", flags.explorerId,
+          "--source", flags.source,
+          "--network", network,
+          "--", "submit_events",
+          "--caller", caller,
+          "--inputs", JSON.stringify(batch),
+        ]),
+      );
+    } catch (e) {
+      throw new Error(
+        `batch ${b + 1}/${batches} failed (${seqs.length} events already submitted): ${e.message}`,
+      );
+    }
+    seqs.push(...assigned);
+    if (!flags.json) {
+      console.log(`Batch ${b + 1}/${batches}: submitted ${batch.length} events`);
+    }
   }
-  const retired = key.status === "retired" ? ` (${YELLOW}signed with retired key${RESET})` : "";
-  console.log(`${GREEN}VALID${RESET}: key ${key.key_id}, ledger ${unsigned.ledger}, issued ${unsigned.issued_at}${retired}`);
+
+  if (flags.json) {
+    outputJSON({ submitted: seqs.length, seqs });
+  } else {
+    console.log(`${GREEN}Submitted ${seqs.length} events in ${batches} batch(es).${RESET}`);
+  }
 }
 
 // ── Main ──��──────────────────────────────────────────────────────────────
@@ -541,8 +554,8 @@ async function main() {
       case "tail":
         await cmdTail(baseUrl, apiKey, flags);
         break;
-      case "verify":
-        await cmdVerify(baseUrl, flags, positional);
+      case "submit":
+        await cmdSubmit(flags);
         break;
       default:
         console.error(`Unknown command: ${command}`);

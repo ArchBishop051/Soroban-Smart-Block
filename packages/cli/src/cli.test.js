@@ -11,7 +11,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -124,26 +123,41 @@ describe("soroban-explorer CLI", () => {
       assert.ok(!result.stderr.includes("Unknown option"));
     });
   });
-  describe("verify", () => {
-    it("accepts a valid signed response and rejects a tampered one", () => {
-      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cli-verify-"));
-      const { privateKey, publicKey } = crypto.generateKeyPairSync("ed25519");
-      const unsigned = { issued_at: "2026-01-01T00:00:00.000Z", key_id: "k1", ledger: 9, payload: { data: [{ seq: 1 }] } };
-      // Keys are already in JCS order and the values need no escaping.
-      const signature = crypto.sign(null, Buffer.from(JSON.stringify(unsigned)), privateKey).toString("base64url");
-      const keysFile = path.join(dir, "keys.json");
-      fs.writeFileSync(keysFile, JSON.stringify({
-        keys: [{ key_id: "k1", alg: "Ed25519", status: "active", public_key: publicKey.export({ format: "der", type: "spki" }).subarray(-32).toString("base64") }],
-      }));
-      const good = path.join(dir, "good.json");
-      const bad = path.join(dir, "bad.json");
-      fs.writeFileSync(good, JSON.stringify({ ...unsigned, signature }));
-      fs.writeFileSync(bad, JSON.stringify({ ...unsigned, ledger: 10, signature }));
+  describe("submit", () => {
+    it("should require --file, --explorer-id and --source", () => {
+      const result = runCli(["submit", "--file", "events.json"]);
+      assert.equal(result.status, 1);
+      assert.ok(result.stderr.includes("usage"));
+    });
 
-      assert.equal(runCli(["verify", good, "--keys", keysFile]).status, 0);
-      const tampered = runCli(["verify", bad, "--keys", keysFile]);
-      assert.equal(tampered.status, 1);
-      assert.ok(tampered.stderr.includes("INVALID"));
+    it("should split the file into MAX_BATCH-sized submit_events calls", () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cli-submit-"));
+      const log = path.join(dir, "calls.log");
+      const fakeStellar = path.join(dir, "stellar");
+      // Fake `stellar` CLI: logs the batch size of each submit_events call and
+      // returns one sequence number per input.
+      fs.writeFileSync(
+        fakeStellar,
+        `#!/usr/bin/env node
+const args = process.argv.slice(2);
+if (args[0] === "keys") { console.log("GFAKECALLER"); process.exit(0); }
+const inputs = JSON.parse(args[args.indexOf("--inputs") + 1]);
+require("fs").appendFileSync(${JSON.stringify(log)}, inputs.length + "\\n");
+console.log(JSON.stringify(inputs.map((_, i) => i)));
+`,
+      );
+      fs.chmodSync(fakeStellar, 0o755);
+      const eventsFile = path.join(dir, "events.json");
+      const event = { contract_id: "00".repeat(32), function: "swap", ledger: 1, description: "d", raw_topics: [], raw_data: "" };
+      fs.writeFileSync(eventsFile, JSON.stringify(Array(45).fill(event)));
+
+      const result = runCli(
+        ["submit", "--file", eventsFile, "--explorer-id", "CEXPLORER", "--source", "admin", "--json"],
+        { STELLAR_BIN: fakeStellar },
+      );
+      assert.equal(result.status, 0, result.stderr);
+      assert.deepEqual(fs.readFileSync(log, "utf-8").trim().split("\n"), ["20", "20", "5"]);
+      assert.equal(JSON.parse(result.stdout).submitted, 45);
     });
   });
 });

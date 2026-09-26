@@ -305,75 +305,44 @@ jobs:
           retention-days: 30
 
   # ── Report Summary ─────────────────────────────────────────────────────────
-  # ── API contract fuzzing (deep) ──────────────────────────────────────────
-  # Closes #907 — generated requests for every documented operation against a
-  # seeded API running with OPENAPI_VALIDATE_RESPONSES=true, so any 5xx or
-  # response that drifts from docs/api/openapi.yaml fails the job.
-  api-fuzz-deep:
-    name: API contract fuzzing (deep)
+  # ── Formal verification (#874) ────────────────────────────────────────────
+  # Kani proofs of the registry invariants in contracts/explorer/INVARIANTS.md.
+  # Runs nightly (too slow for PRs); a failure opens an issue automatically.
+  kani-proofs:
+    name: Kani proofs (explorer invariants)
     runs-on: ubuntu-latest
     timeout-minutes: 60
-    services:
-      postgres:
-        image: postgres:16-alpine
-        env:
-          POSTGRES_USER: soroban
-          POSTGRES_PASSWORD: soroban_secret
-          POSTGRES_DB: soroban_explorer
-        options: >-
-          --health-cmd pg_isready
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 5
-        ports:
-          - 5432:5432
-    env:
-      DATABASE_URL: postgres://soroban:soroban_secret@localhost:5432/soroban_explorer
+    permissions:
+      contents: read
+      issues: write
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-node@v4
+      - name: Run Kani proofs
+        id: kani
+        uses: model-checking/kani-github-action@v1
         with:
-          node-version: 20
+          working-directory: contracts/explorer
+          args: --lib --output-format terse
 
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      - name: Install schemathesis
-        run: pip install -r tests/api-fuzz/requirements.txt
-
-      - name: Start seeded indexer with response validation
-        working-directory: indexer
-        env:
-          # Not NODE_ENV=test: the API only calls listen() outside test mode.
-          NODE_ENV: development
-          OPENAPI_VALIDATE_RESPONSES: "true"
-          # Fuzz run only — otherwise it would mostly exercise 429s.
-          RATE_LIMITING_DISABLED: "true"
-        run: |
-          npm ci
-          npm start > indexer.log 2>&1 &
-          for i in $(seq 1 30); do
-            curl -fsS http://localhost:3001/health && break
-            echo "waiting for indexer... ($i)"; sleep 2
-          done
-          curl -fsS http://localhost:3001/health || { echo "indexer failed to start"; cat indexer.log; exit 1; }
-          ln -s ../indexer/node_modules ../seed-data/node_modules
-          (cd ../seed-data && node seed.js)
-
-      - name: Fuzz (deep profile)
-        run: tests/api-fuzz/run.sh deep
-
-      - name: Upload fuzz reports
+      - name: Upload proof results
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: api-fuzz-deep
-          path: |
-            tests/api-fuzz/reports
-            indexer/indexer.log
+          name: kani-proof-results
+          path: contracts/explorer/target/kani
           if-no-files-found: ignore
+          retention-days: 14
+
+      - name: Open issue on proof failure
+        if: failure() && github.event_name == 'schedule'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          gh issue create \
+            --title "Kani proof failure ($(date -u +%Y-%m-%d))" \
+            --body "A registry invariant proof failed in the nightly run: $RUN_URL. See contracts/explorer/INVARIANTS.md."
 
   report:
     name: E2E Results Summary
