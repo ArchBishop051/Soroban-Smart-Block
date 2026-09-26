@@ -18,6 +18,12 @@ const qc = new QueryClient();
 // before any user action triggers a POST / PATCH / DELETE.
 initCsrf().catch(() => {});
 
+if ("serviceWorker" in navigator) {
+  window.addEventListener("load", () => {
+    navigator.serviceWorker.register("/sw.js").catch(() => {});
+  });
+}
+
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
     <QueryClientProvider client={qc}>

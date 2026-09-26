@@ -1,5 +1,6 @@
 import { BatchCall } from "./types/batch";
 import { getCsrfToken, refreshCsrfToken } from "./hooks/useCsrf";
+import { readCachedResponse, writeCachedResponse } from "./services/offlineStore";
 
 const BASE = "/api";
 
@@ -165,6 +166,9 @@ export interface DecodedEvent {
   factory_deployment?: FactoryDeploymentTree;
   // DEX swap slippage in basis points (1% = 100 bps); present only when computable
   slippage_bps?: number | null;
+  created_at?: string;
+  decode_status?: "verified" | "unverified" | "heuristic";
+  decode_warnings?: string[];
 }
 
 export interface SourceFile {
@@ -749,13 +753,15 @@ export interface TxNarrative {
 }
 
 export const api = {
-  events: (params: { contract?: string; fn?: string; after_seq?: number; limit?: number; type?: string }) => {
+  events: (params: { contract?: string; fn?: string; after_seq?: number; limit?: number; type?: string; from?: string; to?: string }) => {
     const q = new URLSearchParams();
     if (params.contract) q.set("contract", params.contract);
     if (params.fn) q.set("fn", params.fn);
     if (params.after_seq) q.set("after_seq", String(params.after_seq));
     if (params.limit) q.set("limit", String(params.limit));
     if (params.type) q.set("type", params.type);
+    if (params.from) q.set("from", params.from);
+    if (params.to) q.set("to", params.to);
     return get<EventsPage>(`/events?${q}`);
   },
   event: (seq: number) => get<DecodedEvent>(`/events/${seq}`),

@@ -72,6 +72,8 @@ pub enum Role {
 pub const MIN_MAX_EVENTS: u32 = 1_000;
 /// Default ring-buffer capacity used at init when caller passes `0`.
 pub const DEFAULT_MAX_EVENTS: u32 = 50_000;
+/// Maximum ring-buffer capacity accepted from callers.
+pub const MAX_MAX_EVENTS: u32 = 1_000_000;
 
 // ── Input-size limits (anti-bloat / rent DoS protection) ──────────────────────
 
@@ -87,6 +89,12 @@ pub const MAX_PARAM_NAME_LEN: u32 = 32;
 pub const MAX_PARAM_KIND_LEN: u32 = 32;
 /// Maximum number of parameters per `FunctionAbi`.
 pub const MAX_PARAMS_PER_FUNCTION: u32 = 20;
+/// Maximum number of topics accepted for one stored event.
+pub const MAX_EVENT_TOPICS: u32 = 32;
+/// Maximum byte length of one event topic.
+pub const MAX_EVENT_TOPIC_LEN: u32 = 256;
+/// Maximum byte length of the raw event payload.
+pub const MAX_EVENT_RAW_DATA_LEN: u32 = 4_096;
 
 // ── Batch submission ──────────────────────────────────────────────────────────
 
@@ -365,6 +373,9 @@ impl ExplorerContract {
         } else {
             max_events
         };
+        if cap < MIN_MAX_EVENTS || cap > MAX_MAX_EVENTS {
+            panic_with_error!(&env, Error::InvalidInput);
+        }
         env.storage().instance().set(&DataKey::Admin, &admin);
         env.storage().instance().set(&DataKey::EventSeq, &0u64);
         env.storage().instance().set(&DataKey::MaxEvents, &cap);

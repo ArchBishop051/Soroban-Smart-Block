@@ -668,6 +668,11 @@ export function createApi({ logDestination, dbOverride } = {}) {
           return res.status(422).json({ error: "Invalid after_seq" });
         }
       }
+      for (const key of ["from", "to"]) {
+        if (req.query[key] !== undefined && !/^\d{4}-\d{2}-\d{2}$/.test(String(req.query[key]))) {
+          return res.status(422).json({ error: `Invalid ${key}` });
+        }
+      }
       next();
     },
     // Filter DSL (#902): ?filter=<text or JSON AST> or ?query_id=<saved query>.

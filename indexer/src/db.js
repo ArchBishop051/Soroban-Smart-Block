@@ -239,8 +239,8 @@ export const db = {
    * Return a page of events using keyset (cursor-based) pagination.
    * Avoids OFFSET degradation on large tables.
    *
-   * @param {{ contract?: string, fn?: string, type?: string,
-   *           after_seq?: number, limit?: number }} opts
+  * @param {{ contract?: string, fn?: string, type?: string,
+  *           after_seq?: number, limit?: number, from?: string, to?: string }} opts
    *   after_seq — the `seq` of the last event on the previous page (opaque cursor).
    *               Omit (or pass 0) for the first page.
    * @returns {{ data: object[], next_cursor: number|null }}
@@ -450,6 +450,8 @@ export const db = {
            raw_topics = $4,
            raw_data = $5,
            abi_version = $6,
+           decode_status = $7,
+           decode_warnings = $8,
            needs_redecode = FALSE
        WHERE seq = $1 AND needs_redecode = TRUE`,
       [seq, decoded.function, decoded.description, JSON.stringify(decoded.raw_topics), decoded.raw_data, abiVersion],

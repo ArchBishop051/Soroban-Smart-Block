@@ -5077,6 +5077,15 @@ components:
             DEX swap slippage in basis points (1% = 100 bps), computed as
             |amount_out - min_amount_out| / min_amount_out. Present only for
             swap events where min_amount_out is known.
+        decode_status:
+          type: string
+          enum: [verified, unverified, heuristic]
+          description: Trust level assigned by ABI shape validation.
+        decode_warnings:
+          type: array
+          items:
+            type: string
+          description: Machine-readable reasons the ABI validation gate did not pass.
 
     KeysetPageInfo:
       type: object
