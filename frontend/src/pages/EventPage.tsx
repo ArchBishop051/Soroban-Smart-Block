@@ -9,8 +9,10 @@ import RestoreFootprintPanel from "../components/RestoreFootprintPanel";
 import HeuristicParams from "../components/HeuristicParams";
 import ZkCostDelta from "../components/ZkCostDelta";
 import FactoryDeploymentTree from "../components/FactoryDeploymentTree";
+import { useTranslation } from "../i18n";
 
 export default function EventPage() {
+  const { t } = useTranslation();
   const { seq = "0" } = useParams();
 
   const { data: ev, isLoading } = useQuery({
@@ -18,36 +20,36 @@ export default function EventPage() {
     queryFn: () => api.event(Number(seq)),
   });
 
-  if (isLoading) return <p style={{ color: "var(--muted)" }}>Loading…</p>;
+  if (isLoading) return <p style={{ color: "var(--muted)" }}>{t("app.loading")}</p>;
   if (!ev) return (
-  <div style={{ textAlign: "center", marginTop: "2rem" }}>
-    <p>Event not found.</p>
-    <Link to="/" style={{ color: "var(--primary)", textDecoration: "underline" }}>
-      Back to events
-    </Link>
-  </div>
-);
+    <div style={{ textAlign: "center", marginTop: "2rem" }}>
+      <p>{t("event.notFound")}</p>
+      <Link to="/" style={{ color: "var(--primary)", textDecoration: "underline" }}>
+        {t("event.back")}
+      </Link>
+    </div>
+  );
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-      <h2>Event #{ev.seq}</h2>
+    <article className="print-document event-document" aria-labelledby="event-title" style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+      <h2 id="event-title">{t("event.title", { seq: ev.seq })}</h2>
 
       <div className="card" style={{ display: "grid", gap: 12 }}>
-        <Row label="Description" value={ev.description} highlight />
-        <Row label="Function" value={ev.function} badge />
+        <Row label={t("event.description")} value={ev.description} highlight />
+        <Row label={t("event.function")} value={ev.function} badge />
         {ev.is_clawback && (
           <Row
-            label="Compliance"
+            label={t("event.complianceTitle")}
             value={
-              <span className="badge clawback" title="Mandatory authority intervention">
-                ⚠ COMPLIANCE: CLAWBACK — mandatory authority intervention
+              <span className="badge clawback" title={t("event.complianceTitle")}>
+                {t("event.compliance")}
               </span>
             }
           />
         )}
         {ev.sac_side_effect && (
           <Row
-            label="SAC Side-Effect"
+            label={t("event.sacSideEffect")}
             value={
               <span
                 style={{
@@ -62,27 +64,23 @@ export default function EventPage() {
                   fontSize: 12,
                   color: ev.sac_side_effect === "account_created" ? "#34d399" : "#60a5fa",
                 }}
-                title={
-                  ev.sac_side_effect === "account_created"
-                    ? "SAC implicitly created a new Stellar account entry for this recipient"
-                    : "SAC implicitly opened a trustline for this asset on the recipient account"
-                }
+                title={ev.sac_side_effect === "account_created" ? t("event.sacCreatedTitle") : t("event.sacTrustlineTitle")}
               >
                 {ev.sac_side_effect === "account_created"
-                  ? "⬡ SAC Auto-Created Account Entry"
-                  : "⬡ SAC Native Trustline Open"}
+                  ? t("event.sacCreated")
+                  : t("event.sacTrustline")}
               </span>
             }
           />
         )}
-        <Row label="Ledger" value={ev.ledger.toLocaleString()} />
+        <Row label={t("event.ledger")} value={ev.ledger.toLocaleString()} />
         {ev.contract_id ? (
-          <Row label="Contract" value={<Link to={`/contract/${ev.contract_id}`}>{ev.contract_id}</Link>} />
+          <Row label={t("event.contract")} value={<Link to={`/contract/${ev.contract_id}`}>{ev.contract_id}</Link>} />
         ) : (
-          <Row label="Type" value="Classic (no Soroban contract)" />
+          <Row label={t("event.type")} value={t("event.classic")} />
         )}
-        {ev.tx_hash && <Row label="Tx Hash" value={ev.tx_hash} mono />}
-        {ev.raw_topics.length > 0 && <Row label="Topics" value={ev.raw_topics.join(", ")} mono />}
+        {ev.tx_hash && <Row label={t("event.txHash")} value={ev.tx_hash} mono />}
+        {ev.raw_topics.length > 0 && <Row label={t("event.topics")} value={ev.raw_topics.join(", ")} mono />}
       </div>
 
       {/* Heuristic parameter guesses when no ABI is registered */}
@@ -108,7 +106,7 @@ export default function EventPage() {
 
       {/* State restoration (RestoreFootprintOp) */}
       {ev.archival_info?.isRestoreOp && <RestoreFootprintPanel restore={ev.archival_info} />}
-    </div>
+    </article>
   );
 }
 
@@ -147,19 +145,20 @@ function Row({
 }
 
 function FunctionBadge({ fn }: { fn: string }) {
+  const { t } = useTranslation();
   if (fn === "wrap_native") {
     return (
       <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
-        <span className="badge wrap">Wrap Native Asset</span>
-        <span style={{ fontSize: 12, color: "var(--muted)" }}>Classic XLM → Soroban</span>
+        <span className="badge wrap">{t("event.wrapNative")}</span>
+        <span style={{ fontSize: 12, color: "var(--muted)" }}>{t("event.wrapDescription")}</span>
       </span>
     );
   }
   if (fn === "unwrap_native") {
     return (
       <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
-        <span className="badge unwrap">Unwrap Native Asset</span>
-        <span style={{ fontSize: 12, color: "var(--muted)" }}>Soroban → Classic XLM</span>
+        <span className="badge unwrap">{t("event.unwrapNative")}</span>
+        <span style={{ fontSize: 12, color: "var(--muted)" }}>{t("event.unwrapDescription")}</span>
       </span>
     );
   }

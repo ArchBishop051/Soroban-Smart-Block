@@ -2,6 +2,7 @@ import { lazy, Suspense } from "react";
 import { Routes, Route } from "react-router-dom";
 import Nav from "./components/Nav";
 import ErrorBoundary from "./components/ErrorBoundary";
+import { useTranslation } from "./i18n";
 
 const Home = lazy(() => import("./pages/Home"));
 const RegistryPage = lazy(() => import("./pages/RegistryPage"));
@@ -28,7 +29,8 @@ const DashboardPage = lazy(() => import("./pages/DashboardPage"));
 const Status = lazy(() => import("./pages/Status"));
 
 function Fallback() {
-  return <p style={{ padding: 32, textAlign: "center", color: "var(--muted)" }}>Loading…</p>;
+  const { t } = useTranslation();
+  return <p style={{ padding: 32, textAlign: "center", color: "var(--muted)" }}>{t("app.loading")}</p>;
 }
 
 export default function App() {

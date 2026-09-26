@@ -1,44 +1,55 @@
 import { useEffect, useState } from "react";
+import { useTranslation } from "../i18n";
 
+type ThemePreference = "system" | "light" | "dark";
 const STORAGE_KEY = "sb-theme-preference";
 
-function applyTheme(theme: "dark" | "light") {
-  document.documentElement.setAttribute("data-theme", theme);
-  localStorage.setItem(STORAGE_KEY, theme);
+function readPreference(): ThemePreference {
+  try {
+    const stored = localStorage.getItem(STORAGE_KEY);
+    if (stored === "light" || stored === "dark") return stored;
+  } catch {
+    // Storage can be disabled; system preference still works through CSS.
+  }
+  return "system";
+}
+
+function applyTheme(preference: ThemePreference) {
+  if (preference === "system") {
+    document.documentElement.removeAttribute("data-theme");
+  } else {
+    document.documentElement.setAttribute("data-theme", preference);
+  }
+
+  try {
+    if (preference === "system") localStorage.removeItem(STORAGE_KEY);
+    else localStorage.setItem(STORAGE_KEY, preference);
+  } catch {
+    // The current page remains themed even when persistence is unavailable.
+  }
 }
 
 export default function ThemeToggle() {
-  const [theme, setTheme] = useState<"dark" | "light">("dark");
+  const [preference, setPreference] = useState<ThemePreference>(readPreference);
+  const { t } = useTranslation();
 
   useEffect(() => {
-    const saved = localStorage.getItem(STORAGE_KEY);
-    const prefersDark = window.matchMedia?.("(prefers-color-scheme: dark)").matches;
-    const nextTheme = saved === "light" || saved === "dark" ? saved : prefersDark ? "dark" : "light";
-    setTheme(nextTheme);
-    applyTheme(nextTheme);
-  }, []);
-
-  const toggle = () => {
-    const nextTheme = theme === "dark" ? "light" : "dark";
-    setTheme(nextTheme);
-    applyTheme(nextTheme);
-  };
+    applyTheme(preference);
+  }, [preference]);
 
   return (
-    <button
-      type="button"
-      onClick={toggle}
-      style={{
-        background: "transparent",
-        border: "1px solid var(--border)",
-        color: "var(--text)",
-        borderRadius: 6,
-        padding: "6px 12px",
-        cursor: "pointer",
-        fontSize: 13,
-      }}
-    >
-      {theme === "dark" ? "🌙 Dark mode" : "☀ Light mode"}
-    </button>
+    <label style={{ display: "inline-flex", alignItems: "center", gap: 6, color: "var(--muted)", fontSize: 12 }}>
+      <span>{t("theme.label")}</span>
+      <select
+        aria-label={t("theme.ariaLabel")}
+        value={preference}
+        onChange={(event) => setPreference(event.target.value as ThemePreference)}
+        style={{ padding: "5px 8px", fontSize: 12 }}
+      >
+        <option value="system">{t("theme.system")}</option>
+        <option value="light">{t("theme.light")}</option>
+        <option value="dark">{t("theme.dark")}</option>
+      </select>
+    </label>
   );
 }

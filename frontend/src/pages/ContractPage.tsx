@@ -30,6 +30,7 @@ import AbiHistoryDrawer from "../components/AbiHistoryDrawer";
 import ProtocolBadge from "../components/ProtocolBadge";
 import InvocationFrequencyChart, { type StatsRange } from "../components/InvocationFrequencyChart";
 import StorageTierStackedBar from "../components/StorageTierStackedBar";
+import { useTranslation } from "../i18n";
 
 type Tab = "overview" | "source" | "simulate" | "flow" | "roles" | "networks" | "graph" | "call-graph" | "state-diff" | "abi-history";
 
@@ -95,6 +96,7 @@ function SourceVerifiedBadge({ contractId }: { contractId: string }) {
 }
 
 export default function ContractPage() {
+  const { t } = useTranslation();
   const { id = "" } = useParams();
   const [tab, setTab] = useState<Tab>("overview");
   const [selectedFn, setSelectedFn] = useState("");
@@ -153,7 +155,7 @@ export default function ContractPage() {
   if (!meta) {
     // Contract not in the registry — show the upload zone as the primary UI
     return (
-      <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
+      <article className="print-document contract-document" aria-labelledby="contract-title" style={{ display: "flex", flexDirection: "column", gap: 20 }}>
         <div className="card">
           <div
             style={{
@@ -173,7 +175,7 @@ export default function ContractPage() {
                 flexShrink: 0,
               }}
             />
-            <h2 style={{ fontSize: 16 }}>Not registered — be the first to add ABI metadata</h2>
+            <h2 id="contract-title" style={{ fontSize: 16 }}>{t("contract.unregistered")}</h2>
             <code
               style={{
                 fontSize: 12,
@@ -185,15 +187,14 @@ export default function ContractPage() {
             </code>
           </div>
           <p style={{ color: "var(--muted)", fontSize: 13, marginBottom: 16 }}>
-            This contract has no registered ABI. Upload a local spec file to inspect its transaction logs — the file
-            stays in your browser session only.
+            {t("contract.noAbiDescription")}
           </p>
           <AbiUploadZone onLoad={loadAbi} onClear={clearAbi} localAbi={localAbi} parseError={parseError} />
         </div>
 
         {localAbi && (
           <div className="card">
-            <h3 style={{ fontSize: 14, marginBottom: 12 }}>Recent Events</h3>
+            <h3 style={{ fontSize: 14, marginBottom: 12 }}>{t("contract.recentEvents")}</h3>
             {evLoading ? (
               <p style={{ color: "var(--muted)" }}>Loading…</p>
             ) : (
@@ -201,7 +202,7 @@ export default function ContractPage() {
             )}
           </div>
         )}
-      </div>
+      </article>
     );
   }
 
@@ -219,7 +220,7 @@ export default function ContractPage() {
   ];
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
+    <article className="print-document contract-document" aria-labelledby="contract-title" style={{ display: "flex", flexDirection: "column", gap: 20 }}>
       {/* SEP-49 migration pending banner */}
       {migrationStatus?.pending && migrationStatus.upgradedAtLedger != null && (
         <MigrationBanner upgradedAtLedger={migrationStatus.upgradedAtLedger} />
@@ -245,7 +246,7 @@ export default function ContractPage() {
         >
           <div>
             <div style={{ display: "flex", alignItems: "center", marginBottom: 8 }}>
-              <h2 style={{ margin: 0 }}>{meta.name || "Unnamed Contract"}</h2>
+              <h2 id="contract-title" style={{ margin: 0 }}>{meta.name || "Unnamed Contract"}</h2>
               {(meta as any).is_verified && <VerifiedBadge ledger={(meta as any).verified_ledger} />}{' '}
               <SourceVerifiedBadge contractId={id} />
               {meta.protocol_type && (
@@ -277,7 +278,7 @@ export default function ContractPage() {
               {meta.min_ledger != null && <span>Registration ledger: {meta.min_ledger.toLocaleString()}</span>}
             </div>
           </div>
-          <div style={{ display: "flex", gap: 8 }}>
+          <div className="print-hide" style={{ display: "flex", gap: 8 }}>
             <button
               type="button"
               onClick={() => setHistoryOpen(true)}
@@ -366,6 +367,9 @@ export default function ContractPage() {
 
       {/* Tab bar */}
       <div
+        className="contract-tabs print-hide"
+        role="group"
+        aria-label={t("contract.sections")}
         style={{
           display: "flex",
           gap: 4,
@@ -376,6 +380,8 @@ export default function ContractPage() {
         {tabs.map((t) => (
           <button
             key={t.key}
+            type="button"
+            aria-pressed={tab === t.key}
             onClick={() => setTab(t.key)}
             style={{
               background: "none",
@@ -668,6 +674,6 @@ export default function ContractPage() {
         open={historyOpen}
         onClose={() => setHistoryOpen(false)}
       />
-    </div>
+    </article>
   );
 }
