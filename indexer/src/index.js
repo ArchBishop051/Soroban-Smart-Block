@@ -10,6 +10,7 @@ import config from "./config.js";
 initSentry();
 import { startApi } from "./api.js";
 import { db, pool } from "./db.js";
+import { initSecrets, rotateWebhookSecrets } from "./secrets/index.js";
 import { decode, getDecodeStats } from "./decoder.js";
 import { startAbiSync } from "./githubAbiSync.js";
 import { seedBuiltinAbis } from "./abiSeeder.js";
@@ -491,7 +492,11 @@ let shutdown = false;
 let ledgersSinceReorgCheck = 0;
 
 async function run() {
+  // Fail fast if the secrets provider (Vault/KMS) is unreachable at boot (#929).
+  await initSecrets();
   await db.init();
+  // Resumable: re-wraps only rows not yet on the current KEK.
+  rotateWebhookSecrets(pool).catch((err) => logger.warn(`[secrets] webhook secret rotation failed: ${err.message}`));
   if (LEADERSHIP_ENABLED) {
     await tryAcquireLock();
     startLeaderElection({

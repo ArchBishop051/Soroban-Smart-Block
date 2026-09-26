@@ -37,6 +37,7 @@ import {
   CursorFilterMismatchError,
 } from "../cursor.js";
 import config from "../config.js";
+import { listFlagged, overridePrincipal, isShadowMode } from "../abuse/scorer.js";
 // Note: getRedisClient (rateLimit/tokenBucket.js) and runAllChecks
 // (doctor-lib.js) were imported here but never called anywhere in this
 // file — dead imports left over from the removed legacy /api/doctor route
@@ -249,6 +250,20 @@ export default function registerAdminRoutes(app) {
     } catch (e) {
       return res.status(500).json({ error: e.message });
     }
+  });
+
+  // ── Abuse scoring (#931): flagged principals with evidence + manual override ──
+  router.get("/abuse", (_req, res) => {
+    res.json({ shadowMode: isShadowMode(), flagged: listFlagged() });
+  });
+
+  router.post("/abuse/:principal/override", (req, res) => {
+    const hours = Number(req.body?.hours ?? 24);
+    if (!Number.isFinite(hours) || hours <= 0 || hours > 24 * 30) {
+      return res.status(400).json({ error: "hours must be between 0 and 720" });
+    }
+    overridePrincipal(req.params.principal, hours);
+    res.json({ principal: req.params.principal, overriddenForHours: hours });
   });
 
   // ── POST /api/admin/alerts/:condition/resolve ─────────────────────────────
