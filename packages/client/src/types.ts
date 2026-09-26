@@ -393,3 +393,38 @@ export interface Subscription {
   /** Close the WebSocket and stop reconnecting. */
   unsubscribe(): void;
 }
+
+// ── Query jobs (#906) ────────────────────────────────────────────────────────
+
+export type QueryJobStatus = "queued" | "running" | "succeeded" | "failed" | "cancelled" | "expired";
+
+export interface QueryJobRequest {
+  type: "events_export";
+  format?: "ndjson" | "csv";
+  params?: { contract?: string; from_ledger?: number; to_ledger?: number };
+}
+
+export interface QueryJob {
+  id: string;
+  type: string;
+  format: "ndjson" | "csv";
+  params: Record<string, unknown>;
+  status: QueryJobStatus;
+  progress: { rows: number; bytes: number };
+  /** True when the job stopped at its quota and the result is incomplete. */
+  partial: boolean;
+  snapshot_ledger: number | null;
+  error: string | null;
+  created_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+  expires_at: string | null;
+}
+
+export interface QueryJobResult {
+  /** Short-lived signed download URL, relative to the API base URL. */
+  url: string;
+  expires_at: string;
+  partial: boolean;
+  rows: number;
+}

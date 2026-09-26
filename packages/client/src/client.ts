@@ -1,6 +1,9 @@
 import { SorobanExplorerError, NotFoundError, RateLimitError, ValidationError, UnauthorizedError } from "./errors.js";
 import { subscribeEvents } from "./ws.js";
 import type {
+  QueryJob,
+  QueryJobRequest,
+  QueryJobResult,
   DecodedEvent,
   Contract,
   ContractMeta,
@@ -276,6 +279,55 @@ export class SorobanExplorerClient {
   /** Get 24-hour rolling transfer volume for a token contract. */
   async getTokenVolume(contractId: string): Promise<TokenVolume> {
     return this.request<TokenVolume>(`/api/tokens/${encodeURIComponent(contractId)}/volume`);
+  }
+
+  // ── Query jobs (#906) ──────────────────────────────────────────────────────
+
+  /**
+   * Submit a heavy query as a background job. Reusing `idempotencyKey`
+   * returns the existing job instead of starting a new one.
+   *
+   * @example
+   * ```ts
+   * const job = await client.submitJob({ type: "events_export", params: { contract: "C…" } });
+   * const done = await client.waitForJob(job.id);
+   * const { url } = await client.getJobResult(done.id);
+   * ```
+   */
+  async submitJob(request: QueryJobRequest, idempotencyKey?: string): Promise<QueryJob> {
+    return this.request<QueryJob>("/api/jobs", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(idempotencyKey ? { "Idempotency-Key": idempotencyKey } : {}),
+      },
+      body: JSON.stringify(request),
+    });
+  }
+
+  /** Get a job's status and progress. */
+  async getJob(id: string): Promise<QueryJob> {
+    return this.request<QueryJob>(`/api/jobs/${encodeURIComponent(id)}`);
+  }
+
+  /** Cancel a queued or running job. */
+  async cancelJob(id: string): Promise<QueryJob> {
+    return this.request<QueryJob>(`/api/jobs/${encodeURIComponent(id)}`, { method: "DELETE" });
+  }
+
+  /** Get a short-lived signed download URL for a finished job. */
+  async getJobResult(id: string): Promise<QueryJobResult> {
+    const result = await this.request<QueryJobResult>(`/api/jobs/${encodeURIComponent(id)}/result`);
+    return { ...result, url: `${this.baseUrl}${result.url}` };
+  }
+
+  /** Poll until the job leaves the queued/running states. */
+  async waitForJob(id: string, intervalMs = 2_000): Promise<QueryJob> {
+    for (;;) {
+      const job = await this.getJob(id);
+      if (job.status !== "queued" && job.status !== "running") return job;
+      await new Promise((resolve) => setTimeout(resolve, intervalMs));
+    }
   }
 
   // ── Global ─────────────────────────────────────────────────────────────────

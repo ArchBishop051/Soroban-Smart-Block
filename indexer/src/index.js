@@ -12,6 +12,7 @@ import { decode, getDecodeStats } from "./decoder.js";
 import { startAbiSync } from "./githubAbiSync.js";
 import { seedBuiltinAbis } from "./abiSeeder.js";
 import { startContractVerifier } from "./contractVerifier.js";
+import { startQueryJobMaintenance } from "./jobs/queryJobs.js";
 import { withRetry } from "./rpcRetry.js";
 import { isHighBloatRisk } from "./bloatDetector.js";
 import { detectUpgrade } from "./upgradeDetector.js";
@@ -34,6 +35,7 @@ import { checkForReorg, recordLedgerHash } from "./reorgWorker.js";
 import { startReDecodeWorker } from "./reDecodeWorker.js";
 import { warmCache } from "./cacheWarming.js";
 import { cacheInvalidate } from "./cacheLayer.js";
+import { enqueuePurge } from "./cdnPurge.js";
 import {
   eventsIngested,
   decodeLatency,
@@ -388,6 +390,12 @@ async function indexLedger(ledger) {
     }
     await ingestPipeline.drain();
 
+    // Purge the CDN entries this page changed: "latest" lists plus every
+    // contract it touched (debounced/batched in cdnPurge.js).
+    if (res.events.length) {
+      enqueuePurge(["latest", ...new Set(res.events.map((e) => `contract:${e.contractId}`).filter((k) => k !== "contract:undefined"))]);
+    }
+
     // Scan transactions for UploadContractWasm operations (non-blocking)
     indexWasmUploads(uniqueTxHashes, ledger).catch((err) => logger.error("[wasmUpload] batch error:", err.message));
 
@@ -432,6 +440,7 @@ async function run() {
   seedBuiltinAbis().catch((e) => logger.warn({ err: e.message }, "builtin ABI seed failed"));
   startAbiSync();
   startContractVerifier(); // periodically verify DB ABI hashes against on-chain registry
+  startQueryJobMaintenance().catch((err) => logger.error("[jobs] startup failed:", err.message)); // async query jobs (#906)
   startBurnDetector();
   startMetricsCollector(); // RPC latency probes
   startNodeRecoveryPoll(); // re-check unhealthy multi-node RPC failover nodes
