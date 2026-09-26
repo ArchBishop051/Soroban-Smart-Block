@@ -52,7 +52,7 @@ export function validateAnalyticsQuery(query) {
   if (statements.length !== 1) throw new AnalyticsQueryError("exactly one SELECT statement is allowed");
 
   const statement = statements[0];
-  if (!["select", "union", "union all"].includes(statement.type)) {
+  if (statement.type !== "select") {
     throw new AnalyticsQueryError("only SELECT statements are allowed");
   }
 
@@ -65,6 +65,9 @@ export function validateAnalyticsQuery(query) {
     }
     if (!node || typeof node !== "object") return;
 
+    if (node.type === "select" && node !== statement) {
+      throw new AnalyticsQueryError("subqueries are not allowed");
+    }
     if (node.type === "with" || node.type === "with recursive") {
       throw new AnalyticsQueryError("CTEs are not allowed");
     }

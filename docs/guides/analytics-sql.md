@@ -9,8 +9,8 @@ most 1,000 rows.
 The endpoint requires an API key with a `free`, `pro`, or `enterprise` tier.
 It applies per-tier daily query and execution-time quotas, an `EXPLAIN` cost
 limit, a three-second statement timeout, and a 16 MB `work_mem` limit. CTEs,
-cross joins, system schemas, and functions outside the aggregate/string/date
-allowlist are rejected.
+subqueries, cross joins, system schemas, and functions outside the
+aggregate/string/date allowlist are rejected.
 
 Set `ANALYTICS_DATABASE_URL` to a dedicated PostgreSQL login role that is a
 member of the `analytics_reader` role created by migration
