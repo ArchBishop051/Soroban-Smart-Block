@@ -3,6 +3,9 @@ import { scValToNative } from "@stellar/stellar-sdk";
 import { db } from "./db.js";
 import { detectSac, detectSacAsset, sacLabel } from "./sac.js";
 import { extractRoleAssignment } from "./roleTracker.js";
+import { decodeOpenZeppelinEvent } from "./decoders/openzeppelin/index.js";
+import { decodeSmartWalletEvent } from "./smartWallet.js";
+import { decoderTag } from "./decoderVersions.js";
 import { decodeRwaEvent } from "./rwaDecoder.js";
 import { parseHeuristic } from "./heuristicParser.js";
 import { parseTTLHostFunction, formatTTLExtension } from "./ttlExtensionParser.js";
@@ -10,8 +13,24 @@ import { parseZkHostFunctions, computeZkCostDelta } from "./zkHostFunctions.js";
 import { resolveAsset } from "./horizonClient.js";
 import config from "./config.js";
 import { decoderSuccessTotal, decoderFailureTotal } from "./metrics.js";
-import { eventIdFromRpc } from "./eventId.js";
-import { getCachedSpec, prefetchSpec, nameArgs } from "./contractSpecCache.js";
+import { PluginRegistry } from "./plugins/registry.js";
+import { topicColumns } from "./rpcFilters.js";
+import { enqueue as enqueueDeadLetter } from "./deadLetterQueue.js";
+
+// Sandboxed community decoder plugins (#900). Loaded lazily; with no plugins
+// installed this adds no work to the decode path.
+let pluginRegistry = null;
+function getPluginRegistry() {
+  if (!pluginRegistry) {
+    pluginRegistry = new PluginRegistry({
+      onViolation: (plugin, violation, rawEvent) => {
+        logger.warn(`[plugins] ${plugin} violation (${violation.kind}): ${violation.message}`);
+        enqueueDeadLetter(rawEvent, new Error(`decoder plugin ${plugin} ${violation.kind}: ${violation.message}`)).catch(() => {});
+      },
+    }).loadDirectory();
+  }
+  return pluginRegistry;
+}
 
 // Classic operation types decoded from Horizon alongside Soroban events.
 const PATH_PAYMENT_TYPES = new Set(["path_payment_strict_send", "path_payment_strict_receive"]);
@@ -210,9 +229,14 @@ export async function decode(ev, opts = {}) {
   try {
     const decoded = await decodeEvent(ev, opts);
     _recordDecodeOutcome(true);
-    // Canonical, chain-derived event ID (#892).
-    const eventId = decoded ? eventIdFromRpc(ev) : null;
-    if (eventId) decoded.event_id = eventId;
+    // Hashed topic columns for RPC-compatible topic filters (#903).
+    if (decoded && Array.isArray(ev.topic)) {
+      try {
+        Object.assign(decoded, topicColumns(ev.topic));
+      } catch {
+        // topics without XDR (e.g. test fixtures) — leave unset
+      }
+    }
     return decoded;
   } catch (err) {
     _recordDecodeOutcome(false);
@@ -239,6 +263,7 @@ async function decodeEvent(ev, { currentAbi = false } = {}) {
     const wrapUnwrap = nativeXlmDescription(fnName, topics.slice(1), data);
     if (wrapUnwrap) {
       return {
+        decoder_version: decoderTag("native-sac"),
         contract_id: contractId,
         function: wrapUnwrap.function,
         ledger: ev.ledger,
@@ -256,6 +281,7 @@ async function decodeEvent(ev, { currentAbi = false } = {}) {
     const description = stellarSwapDescription(fnName, topics.slice(1), data, ev.ledger);
     if (description) {
       return {
+        decoder_version: decoderTag("stellarswap"),
         contract_id: contractId,
         function: fnName,
         ledger: ev.ledger,
@@ -273,11 +299,33 @@ async function decodeEvent(ev, { currentAbi = false } = {}) {
     const description = blendDescription(fnName, topics.slice(1), data, ev.ledger);
     if (description) {
       return {
+        decoder_version: decoderTag("blend"),
         contract_id: contractId,
         function: fnName,
         ledger: ev.ledger,
         tx_hash: ev.txHash,
         description,
+        raw_topics: topics.map((t) => stripNul(t)),
+        raw_data: safeStringify(data),
+        ...extractGasCosts(ev),
+      };
+    }
+  }
+
+  // Community decoder plugins, each in its own sandbox (#900).
+  const plugins = getPluginRegistry();
+  if (plugins.size > 0) {
+    const decodedByPlugin = await plugins.decode(
+      { contract_id: contractId, function: fnName, ledger: ev.ledger, tx_hash: ev.txHash, topics, data },
+      ev,
+    );
+    if (decodedByPlugin) {
+      return {
+        contract_id: contractId,
+        function: decodedByPlugin.function ?? fnName,
+        ledger: ev.ledger,
+        tx_hash: ev.txHash,
+        description: decodedByPlugin.description,
         raw_topics: topics.map((t) => stripNul(t)),
         raw_data: safeStringify(data),
         ...extractGasCosts(ev),
@@ -390,6 +438,7 @@ async function decodeEvent(ev, { currentAbi = false } = {}) {
     }).catch((err) => logger.error("[roleTracker] upsertRole failed:", err.message));
   }
 
+  decoded.decoder_version = decoderTag("abi");
   return decoded;
 }
 
@@ -442,6 +491,7 @@ export async function decodeClassicOperation(ev) {
     raw_topics: [op.type, op.from, op.to].filter((t) => typeof t === "string"),
     raw_data: safeStringify(op),
     type: "classic",
+    decoder_version: decoderTag("classic"),
   };
 }
 

@@ -1,0 +1,287 @@
+/**
+ * Design Tokens — Soroban Smart Block Explorer
+ * Issue #804: Dark/Light theme refinement and system-preference sync
+ *
+ * Supports:
+ * - :root / [data-theme="dark"] (Default dark)
+ * - [data-theme="light"] (Clean light mode)
+ * - [data-theme="high-contrast"] (WCAG 2.2 AAA high contrast mode)
+ * - @media print (Print optimization)
+ */
+
+:root,
+[data-theme="dark"] {
+  /* Surfaces & Layout */
+  --bg: #0d1117;
+  --surface: #161b22;
+  --surface-raised: #21262d;
+  --surface-sunken: #090d13;
+  --surface-overlay: rgba(13, 17, 23, 0.85);
+
+  /* Borders & Dividers */
+  --border: #30363d;
+  --border-subtle: #21262d;
+  --border-strong: #8b949e;
+  --border-focus: #58a6ff;
+
+  /* Typography */
+  --text: #f0f6fc;
+  --text-primary: #f0f6fc;
+  --text-secondary: #c9d1d9;
+  --text-muted: #8b949e;
+  --text-inverse: #0d1117;
+
+  /* Interactive & Accents */
+  --accent: #58a6ff;
+  --accent-hover: #79b8ff;
+  --accent-subtle: rgba(88, 166, 255, 0.15);
+  --accent-contrast: #0d1117;
+  --focus-ring: rgba(88, 166, 255, 0.4);
+
+  /* Status Colors & Badges */
+  --green: #3fb950;
+  --success: #3fb950;
+  --success-bg: rgba(63, 185, 80, 0.15);
+  --success-border: #238636;
+
+  --yellow: #e3b341;
+  --warning: #e3b341;
+  --warning-bg: rgba(227, 179, 65, 0.15);
+  --warning-border: #9e6a03;
+
+  --red: #f85149;
+  --danger: #f85149;
+  --danger-bg: rgba(248, 81, 73, 0.15);
+  --danger-border: #da3633;
+
+  --blue: #58a6ff;
+  --info: #58a6ff;
+  --info-bg: rgba(88, 166, 255, 0.15);
+  --info-border: #1f6feb;
+
+  --purple: #bc8cff;
+  --purple-bg: rgba(188, 140, 255, 0.15);
+
+  /* Categorical Chart Palette (Colorblind-Safe) */
+  --chart-1: #58a6ff;
+  --chart-2: #3fb950;
+  --chart-3: #e3b341;
+  --chart-4: #bc8cff;
+  --chart-5: #f0883e;
+  --chart-6: #f85149;
+
+  /* Graph & Cytoscape / 3D Visualizer */
+  --graph-bg: #0d1117;
+  --graph-node-contract: #bc8cff;
+  --graph-node-wallet: #58a6ff;
+  --graph-node-text: #f0f6fc;
+  --graph-edge: #484f58;
+  --graph-edge-highlight: #79b8ff;
+  --graph-edge-text: #8b949e;
+
+  /* Elevation Shadows */
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.5);
+  --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.6);
+}
+
+[data-theme="light"] {
+  /* Surfaces & Layout */
+  --bg: #f6f8fa;
+  --surface: #ffffff;
+  --surface-raised: #f3f4f6;
+  --surface-sunken: #eaedf1;
+  --surface-overlay: rgba(246, 248, 250, 0.85);
+
+  /* Borders & Dividers */
+  --border: #d0d7de;
+  --border-subtle: #e1e4e8;
+  --border-strong: #57606a;
+  --border-focus: #0969da;
+
+  /* Typography */
+  --text: #1f2328;
+  --text-primary: #1f2328;
+  --text-secondary: #32383f;
+  --text-muted: #59636e;
+  --text-inverse: #ffffff;
+
+  /* Interactive & Accents */
+  --accent: #0969da;
+  --accent-hover: #0860ca;
+  --accent-subtle: rgba(9, 105, 218, 0.12);
+  --accent-contrast: #ffffff;
+  --focus-ring: rgba(9, 105, 218, 0.35);
+
+  /* Status Colors & Badges */
+  --green: #1a7f37;
+  --success: #1a7f37;
+  --success-bg: rgba(26, 127, 55, 0.12);
+  --success-border: #2da44e;
+
+  --yellow: #9a6700;
+  --warning: #9a6700;
+  --warning-bg: rgba(154, 103, 0, 0.12);
+  --warning-border: #bf8700;
+
+  --red: #cf222e;
+  --danger: #cf222e;
+  --danger-bg: rgba(207, 34, 46, 0.12);
+  --danger-border: #e5534b;
+
+  --blue: #0969da;
+  --info: #0969da;
+  --info-bg: rgba(9, 105, 218, 0.12);
+  --info-border: #218bff;
+
+  --purple: #8250df;
+  --purple-bg: rgba(130, 80, 223, 0.12);
+
+  /* Categorical Chart Palette (Colorblind-Safe) */
+  --chart-1: #0969da;
+  --chart-2: #1a7f37;
+  --chart-3: #9a6700;
+  --chart-4: #8250df;
+  --chart-5: #bc4c00;
+  --chart-6: #cf222e;
+
+  /* Graph & Cytoscape / 3D Visualizer */
+  --graph-bg: #ffffff;
+  --graph-node-contract: #8250df;
+  --graph-node-wallet: #0969da;
+  --graph-node-text: #1f2328;
+  --graph-edge: #8c959f;
+  --graph-edge-highlight: #0969da;
+  --graph-edge-text: #59636e;
+
+  /* Elevation Shadows */
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.08);
+  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.12);
+  --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.16);
+}
+
+[data-theme="high-contrast"] {
+  /* Surfaces & Layout */
+  --bg: #000000;
+  --surface: #0a0a0a;
+  --surface-raised: #141414;
+  --surface-sunken: #000000;
+  --surface-overlay: rgba(0, 0, 0, 0.95);
+
+  /* Borders & Dividers (Super Crisp) */
+  --border: #ffffff;
+  --border-subtle: #cccccc;
+  --border-strong: #ffffff;
+  --border-focus: #ffff00;
+
+  /* Typography (WCAG AAA 7:1+) */
+  --text: #ffffff;
+  --text-primary: #ffffff;
+  --text-secondary: #f0f0f0;
+  --text-muted: #e6e6e6;
+  --text-inverse: #000000;
+
+  /* Interactive & Accents */
+  --accent: #40c4ff;
+  --accent-hover: #80d8ff;
+  --accent-subtle: rgba(64, 196, 255, 0.25);
+  --accent-contrast: #000000;
+  --focus-ring: #ffff00;
+
+  /* Status Colors (Maximum Luminance Separation) */
+  --green: #00ff66;
+  --success: #00ff66;
+  --success-bg: rgba(0, 255, 102, 0.2);
+  --success-border: #00ff66;
+
+  --yellow: #ffff00;
+  --warning: #ffff00;
+  --warning-bg: rgba(255, 255, 0, 0.2);
+  --warning-border: #ffff00;
+
+  --red: #ff6b6b;
+  --danger: #ff6b6b;
+  --danger-bg: rgba(255, 107, 107, 0.2);
+  --danger-border: #ff6b6b;
+
+  --blue: #40c4ff;
+  --info: #40c4ff;
+  --info-bg: rgba(64, 196, 255, 0.2);
+  --info-border: #40c4ff;
+
+  --purple: #d580ff;
+  --purple-bg: rgba(213, 128, 255, 0.2);
+
+  /* Categorical Chart Palette */
+  --chart-1: #40c4ff;
+  --chart-2: #00ff66;
+  --chart-3: #ffff00;
+  --chart-4: #d580ff;
+  --chart-5: #ffaa00;
+  --chart-6: #ff5555;
+
+  /* Graph & Cytoscape / 3D Visualizer */
+  --graph-bg: #000000;
+  --graph-node-contract: #d580ff;
+  --graph-node-wallet: #40c4ff;
+  --graph-node-text: #ffffff;
+  --graph-edge: #ffffff;
+  --graph-edge-highlight: #ffff00;
+  --graph-edge-text: #ffffff;
+
+  /* Shadows (High Contrast Stark Borders) */
+  --shadow-sm: 0 0 0 1px #ffffff;
+  --shadow-md: 0 0 0 2px #ffffff;
+  --shadow-lg: 0 0 0 3px #ffffff;
+}
+
+/* Print Stylesheet Overrides */
+@media print {
+  :root,
+  [data-theme="dark"],
+  [data-theme="light"],
+  [data-theme="high-contrast"] {
+    --bg: #ffffff !important;
+    --surface: #ffffff !important;
+    --surface-raised: #ffffff !important;
+    --surface-sunken: #f8fafc !important;
+    --border: #000000 !important;
+    --border-subtle: #666666 !important;
+    --border-strong: #000000 !important;
+    --text: #000000 !important;
+    --text-primary: #000000 !important;
+    --text-secondary: #222222 !important;
+    --text-muted: #444444 !important;
+    --text-inverse: #ffffff !important;
+    --accent: #000000 !important;
+    --accent-contrast: #ffffff !important;
+    --graph-bg: #ffffff !important;
+    --graph-node-text: #000000 !important;
+    --graph-edge: #000000 !important;
+  }
+
+  body {
+    background: #ffffff !important;
+    color: #000000 !important;
+  }
+
+  header,
+  nav,
+  button,
+  .no-print,
+  .nav-hamburger,
+  .nav-mobile-menu {
+    display: none !important;
+  }
+
+  .card {
+    box-shadow: none !important;
+    border: 1px solid #000000 !important;
+    page-break-inside: avoid;
+  }
+
+  a {
+    color: #000000 !important;
+    text-decoration: underline !important;
+  }
+}

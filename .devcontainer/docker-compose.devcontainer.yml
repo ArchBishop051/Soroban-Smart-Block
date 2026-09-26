@@ -1,29 +1,17 @@
-version: "3.8"
-
 services:
   devcontainer:
     build:
       context: .
       dockerfile: Dockerfile
-      # BuildKit is required for RUN --mount=type=cache in the Dockerfile.
-      # Codespaces and modern Docker Desktop enable it by default.
-      args:
-        BUILDKIT_INLINE_CACHE: "1"
     volumes:
       - ..:/workspaces/Soroban-Smart-Block:cached
-      # Persist npm and Cargo caches across container rebuilds so that
-      # postCreateCommand is near-instant after the first run.
-      - npm-cache:/root/.npm
-      - cargo-registry:/usr/local/cargo/registry
-      - cargo-git:/usr/local/cargo/git
     # Keep the container alive for VS Code / Codespaces to attach to
     command: sleep infinity
     environment:
       DATABASE_URL: postgres://soroban:soroban_secret@postgres:5432/soroban_explorer
       SOROBAN_RPC_URL: https://soroban-testnet.stellar.org
     depends_on:
-      postgres:
-        condition: service_healthy
+      - postgres
 
   postgres:
     image: postgres:16-alpine
@@ -32,8 +20,6 @@ services:
       POSTGRES_USER: soroban
       POSTGRES_PASSWORD: soroban_secret
       POSTGRES_DB: soroban_explorer
-    ports:
-      - "5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -44,6 +30,3 @@ services:
 
 volumes:
   pgdata:
-  npm-cache:
-  cargo-registry:
-  cargo-git:

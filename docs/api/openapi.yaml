@@ -238,13 +238,31 @@ paths:
             enum: [soroban, classic]
             example: "soroban"
           description: Filter by transaction type
+        - name: cursor
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Opaque signed keyset cursor
+        - name: after
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Opaque signed keyset cursor for forward pagination
+        - name: before
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Opaque signed keyset cursor for backward pagination
         - name: after_seq
           in: query
           required: false
           schema:
             type: integer
             example: 42
-          description: Event seq cursor (`next_cursor` from the previous page); omit for the first page
+          description: Legacy event seq cursor; omit for the first page
         - name: limit
           in: query
           required: false
@@ -254,10 +272,26 @@ paths:
             maximum: 200
             example: 25
           description: Max number of items to return (max 200)
+        - name: count
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [exact, estimate]
+            default: estimate
+          description: Total count calculation strategy (exact COUNT or reltuples estimate)
       responses:
         "200":
-          description: Paginated events with next_cursor
+          description: Paginated events with next_cursor and page_info
           headers:
+            Deprecation:
+              schema:
+                type: string
+              description: Present if deprecated offset/page parameter is used
+            Link:
+              schema:
+                type: string
+              description: Deprecation documentation link
             X-RateLimit-Limit:
               $ref: "#/components/headers/X-RateLimit-Limit"
             X-RateLimit-Remaining:
@@ -689,12 +723,31 @@ paths:
       summary: List registered contracts
       description: Returns a paginated list of registered contracts. Supports filtering by protocol type.
       parameters:
+        - name: cursor
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Opaque signed keyset cursor
+        - name: after
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Opaque signed keyset cursor for forward pagination
+        - name: before
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Opaque signed keyset cursor for backward pagination
         - name: page
           in: query
           schema:
             type: integer
             minimum: 1
             default: 1
+          description: Legacy page number (deprecated)
         - name: limit
           in: query
           schema:
@@ -708,9 +761,30 @@ paths:
           schema:
             type: string
             enum: [token, dex, lending, nft, bridge, other]
+        - name: q
+          in: query
+          description: Search term matching name or description
+          schema:
+            type: string
+        - name: count
+          in: query
+          description: Total count calculation strategy (exact COUNT or reltuples estimate)
+          schema:
+            type: string
+            enum: [exact, estimate]
+            default: estimate
       responses:
         "200":
           description: Paginated contract list
+          headers:
+            Deprecation:
+              schema:
+                type: string
+              description: Present if deprecated page/offset parameter is used
+            Link:
+              schema:
+                type: string
+              description: Deprecation documentation link
           content:
             application/json:
               schema:
@@ -749,6 +823,12 @@ paths:
                   ok:
                     type: boolean
                     example: true
+          links:
+            GetRegisteredContract:
+              operationRef: "#/paths/~1api~1contracts~1{id}/get"
+              description: Fetch the contract that was just registered (stateful API fuzzing, #907).
+              parameters:
+                id: "$request.body#/id"
         "400":
           description: >-
             Invalid input. Body-schema failures (AJV) return `{ errors: [...] }`
@@ -1212,31 +1292,79 @@ paths:
           schema:
             type: string
             example: "CC4VM2DTTR4QO4J4E5K2YUXM"
+        - name: cursor
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Opaque signed keyset cursor
+        - name: after
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Opaque signed keyset cursor for forward pagination
+        - name: before
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Opaque signed keyset cursor for backward pagination
         - name: page
           in: query
           schema:
             type: integer
             default: 1
             minimum: 1
+          description: Legacy page number (deprecated)
         - name: limit
           in: query
           schema:
             type: integer
             default: 25
             maximum: 100
+        - name: count
+          in: query
+          description: Total count calculation strategy (exact COUNT or reltuples estimate)
+          schema:
+            type: string
+            enum: [exact, estimate]
+            default: estimate
       responses:
         "200":
           description: Paginated events for the contract
+          headers:
+            Deprecation:
+              schema:
+                type: string
+              description: Present if deprecated page/offset parameter is used
+            Link:
+              schema:
+                type: string
+              description: Deprecation documentation link
           content:
             application/json:
               schema:
                 type: object
-                required: [events, pagination]
+                required: [events]
                 properties:
                   events:
                     type: array
                     items:
                       $ref: "#/components/schemas/DecodedEvent"
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/DecodedEvent"
+                  page_info:
+                    $ref: "#/components/schemas/KeysetPageInfo"
+                  next_cursor:
+                    type: string
+                    nullable: true
+                  total:
+                    type: integer
+                  count_is_estimate:
+                    type: boolean
                   pagination:
                     type: object
                     properties:
@@ -2328,6 +2456,24 @@ paths:
       summary: List sandbox sessions
       description: Returns a paginated list of all sandbox sessions ordered by most recently updated.
       parameters:
+        - name: cursor
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Opaque signed keyset cursor
+        - name: after
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Opaque signed keyset cursor for forward pagination
+        - name: before
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Opaque signed keyset cursor for backward pagination
         - name: limit
           in: query
           schema:
@@ -2339,21 +2485,49 @@ paths:
           schema:
             type: integer
             default: 0
+          description: Legacy offset (deprecated)
+        - name: count
+          in: query
+          description: Total count calculation strategy (exact COUNT or reltuples estimate)
+          schema:
+            type: string
+            enum: [exact, estimate]
+            default: estimate
       responses:
         "200":
           description: Paginated sandbox list
+          headers:
+            Deprecation:
+              schema:
+                type: string
+              description: Present if deprecated offset/page parameter is used
+            Link:
+              schema:
+                type: string
+              description: Deprecation documentation link
           content:
             application/json:
               schema:
                 type: object
-                required: [sandboxes, total]
+                required: [sandboxes]
                 properties:
                   sandboxes:
                     type: array
                     items:
                       $ref: "#/components/schemas/SandboxSummary"
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/SandboxSummary"
+                  page_info:
+                    $ref: "#/components/schemas/KeysetPageInfo"
+                  next_cursor:
+                    type: string
+                    nullable: true
                   total:
                     type: integer
+                  count_is_estimate:
+                    type: boolean
         "500":
           description: Internal server error
           content:
@@ -3197,6 +3371,24 @@ paths:
           schema:
             type: string
             format: date-time
+        - name: cursor
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Opaque signed keyset cursor
+        - name: after
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Opaque signed keyset cursor for forward pagination
+        - name: before
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Opaque signed keyset cursor for backward pagination
         - name: limit
           in: query
           schema:
@@ -3208,19 +3400,34 @@ paths:
           schema:
             type: integer
             default: 0
+          description: Legacy offset (deprecated)
       responses:
         "200":
           description: Audit log entries
+          headers:
+            Deprecation:
+              schema:
+                type: string
+              description: Present if deprecated offset/page parameter is used
+            Link:
+              schema:
+                type: string
+              description: Deprecation documentation link
           content:
             application/json:
               schema:
                 type: object
-                required: [data, limit, offset]
+                required: [data, limit]
                 properties:
                   data:
                     type: array
                     items:
                       $ref: "#/components/schemas/AuditLogEntry"
+                  page_info:
+                    $ref: "#/components/schemas/KeysetPageInfo"
+                  next_cursor:
+                    type: string
+                    nullable: true
                   limit:
                     type: integer
                   offset:
@@ -4868,18 +5075,45 @@ components:
             |amount_out - min_amount_out| / min_amount_out. Present only for
             swap events where min_amount_out is known.
 
+    KeysetPageInfo:
+      type: object
+      required: [has_next, has_previous]
+      properties:
+        has_next:
+          type: boolean
+          description: True if there are more items in the forward direction
+        has_previous:
+          type: boolean
+          description: True if there are more items in the backward direction
+        start_cursor:
+          type: string
+          nullable: true
+          description: Opaque cursor for backward pagination before the first row
+        end_cursor:
+          type: string
+          nullable: true
+          description: Opaque cursor for forward pagination after the last row
+
     CursorPaginatedEvents:
       type: object
-      required: [data, next_cursor]
+      required: [data]
       properties:
         data:
           type: array
           items:
             $ref: "#/components/schemas/DecodedEvent"
+        page_info:
+          $ref: "#/components/schemas/KeysetPageInfo"
         next_cursor:
-          type: integer
+          type: string
           nullable: true
-          example: 42
+          description: Opaque signed cursor for the next page
+        total:
+          type: integer
+          description: Total event count
+        count_is_estimate:
+          type: boolean
+          description: True when total count is approximate (reltuples/planner)
 
     SearchResponse:
       type: object
@@ -5043,12 +5277,25 @@ components:
 
     ContractsListResponse:
       type: object
-      required: [contracts, pagination]
+      required: [contracts]
       properties:
         contracts:
           type: array
           items:
             $ref: "#/components/schemas/ContractMeta"
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/ContractMeta"
+        page_info:
+          $ref: "#/components/schemas/KeysetPageInfo"
+        next_cursor:
+          type: string
+          nullable: true
+        total:
+          type: integer
+        count_is_estimate:
+          type: boolean
         pagination:
           type: object
           properties:
