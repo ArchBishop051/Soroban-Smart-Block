@@ -1,7 +1,7 @@
 {
   "name": "Soroban Smart Block Explorer",
 
-  // Build the dev image from .devcontainer/Dockerfile (Rust + Node 20 + wasm32)
+  // Build the dev image from .devcontainer/Dockerfile (Rust + wasm32)
   // and compose up postgres as a sidecar. Uses a self-contained compose file so
   // Codespaces doesn't attempt to build the full production stack on startup.
   "dockerComposeFile": "docker-compose.devcontainer.yml",
@@ -10,6 +10,12 @@
   "overrideCommand": true,
   "remoteUser": "vscode",
   "shutdownAction": "stopCompose",
+
+  // Node 20 via nvm, owned by the vscode user (global npm installs work
+  // without sudo). Matches the node-version used in CI.
+  "features": {
+    "ghcr.io/devcontainers/features/node:1": { "version": "20" }
+  },
 
   "forwardPorts": [5173, 3001, "postgres:5432"],
   "portsAttributes": {
