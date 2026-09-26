@@ -8,9 +8,13 @@
   ],
   "testRunner": "command",
   "commandRunner": {
-    "command": "npm test && npm run test:decoder"
+    "command": "npm run test:mutation:targets"
   },
-  "reporters": ["html", "clear-text", "progress"],
+  "reporters": [
+    "html",
+    "clear-text",
+    "progress"
+  ],
   "htmlReporter": {
     "fileName": "reports/mutation/mutation.html"
   },
@@ -19,5 +23,7 @@
     "low": 60,
     "break": 60
   },
-  "timeoutMS": 30000
+  "timeoutMS": 30000,
+  "dryRunTimeoutMinutes": 10,
+  "concurrency": 4
 }

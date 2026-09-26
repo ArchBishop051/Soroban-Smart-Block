@@ -7,7 +7,8 @@
  * function scope.
  */
 
-import { xdr, StrKey } from "@stellar/stellar-sdk";
+import { xdr, StrKey, scValToNative } from "@stellar/stellar-sdk";
+import { classifyCredentialSignature } from "./smartWallet.js";
 
 /**
  * Decode a SorobanCredentials object to a signer address string.
@@ -37,6 +38,20 @@ function signerFromCredentials(creds) {
  * @param {xdr.SorobanAuthorizedFunction} fn
  * @returns {string}  e.g. "CONTRACT:CA…:transfer" or "CREATE_CONTRACT"
  */
+/**
+ * Signature type carried by an address credential (#898): ed25519,
+ * secp256r1/WebAuthn (with parsed clientDataJSON), or multi-signer. Shows
+ * what the chain accepted; nothing is re-verified.
+ */
+function credentialSummary(creds) {
+  if (creds.switch().name === "sorobanCredentialsSourceAccount") return { type: "source_account" };
+  try {
+    return classifyCredentialSignature(scValToNative(creds.address().signature()));
+  } catch {
+    return { type: "unknown" };
+  }
+}
+
 function scopeFromFunction(fn) {
   if (fn.switch().name === "sorobanAuthorizedFunctionTypeContractFn") {
     const cf = fn.contractFn();
@@ -82,6 +97,7 @@ export function parseAuthTree(authEntryXdrs) {
     const entry = xdr.SorobanAuthorizationEntry.fromXDR(b64, "base64");
     return {
       signer: signerFromCredentials(entry.credentials()),
+      credential: credentialSummary(entry.credentials()),
       invocations: walkInvocation(entry.rootInvocation()),
     };
   });

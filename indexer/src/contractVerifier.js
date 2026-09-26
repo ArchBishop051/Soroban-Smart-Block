@@ -9,6 +9,9 @@ import { logger } from "./logger.js";
  * If they match → set is_verified = TRUE (with ledger number).
  * If they differ  → set is_verified = FALSE.
  *
+ * It also mirrors on-chain ownership claims (`get_ownership`, issue #875)
+ * into ownership_verified / ownership_owner / ownership_method.
+ *
  * The job runs every VERIFY_CRON minutes (default: every 15 minutes).
  * RPC_URL and CONTRACT_ID come from the same env vars used by the indexer.
  *
@@ -76,6 +79,42 @@ async function fetchOnChainAbi(contractId) {
   }
 }
 
+/**
+ * Issue #875 — fetch the on-chain ownership claim for `contractId` from the
+ * explorer contract's `get_ownership` view.
+ *
+ * @param {string} contractId
+ * @returns {Promise<{ owner: string, method: string, ledger: number } | null | undefined>}
+ *   the claim, `null` when the entry is unverified, or `undefined` when the
+ *   RPC could not be reached (keep the stored state).
+ */
+async function fetchOnChainOwnership(contractId) {
+  if (!CONTRACT_ID || !RPC_URL) return undefined;
+
+  try {
+    const { SorobanRpc, Contract, scValToNative, nativeToScVal } = await import(
+      '@stellar/stellar-sdk'
+    );
+
+    const server = new SorobanRpc.Server(RPC_URL, { allowHttp: true });
+    const contract = new Contract(CONTRACT_ID);
+
+    const tx = await server.simulateTransaction(
+      contract.call('get_ownership', nativeToScVal(contractId, { type: 'string' })),
+    );
+
+    if (SorobanRpc.Api.isSimulationError(tx) || !tx.result?.retval) return undefined;
+
+    const native = scValToNative(tx.result.retval);
+    if (!native) return null;
+    // Unit enum variants decode as a one-element array, e.g. ['TargetAdmin'].
+    const method = Array.isArray(native.method) ? native.method[0] : native.method;
+    return { owner: String(native.owner), method: String(method), ledger: Number(native.ledger) };
+  } catch {
+    return undefined;
+  }
+}
+
 async function runVerificationBatch() {
   let after;
   let processed = 0;
@@ -86,6 +125,11 @@ async function runVerificationBatch() {
 
     for (const contract of contracts) {
       try {
+        const ownership = await fetchOnChainOwnership(contract.id);
+        if (ownership !== undefined) {
+          await db.setContractOwnership(contract.id, ownership);
+        }
+
         const onChain = await fetchOnChainAbi(contract.id);
         if (onChain === null) {
           // Cannot reach on-chain data — skip this contract, preserve current state

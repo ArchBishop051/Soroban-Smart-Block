@@ -2,6 +2,8 @@
 
 /** A decoded on-chain event from the indexer. */
 export interface DecodedEvent {
+  /** Canonical, chain-derived ID (Soroban RPC format); null until re-indexed. */
+  event_id?: string | null;
   seq: number;
   ledger: number;
   contract_id: string | null;
@@ -86,16 +88,32 @@ export interface CrateAdvisory {
 
 // ── Pagination ─────────────────────────────────────────────────────────────────
 
+/** Keyset page info metadata. */
+export interface KeysetPageInfo {
+  has_next: boolean;
+  has_previous: boolean;
+  start_cursor: string | null;
+  end_cursor: string | null;
+}
+
 /** Cursor-based paginated response (used by /api/events). */
 export interface CursorPage<T> {
   data: T[];
-  next_cursor: number | null;
+  page_info?: KeysetPageInfo;
+  next_cursor: string | number | null;
+  total?: number;
+  count_is_estimate?: boolean;
 }
 
-/** Offset-based paginated response. */
+/** Paginated response with keyset cursor and legacy offset support. */
 export interface PaginatedResponse<T> {
   contracts: T[];
-  pagination: PageInfo;
+  data?: T[];
+  page_info?: KeysetPageInfo;
+  next_cursor?: string | number | null;
+  total?: number;
+  count_is_estimate?: boolean;
+  pagination?: PageInfo;
 }
 
 export interface PageInfo {
@@ -108,7 +126,12 @@ export interface PageInfo {
 /** Contract events paginated response. */
 export interface ContractEventsResponse {
   events: DecodedEvent[];
-  pagination: {
+  data?: DecodedEvent[];
+  page_info?: KeysetPageInfo;
+  next_cursor?: string | number | null;
+  total?: number;
+  count_is_estimate?: boolean;
+  pagination?: {
     page: number;
     limit: number;
     total: number;
@@ -286,24 +309,50 @@ export interface EventsFilter {
   fn?: string;
   /** Filter by transaction type. */
   type?: "soroban" | "classic";
-  /** Cursor from previous page's next_cursor. */
+  /** Keyset cursor token. */
+  cursor?: string;
+  /** Forward keyset cursor. */
+  after?: string | number;
+  /** Backward keyset cursor. */
+  before?: string;
+  /** Legacy cursor from previous page's next_cursor. */
   after_seq?: number;
   /** Max items per page (1–200, default 25). */
   limit?: number;
+  /** Count strategy: 'exact' or 'estimate' */
+  count?: "exact" | "estimate";
 }
 
 export interface ContractsFilter {
+  /** Keyset cursor token. */
+  cursor?: string;
+  /** Forward keyset cursor. */
+  after?: string;
+  /** Backward keyset cursor. */
+  before?: string;
+  /** Legacy page number. */
   page?: number;
   limit?: number;
   /** Filter by protocol type. */
   type?: string;
   /** Search query string. */
   q?: string;
+  /** Count strategy: 'exact' or 'estimate' */
+  count?: "exact" | "estimate";
 }
 
 export interface ContractEventsFilter {
+  /** Keyset cursor token. */
+  cursor?: string;
+  /** Forward keyset cursor. */
+  after?: string;
+  /** Backward keyset cursor. */
+  before?: string;
+  /** Legacy page number. */
   page?: number;
   limit?: number;
+  /** Count strategy: 'exact' or 'estimate' */
+  count?: "exact" | "estimate";
 }
 
 export interface WalletEventsFilter {
@@ -345,4 +394,39 @@ export interface SubscribeOptions {
 export interface Subscription {
   /** Close the WebSocket and stop reconnecting. */
   unsubscribe(): void;
+}
+
+// ── Query jobs (#906) ────────────────────────────────────────────────────────
+
+export type QueryJobStatus = "queued" | "running" | "succeeded" | "failed" | "cancelled" | "expired";
+
+export interface QueryJobRequest {
+  type: "events_export";
+  format?: "ndjson" | "csv";
+  params?: { contract?: string; from_ledger?: number; to_ledger?: number };
+}
+
+export interface QueryJob {
+  id: string;
+  type: string;
+  format: "ndjson" | "csv";
+  params: Record<string, unknown>;
+  status: QueryJobStatus;
+  progress: { rows: number; bytes: number };
+  /** True when the job stopped at its quota and the result is incomplete. */
+  partial: boolean;
+  snapshot_ledger: number | null;
+  error: string | null;
+  created_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+  expires_at: string | null;
+}
+
+export interface QueryJobResult {
+  /** Short-lived signed download URL, relative to the API base URL. */
+  url: string;
+  expires_at: string;
+  partial: boolean;
+  rows: number;
 }

@@ -15,3 +15,10 @@ paths = [
   '''(^|/)target/''',
   '''(^|/)node_modules/''',
 ]
+# Documentation examples use obvious placeholder keys, not real credentials.
+regexes = [
+  '''your-(api|admin)-key''',
+  '''new_key_xyz789''',
+  '''old_expired_key''',
+  '''old_key_abc123''',
+]
