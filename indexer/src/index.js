@@ -52,6 +52,12 @@ import { processRetries as dlqProcessRetries, enqueue as dlqEnqueue, getDlqDepth
 import { recordLedger as gapRecordLedger } from "./predictiveGapDetector.js";
 import { deliverWebhooksForEvent, retryWebhookDelivery } from "./webhookDelivery.js";
 import { runIntegrityChecks } from "./routes/admin.js";
+import {
+  isLeader,
+  start as startLeaderElection,
+  stop as stopLeaderElection,
+  tryAcquireLock,
+} from "./optional/leaderElection.js";
 
 const RPC_URL = config.SOROBAN_RPC_URL;
 const START_LEDGER = config.START_LEDGER;
@@ -60,6 +66,7 @@ const REORG_CHECK_INTERVAL = config.REORG_CHECK_INTERVAL;
 // Max events per RPC page — Soroban caps at 200
 const PAGE_LIMIT = 200;
 const MAX_GAP_RETRIES = 3;
+const LEADERSHIP_ENABLED = Boolean(config.REDIS_URL);
 
 const rpc = new SorobanRpc.Server(RPC_URL, { allowHttp: true });
 
@@ -186,8 +193,16 @@ export async function loadTransactionContext(
  * @param {{ feeBump: object | null, archivalInfo: object | null }} context
  * @returns {Promise<object>} the decoded event that was persisted
  */
-export async function processSingleEvent(rawSorobanEvent, context = undefined) {
-  const { feeBump, archivalInfo } = context ?? (await loadTransactionContext(rawSorobanEvent.txHash));
+export async function processSingleEvent(
+  rawSorobanEvent,
+  context = undefined,
+  { suppressExternalEffects = false } = {},
+) {
+  const { feeBump, archivalInfo } =
+    context ??
+    (await loadTransactionContext(rawSorobanEvent.txHash, {
+      ...(suppressExternalEffects ? { publishStatus: () => {} } : {}),
+    }));
   const decodeStart = Date.now();
   const decoded = await decode(rawSorobanEvent);
   const contractMeta = await db.getContractMeta(rawSorobanEvent.contractId).catch(() => null);
@@ -215,9 +230,11 @@ export async function processSingleEvent(rawSorobanEvent, context = undefined) {
   // Bust wallet event caches (#534) — any new event may reference a wallet address.
   cacheInvalidate("wallet:events:*").catch(() => {});
   // Notify matching webhook subscriptions (non-blocking; failures retry via the DLQ).
-  deliverWebhooksForEvent(decoded).catch((err) =>
-    logger.error("[webhookDelivery] dispatch failed:", err.message),
-  );
+  if (!suppressExternalEffects) {
+    deliverWebhooksForEvent(decoded).catch((err) =>
+      logger.error("[webhookDelivery] dispatch failed:", err.message),
+    );
+  }
 
   // Persist per-key state diffs for the timeline.
   const diffs = extractStateDiffs(rawSorobanEvent, decoded);
@@ -234,7 +251,7 @@ export async function processSingleEvent(rawSorobanEvent, context = undefined) {
     );
   }
 
-  publish(decoded); // push to WS clients
+  if (!suppressExternalEffects) publish(decoded); // push to WS clients
   handleVaultEvent(decoded); // vault ratio update (async, non-blocking)
 
   // Process circuit breaker events.
@@ -269,12 +286,21 @@ async function dlqRetryDispatch(rawEvent) {
  * Returns the latest ledger sequence plus the corresponding chain hash that
  * the RPC reported for that poll span.
  */
-async function indexLedger(ledger) {
+export async function indexLedger(
+  ledger,
+  { endLedger = null, pageDelayMs = 0, ignoreLeadership = false, suppressExternalEffects = false } = {},
+) {
+  const checkLeadership = () => {
+    if (!ignoreLeadership) assertLeadership();
+  };
+  checkLeadership();
   let pageCursor = undefined; // RPC pagination cursor (opaque string)
   let latestLedger = ledger;
   let latestLedgerHash = null;
+  let eventsProcessed = 0;
 
   do {
+    checkLeadership();
     const req = {
       startLedger: pageCursor ? undefined : ledger, // only on first page
       filters: [{ type: "contract" }],
@@ -286,33 +312,49 @@ async function indexLedger(ledger) {
     latestLedger = res.latestLedger ?? latestLedger;
     latestLedgerHash = res.latestLedgerHash ?? latestLedgerHash;
 
+    const pageEvents =
+      endLedger == null
+        ? res.events
+        : res.events.filter((event) => Number(event.ledger) >= ledger && Number(event.ledger) <= endLedger);
+    const beyondEndLedger = endLedger != null && res.events.some((event) => Number(event.ledger) > endLedger);
+
     // Flag footprint contention across transactions in this page's events
-    scanFootprintContention(res.events);
+    scanFootprintContention(pageEvents);
 
     // Build a per-page transaction-context cache to avoid redundant RPC calls
     // when multiple events share the same transaction.
     const transactionContextCache = new Map();
-    const uniqueTxHashes = [...new Set(res.events.map((e) => e.txHash).filter(Boolean))];
+    const uniqueTxHashes = [...new Set(pageEvents.map((e) => e.txHash).filter(Boolean))];
     await Promise.all(
       uniqueTxHashes.map(async (txHash) => {
-        transactionContextCache.set(txHash, await loadTransactionContext(txHash));
+        transactionContextCache.set(
+          txHash,
+          await loadTransactionContext(txHash, {
+            ...(suppressExternalEffects ? { publishStatus: () => {} } : {}),
+          }),
+        );
       }),
     );
 
-    for (const ev of res.events) {
-      await processSingleEvent(ev, transactionContextCache.get(ev.txHash));
+    for (const ev of pageEvents) {
+      checkLeadership();
+      await processSingleEvent(ev, transactionContextCache.get(ev.txHash), { suppressExternalEffects });
+      eventsProcessed++;
     }
 
     // Scan transactions for UploadContractWasm operations (non-blocking)
-    indexWasmUploads(uniqueTxHashes, ledger).catch((err) => logger.error("[wasmUpload] batch error:", err.message));
+    if (endLedger == null) {
+      indexWasmUploads(uniqueTxHashes, ledger).catch((err) => logger.error("[wasmUpload] batch error:", err.message));
+    }
 
     // record the latest ledger hash for re-org detection
-    if (res.latestLedger && res.latestLedgerHash) {
+    if (endLedger == null && res.latestLedger && res.latestLedgerHash) {
       await recordLedgerHash(res.latestLedger, res.latestLedgerHash).catch(() => {});
     }
 
     // If the RPC returned a full page there may be more events; follow the cursor.
-    pageCursor = res.events.length === PAGE_LIMIT ? res.cursor : undefined;
+    pageCursor = !beyondEndLedger && res.events.length === PAGE_LIMIT ? res.cursor : undefined;
+    if (pageCursor && pageDelayMs > 0) await new Promise((resolve) => setTimeout(resolve, pageDelayMs));
   } while (pageCursor);
 
   // Invalidate events list cache after each ledger so stale pages are evicted.
@@ -320,7 +362,15 @@ async function indexLedger(ledger) {
     cacheInvalidate("events:list:*").catch(() => {});
   }
 
-  return { latestLedger, latestLedgerHash };
+  return { latestLedger, latestLedgerHash, eventsProcessed };
+}
+
+function assertLeadership() {
+  if (LEADERSHIP_ENABLED && !isLeader()) {
+    const error = new Error("Indexer leadership lost");
+    error.code = "LEADERSHIP_LOST";
+    throw error;
+  }
 }
 
 let shutdown = false;
@@ -328,6 +378,13 @@ let ledgersSinceReorgCheck = 0;
 
 async function run() {
   await db.init();
+  if (LEADERSHIP_ENABLED) {
+    await tryAcquireLock();
+    startLeaderElection({
+      onBecomeLeader: () => logger.info("[leaderElection] this instance is now indexing"),
+      onLoseLeadership: () => logger.warn("[leaderElection] indexing paused after lease loss"),
+    });
+  }
   if (config.SEED_BUILTIN_ABIS) {
     await seedBuiltinAbis().catch((err) => logger.warn({ err: err.message }, "built-in ABI seeding failed"));
   }
@@ -390,24 +447,32 @@ async function run() {
   logger.info({ ledger: _cursor }, "daemon starting");
 
   while (!shutdown) {
+    if (LEADERSHIP_ENABLED && !isLeader()) {
+      await new Promise((r) => setTimeout(r, POLL_MS));
+      continue;
+    }
     try {
       // ── drain gap queue first ──────────────────────────────────────
       while (_gapQueue.length > 0 && !shutdown) {
+        assertLeadership();
         const gap = _gapQueue[0];
         logger.info(`[gap] re-indexing ledgers ${gap.from} → ${gap.to} (attempt ${gap.retries + 1}/${MAX_GAP_RETRIES})`);
         let gapOk = true;
         for (let ledger = gap.from; ledger <= gap.to; ledger++) {
           if (shutdown) break;
           try {
+            assertLeadership();
             await indexLedger(ledger);
             gapRecordLedger(ledger);
           } catch (err) {
+            if (err.code === "LEADERSHIP_LOST") break;
             logger.error({ err: err.message, ledger }, "gap re-index failed");
             gapOk = false;
             break;
           }
         }
 
+        if (LEADERSHIP_ENABLED && !isLeader()) break;
         if (gapOk) {
           _gapQueue.shift();
           await db.closeGapLog(gap.logId).catch(() => {});
@@ -434,6 +499,7 @@ async function run() {
       logger.info(`[daemon] polling from ledger ${_cursor}`);
       const polledFrom = _cursor;
       const latest = await indexLedger(polledFrom);
+      assertLeadership();
       const latestLedger = latest.latestLedger ?? polledFrom;
       const latestLedgerHash = latest.latestLedgerHash;
       alertManager.recordPoll();
@@ -443,7 +509,8 @@ async function run() {
       updateIndexerStatus(polledFrom, lagSeconds, ledgerLag);
       indexerLagLedgers.set(ledgerLag);
 
-      const immediateForkLedger = await checkForReorg(latestLedger, latestLedgerHash).catch((err) => {
+      assertLeadership();
+      const immediateForkLedger = await checkForReorg(latestLedger, latestLedgerHash, { rpc }).catch((err) => {
         logger.error({ err: err.message, ledger: latestLedger }, "reorg fast-path check failed");
         return null;
       });
@@ -460,6 +527,7 @@ async function run() {
         // The raw ledger span only triggers the check. Hash-row lookback stays
         // bounded inside checkForReorg(), even after a large catch-up jump.
         const forkLedger = await checkForReorg(rpc);
+        assertLeadership();
         ledgersSinceReorgCheck = 0;
         if (forkLedger !== null) {
           // rollbackFromLedger() persisted this rewind in the same transaction
@@ -474,15 +542,20 @@ async function run() {
       await db.saveCursor(_cursor);
       await db.saveLastIndexedLedger(latestLedger);
     } catch (err) {
-      logger.error({ err: err.message, ledger: _cursor }, "indexer error");
-      rpcErrors.inc({ type: err.code ?? "unknown" });
-      await alertManager.checkRpcHealth(false);
+      if (err.code === "LEADERSHIP_LOST") {
+        logger.info("[leaderElection] interrupted ledger work; cursor was not advanced");
+      } else {
+        logger.error({ err: err.message, ledger: _cursor }, "indexer error");
+        rpcErrors.inc({ type: err.code ?? "unknown" });
+        await alertManager.checkRpcHealth(false);
+      }
     }
     if (!shutdown) await new Promise((r) => setTimeout(r, POLL_MS));
   }
 
   logger.info("daemon shutting down");
   server?.close();
+  if (LEADERSHIP_ENABLED) await stopLeaderElection();
   process.exit(0);
 }
 

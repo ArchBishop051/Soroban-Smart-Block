@@ -883,7 +883,7 @@ export function blendDescription(fn, args, data, ledger) {
 }
 
 function genericDescription(fn, args, data, contractId, fullTopics = null) {
-  const argStr = args.map(String).join(", ");
+  const argStr = args.map(formatDescriptionValue).join(", ");
   let description = `${fn}(${argStr}) called on ${contractId}`;
   if (fullTopics != null || data != null) {
     const raw = {
@@ -895,8 +895,27 @@ function genericDescription(fn, args, data, contractId, fullTopics = null) {
   return description;
 }
 
+function formatDescriptionValue(value) {
+  if (value === null || value === undefined) return String(value);
+  if (typeof value === "string") return value;
+  if (typeof value === "bigint") return value.toString();
+  if (value instanceof Map) {
+    return `{${[...value]
+      .map(([key, item]) => `${formatDescriptionValue(key)}: ${formatDescriptionValue(item)}`)
+      .join(", ")}}`;
+  }
+  if (Array.isArray(value)) return `[${value.map(formatDescriptionValue).join(", ")}]`;
+  if (value && typeof value === "object") {
+    return `{${Object.entries(value)
+      .map(([key, item]) => `${key}: ${formatDescriptionValue(item)}`)
+      .join(", ")}}`;
+  }
+  return String(value);
+}
+
 function fmt(addr) {
-  if (typeof addr !== "string" || addr.length < 10) return String(addr);
+  if (typeof addr !== "string") return formatDescriptionValue(addr);
+  if (addr.length < 10) return addr;
   return `${addr.slice(0, 6)}…${addr.slice(-4)}`;
 }
 

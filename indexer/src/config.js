@@ -126,6 +126,10 @@ const configSchema = z.object({
     message: "POLL_MS must be at least 100ms to avoid overwhelming the RPC",
   }),
 
+  BACKFILL_PAGE_DELAY_MS: positiveInt(250).refine((val) => val >= 100, {
+    message: "BACKFILL_PAGE_DELAY_MS must be at least 100ms to avoid overwhelming the RPC",
+  }),
+
   // Reorg lookback is bounded to the scheduling interval plus supported depth.
   REORG_CHECK_INTERVAL: positiveInt(100),
 
