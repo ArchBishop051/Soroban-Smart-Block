@@ -53,6 +53,22 @@ jobs:
           echo "environment=$ENV" >> "$GITHUB_OUTPUT"
           echo "image_tag=$TAG" >> "$GITHUB_OUTPUT"
 
+      # Error-budget policy (#943): block feature deploys when the budget is
+      # exhausted. Reliability fixes bypass with "[reliability]" in the commit.
+      - name: Error budget freeze check
+        env:
+          PROMETHEUS_URL: ${{ secrets.PROMETHEUS_URL }}
+          COMMIT_MSG: ${{ github.event.head_commit.message }}
+        run: |
+          if [[ -z "$PROMETHEUS_URL" ]]; then echo "PROMETHEUS_URL not set; skipping"; exit 0; fi
+          if [[ "$COMMIT_MSG" == *"[reliability]"* ]]; then echo "Reliability fix; bypassing freeze"; exit 0; fi
+          REMAINING=$(curl -fsS "$PROMETHEUS_URL/api/v1/query" --data-urlencode 'query=min(slo:api_error_budget:remaining)' | jq -r '.data.result[0].value[1] // "1"')
+          echo "Error budget remaining: $REMAINING"
+          if awk "BEGIN{exit !($REMAINING <= 0)}"; then
+            echo "::error::Error budget exhausted — feature deploys are frozen (docs/guides/slo-policy.md)"
+            exit 1
+          fi
+
   # ── 1. Build & Push Docker Images ────────────────────────────────────────────
   build-images:
     name: Build Images (${{ needs.resolve-env.outputs.environment }})

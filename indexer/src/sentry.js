@@ -13,7 +13,9 @@ export function initSentry() {
   Sentry.init({
     dsn,
     environment: process.env.NODE_ENV || "development",
-    tracesSampleRate: 0.1,
+    tracesSampleRate: Number(process.env.SENTRY_TRACES_SAMPLE_RATE || "0.1"),
+    tracePropagationTargets: ["localhost", /^\/api\//, /^https?:\/\/.*\/api\//],
+    integrations: [Sentry.httpIntegration()],
   });
 
   process.on("uncaughtException", (err) => {

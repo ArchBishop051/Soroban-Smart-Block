@@ -31,8 +31,22 @@ const CIDR_RE = /^(\d{1,3}\.){3}\d{1,3}(\/(3[0-2]|[12]?\d))?$/;
 function statusForError(message) {
   if (/not found/i.test(message)) return 404;
   if (/not authorized/i.test(message)) return 403;
-  if (/required|must be/i.test(message)) return 400;
+  if (/required|must be|scope/i.test(message)) return 400;
   return 500;
+}
+
+function billingStatusForRecord(record) {
+  const tier = record?.tier || "free";
+  return {
+    provider: "stripe",
+    tier,
+    status: tier === "free" ? "inactive" : "active",
+    plan: tier,
+    cancel_at_period_end: false,
+    subscription_id: null,
+    customer_id: null,
+    last_updated_at: record?.updated_at ?? null,
+  };
 }
 
 router.get("/me", async (req, res) => {
@@ -43,7 +57,33 @@ router.get("/me", async (req, res) => {
       getKeyUsage(req.rateContext.keyId),
       db.countWebhookDeliveriesForApiKey(req.rateContext.keyId),
     ]);
-    res.json({ ...record, usage: { ...usage, events_received } });
+
+    const limitDaily = Number(record.daily_limit ?? 0) || (
+      record.tier === "enterprise" ? 100000 :
+      record.tier === "pro" ? 10000 :
+      record.tier === "free" ? 1000 :
+      0
+    );
+    const rateLimit = Number(record.rate_limit ?? 0) || (
+      record.tier === "enterprise" ? 5000 :
+      record.tier === "pro" ? 2000 :
+      record.tier === "free" ? 300 :
+      0
+    );
+
+    res.json({
+      ...record,
+      usage: {
+        ...usage,
+        limit_daily: limitDaily,
+        remaining_daily: Math.max(limitDaily - Number(usage.today || 0), 0),
+        rate_limit: rateLimit,
+        rate_limit_window: "minute",
+        remaining_rate_limit: Math.max(rateLimit - Number(usage.today || 0), 0),
+        events_received,
+      },
+      billing: billingStatusForRecord(record),
+    });
   } catch (e) {
     res.status(statusForError(e.message)).json({ error: e.message });
   }
@@ -63,12 +103,15 @@ router.post("/api-keys", async (req, res) => {
     const owner = await getKeyById(req.rateContext.keyId);
     if (!owner) return res.status(404).json({ error: "API key not found" });
 
-    const { name, tier, rate_limit, expires_at } = req.body ?? {};
+    const { name, tier, rate_limit, expires_at, scopes, allowed_contract_ids, allowed_origins } = req.body ?? {};
     const result = await createKey({
       name,
       tier,
       rate_limit,
       expires_at,
+      scopes, // defaults to read-only; admin:* is never granted from the dashboard
+      allowed_contract_ids,
+      allowed_origins,
       email: owner.email ?? null,
       verified: true, // created from an already-authenticated session — no email round-trip needed
     });

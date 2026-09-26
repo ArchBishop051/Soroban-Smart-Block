@@ -1,5 +1,5 @@
-import { useEffect, useState, useCallback } from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useEffect, useState, useCallback, useRef } from "react";
+import { useInfiniteQuery, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useSearchParams } from "react-router-dom";
 import { api } from "../api";
 import type { DecodedEvent } from "../api";
@@ -49,22 +49,41 @@ export default function Home() {
     description: "Soroban Smart Block Explorer — Decode Stellar contract events",
   });
 
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const contractParam = searchParams.get("contract") ?? "";
 
-  const [fnFilter, setFnFilter] = useState("");
-  // Keyset pagination (#490): stack of after_seq cursors for the pages we've
-  // navigated past — empty stack = first page, pop to go back.
-  const [cursorStack, setCursorStack] = useState<number[]>([]);
-  const [txType, setTxType] = useState<TxType>("all");
-  const afterSeq = cursorStack.length ? cursorStack[cursorStack.length - 1] : undefined;
+  const [fnFilter, setFnFilter] = useState(searchParams.get("fn") ?? "");
+  const [txType, setTxType] = useState<TxType>(
+    searchParams.get("type") === "soroban" || searchParams.get("type") === "classic"
+      ? (searchParams.get("type") as TxType)
+      : "all",
+  );
+  const [fromDate, setFromDate] = useState(searchParams.get("from") ?? "");
+  const [toDate, setToDate] = useState(searchParams.get("to") ?? "");
+  const previousContract = useRef(contractParam);
+
+  const updateView = useCallback(
+    (updates: Record<string, string | undefined>) => {
+      setSearchParams((current) => {
+        const next = new URLSearchParams(current);
+        for (const [key, value] of Object.entries(updates)) {
+          if (value) next.set(key, value);
+          else next.delete(key);
+        }
+        return next;
+      });
+    },
+    [setSearchParams],
+  );
 
   // Reset filters when the active contract changes so a stale fn filter from
   // a previous contract doesn't silently carry over.
   useEffect(() => {
+    if (previousContract.current === contractParam) return;
+    previousContract.current = contractParam;
     setFnFilter("");
-    setCursorStack([]);
-  }, [contractParam]);
+    updateView({ fn: undefined });
+  }, [contractParam, updateView]);
 
   const { data: filterContractMeta } = useQuery({
     queryKey: ["contract", contractParam],
@@ -75,31 +94,41 @@ export default function Home() {
   const isDexContract = filterContractMeta?.protocol_type === "dex";
 
   const queryClient = useQueryClient();
-  const { data: eventsPage, isLoading } = useQuery({
-    queryKey: ["events", contractParam, fnFilter, afterSeq ?? 0, txType],
-    queryFn: () =>
+  const {
+    data: eventsPages,
+    isLoading,
+    fetchNextPage,
+    hasNextPage,
+    isFetchingNextPage,
+  } = useInfiniteQuery({
+    queryKey: ["events", contractParam, fnFilter, txType, fromDate, toDate],
+    initialPageParam: undefined as number | undefined,
+    queryFn: ({ pageParam }) =>
       api.events({
         contract: contractParam || undefined,
         fn: fnFilter || undefined,
-        after_seq: afterSeq,
+        after_seq: pageParam,
         type: txType !== "all" ? txType : undefined,
+        from: fromDate || undefined,
+        to: toDate || undefined,
+        limit: 100,
       }),
+    getNextPageParam: (lastPage) => lastPage.next_cursor ?? undefined,
   });
-  const events = eventsPage?.data ?? [];
-  const nextCursor = eventsPage?.next_cursor ?? null;
+  const events = eventsPages?.pages.flatMap((page) => page.data) ?? [];
 
   // invalidate the event list when a live event arrives on the first page
   const handleLiveEvent = useCallback(
     (ev: DecodedEvent) => {
       if (
-        cursorStack.length === 0 &&
+        !fromDate &&
         (!fnFilter || ev.function === fnFilter) &&
         (!contractParam || ev.contract_id === contractParam)
       ) {
-        queryClient.invalidateQueries({ queryKey: ["events", contractParam, fnFilter, 0] });
+        queryClient.invalidateQueries({ queryKey: ["events", contractParam] });
       }
     },
-    [contractParam, cursorStack.length, fnFilter, queryClient],
+    [contractParam, fnFilter, fromDate, queryClient],
   );
 
   useEventStream(handleLiveEvent);
@@ -138,7 +167,7 @@ export default function Home() {
               title={title}
               onClick={() => {
                 setTxType(key);
-                setCursorStack([]);
+                updateView({ type: key === "all" ? undefined : key });
               }}
               style={{
                 background: txType === key ? "var(--accent)" : "var(--surface)",
@@ -165,7 +194,7 @@ export default function Home() {
                   key={chip.label}
                   onClick={() => {
                     setFnFilter(chip.fn);
-                    setCursorStack([]);
+                    updateView({ fn: chip.fn || undefined });
                   }}
                   style={{
                     padding: "5px 12px",
@@ -189,7 +218,7 @@ export default function Home() {
               value={fnFilter}
               onChange={(e) => {
                 setFnFilter(e.target.value);
-                setCursorStack([]);
+                updateView({ fn: e.target.value || undefined });
               }}
             >
               {FUNCTIONS.map((f) => (
@@ -200,6 +229,21 @@ export default function Home() {
             </select>
           </div>
         )}
+
+        <label style={{ display: "inline-flex", alignItems: "center", gap: 8, color: "var(--muted)" }}>
+          Jump to date:
+          <input
+            type="date"
+            value={fromDate && fromDate === toDate ? fromDate : ""}
+            onChange={(event) => {
+              const date = event.target.value;
+              setFromDate(date);
+              setToDate(date);
+              updateView({ from: date || undefined, to: date || undefined });
+            }}
+            aria-label="Jump to date"
+          />
+        </label>
 
         <ExportButton
           target="events"
@@ -212,22 +256,27 @@ export default function Home() {
       </div>
 
       <div className="card">
-        {isLoading ? <SkeletonLoader /> : <EventTable events={events} />}
+        {isLoading ? (
+          <SkeletonLoader />
+        ) : (
+          <EventTable
+            events={events}
+            onReachEnd={hasNextPage && !isFetchingNextPage ? () => void fetchNextPage() : undefined}
+          />
+        )}
       </div>
 
       {/* Pagination */}
       <div style={{ display: "flex", gap: 8 }}>
-        <button disabled={cursorStack.length === 0} onClick={() => setCursorStack((s) => s.slice(0, -1))}>
+        <button disabled>
           ← Prev
         </button>
-        <span style={{ padding: "6px 10px", color: "var(--muted)" }}>Page {cursorStack.length + 1}</span>
+        <span style={{ padding: "6px 10px", color: "var(--muted)" }}>{events.length} events loaded</span>
         <button
-          disabled={nextCursor === null}
-          onClick={() => {
-            if (nextCursor !== null) setCursorStack((s) => [...s, nextCursor]);
-          }}
+          disabled={!hasNextPage || isFetchingNextPage}
+          onClick={() => void fetchNextPage()}
         >
-          Next →
+          {isFetchingNextPage ? "Loading…" : "Next →"}
         </button>
       </div>
     </div>

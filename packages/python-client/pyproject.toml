@@ -1,0 +1,14 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "soroban-smart-block-explorer"
+version = "0.1.0"
+description = "Typed Python client for the Soroban Smart Block Explorer API"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = ["requests>=2.31.0"]
+
+[tool.setuptools]
+packages = ["soroban_smart_block_explorer"]

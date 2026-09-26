@@ -1,29 +1,34 @@
 import { useState, useRef, useEffect } from "react";
 import { Link, useNavigate } from "react-router-dom";
+import { useTranslation } from "react-i18next";
 import ThemeToggle from "./ThemeToggle";
 import NetworkSwitcher from "./NetworkSwitcher";
 import WalletConnectButton from "./WalletConnectButton";
+import LanguageToggle from "./LanguageToggle";
 import { useRecentSearches } from "../hooks/useRecentSearches";
+import { useTranslation, type Locale } from "../i18n";
 
 const NAV_LINKS = [
-  { to: "/contracts", label: "Registry" },
-  { to: "/contracts/register", label: "Register" },
-  { to: "/search", label: "Search" },
-  { to: "/analytics/sql", label: "Analytics SQL" },
-  { to: "/xdr", label: "XDR Workbench" },
-  { to: "/rpc-metrics", label: "RPC Metrics" },
-  { to: "/graph", label: "Dep Graph" },
-  { to: "/sandbox", label: "Sandbox" },
-  { to: "/batch", label: "Batch" },
-  { to: "/setup", label: "Setup" },
+  { to: "/contracts", key: "nav.registry" },
+  { to: "/contracts/register", key: "nav.register" },
+  { to: "/search", key: "nav.search" },
+  { to: "/xdr", key: "nav.xdr" },
+  { to: "/rpc-metrics", key: "nav.rpcMetrics" },
+  { to: "/graph", key: "nav.depGraph" },
+  { to: "/sandbox", key: "nav.sandbox" },
+  { to: "/batch", key: "nav.batch" },
+  { to: "/setup", key: "nav.setup" },
 ];
 
 export default function Nav() {
+  const { t, locale, setLocale } = useTranslation();
   const [q, setQ] = useState("");
+  const [suggestions, setSuggestions] = useState<Array<{ kind: string; label: string; route: string }>>([]);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [searchFocused, setSearchFocused] = useState(false);
   const nav = useNavigate();
   const searchInputRef = useRef<HTMLInputElement>(null);
+  const { t } = useTranslation();
   const { recent, add: addRecentSearch, remove: removeRecentSearch, clearAll: clearRecentSearches } =
     useRecentSearches();
 
@@ -84,6 +89,27 @@ export default function Nav() {
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, []);
 
+  useEffect(() => {
+    const value = q.trim();
+    if (!value || value.length < 2) {
+      setSuggestions([]);
+      return;
+    }
+
+    const handle = window.setTimeout(async () => {
+      try {
+        const res = await fetch(`/api/search?q=${encodeURIComponent(value)}&limit=5`);
+        if (!res.ok) return;
+        const payload = await res.json();
+        setSuggestions(Array.isArray(payload?.suggestions) ? payload.suggestions.slice(0, 5) : []);
+      } catch {
+        setSuggestions([]);
+      }
+    }, 250);
+
+    return () => window.clearTimeout(handle);
+  }, [q]);
+
   function handleNavLinkClick() {
     setMobileMenuOpen(false);
   }
@@ -91,6 +117,9 @@ export default function Nav() {
   return (
     <>
       <style>{`
+        .nav-desktop-links {
+          display: flex;
+        }
         @media (max-width: 768px) {
           .nav-desktop-links {
             display: none;
@@ -152,22 +181,24 @@ export default function Nav() {
         }}
       >
         <Link to="/" style={{ fontWeight: 700, fontSize: 16, whiteSpace: "nowrap" }}>
-          ⬡ Soroban Explorer
+          ⬡ {t("nav.brand")}
         </Link>
 
         {/* Desktop navigation links */}
-        <div className="nav-desktop-links" style={{ display: "flex", gap: 16, alignItems: "center" }}>
+        <nav className="nav-desktop-links" aria-label={t("nav.main")} style={{ gap: 16, alignItems: "center" }}>
           {NAV_LINKS.map((link) => (
             <Link key={link.to} to={link.to} style={{ fontSize: 13, whiteSpace: "nowrap", color: "var(--muted)" }}>
-              {link.label}
+              {t(link.key)}
             </Link>
           ))}
-        </div>
+        </nav>
 
         {/* Mobile hamburger button */}
         <button
           className="nav-hamburger"
           onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
+          aria-expanded={mobileMenuOpen}
+          aria-controls="mobile-navigation"
           style={{
             background: "transparent",
             border: "none",
@@ -175,32 +206,35 @@ export default function Nav() {
             fontSize: 20,
             cursor: "pointer",
             padding: "4px 8px",
-            display: "none",
           }}
-          aria-label="Toggle menu"
-          title="Toggle navigation menu"
+          aria-label={t("nav.menuLabel")}
+          title={t("nav.menuTitle")}
         >
           ☰
         </button>
 
         <form
           onSubmit={search}
+          role="search"
           className="nav-search-form"
           style={{ display: "flex", gap: 8, flex: 1, maxWidth: 600, position: "relative" }}
         >
           <input
             ref={searchInputRef}
             value={q}
+            aria-label={t("search.input")}
             onChange={(e) => setQ(e.target.value)}
             onFocus={() => setSearchFocused(true)}
             onBlur={() => setTimeout(() => setSearchFocused(false), 150)}
-            placeholder="Search contracts, events, wallets… (press / to focus)"
+            placeholder={t("search.placeholder")}
             style={{ flex: 1 }}
           />
-          <button type="submit">Search</button>
+          <button type="submit">{t("search.submit")}</button>
 
-          {searchFocused && !q.trim() && recent.length > 0 && (
+          {searchFocused && (
             <div
+              role="region"
+              aria-label={t("search.recent")}
               style={{
                 position: "absolute",
                 top: "calc(100% + 6px)",
@@ -212,6 +246,7 @@ export default function Nav() {
                 boxShadow: "0 8px 24px rgba(0,0,0,0.25)",
                 zIndex: 50,
                 padding: 8,
+                display: q.trim() ? (suggestions.length ? "block" : "none") : recent.length > 0 ? "block" : "none",
               }}
             >
               <div
@@ -223,17 +258,11 @@ export default function Nav() {
                   padding: "4px 8px",
                 }}
               >
-                Recent searches
+                {t("search.recent")}
               </div>
               {recent.map((entry) => (
                 <div
                   key={`${entry.kind}:${entry.query}`}
-                  onMouseDown={(e) => {
-                    e.preventDefault();
-                    goToSearch(entry.query, entry.kind === "all" ? undefined : entry.kind);
-                    setQ("");
-                    setSearchFocused(false);
-                  }}
                   style={{
                     display: "flex",
                     alignItems: "center",
@@ -245,18 +274,35 @@ export default function Nav() {
                     fontSize: 13,
                   }}
                 >
-                  <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                    {entry.query}
-                  </span>
                   <button
                     type="button"
-                    onMouseDown={(e) => {
-                      e.preventDefault();
-                      e.stopPropagation();
+                    onClick={() => {
+                      goToSearch(entry.query, entry.kind === "all" ? undefined : entry.kind);
+                      setQ("");
+                      setSearchFocused(false);
+                    }}
+                    aria-label={t("search.openRecent", { query: entry.query })}
+                    style={{
+                      minWidth: 0,
+                      flex: 1,
+                      padding: 0,
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                      whiteSpace: "nowrap",
+                      textAlign: "left",
+                      background: "transparent",
+                      color: "var(--text)",
+                    }}
+                  >
+                    {entry.query}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
                       removeRecentSearch(entry.query, entry.kind);
                     }}
-                    title="Remove"
-                    aria-label={`Remove ${entry.query} from recent searches`}
+                    title={t("search.remove")}
+                    aria-label={t("search.removeRecent", { query: entry.query })}
                     style={{ background: "none", border: "none", color: "var(--muted)", cursor: "pointer", fontSize: 12 }}
                   >
                     ✕
@@ -266,10 +312,10 @@ export default function Nav() {
               <div style={{ borderTop: "1px solid var(--border)", marginTop: 4, paddingTop: 4 }}>
                 <button
                   type="button"
-                  onMouseDown={(e) => {
-                    e.preventDefault();
+                  onClick={() => {
                     clearRecentSearches();
                   }}
+                  aria-label={t("search.clearAll")}
                   style={{
                     background: "none",
                     border: "none",
@@ -279,39 +325,53 @@ export default function Nav() {
                     padding: "4px 8px",
                   }}
                 >
-                  ✕ Clear all
+                  ✕ {t("search.clearAll")}
                 </button>
               </div>
             </div>
           )}
+
         </form>
         <NetworkSwitcher />
         <WalletConnectButton />
+        <label style={{ display: "inline-flex", alignItems: "center", gap: 5, color: "var(--muted)", fontSize: 12 }}>
+          <span>{t("language.label")}</span>
+          <select
+            aria-label={t("language.label")}
+            value={locale}
+            onChange={(event) => setLocale(event.target.value as Locale)}
+            style={{ padding: "5px 8px", fontSize: 12 }}
+          >
+            <option value="en">{t("language.english")}</option>
+            <option value="es">{t("language.spanish")}</option>
+          </select>
+        </label>
         <ThemeToggle />
       </header>
 
       {/* Mobile navigation drawer */}
-      {mobileMenuOpen && (
-        <div
-          className="nav-mobile-menu"
-          onClick={(e) => {
-            if (e.target === e.currentTarget) {
-              setMobileMenuOpen(false);
-            }
-          }}
-        >
-          {NAV_LINKS.map((link) => (
-            <Link
-              key={link.to}
-              to={link.to}
-              onClick={handleNavLinkClick}
-              style={{ display: "block", padding: "12px 24px", borderBottom: "1px solid var(--border)" }}
-            >
-              {link.label}
-            </Link>
-          ))}
-        </div>
-      )}
+      <nav
+        id="mobile-navigation"
+        className="nav-mobile-menu"
+        aria-label={t("nav.main")}
+        hidden={!mobileMenuOpen}
+        onClick={(e) => {
+          if (e.target === e.currentTarget) {
+            setMobileMenuOpen(false);
+          }
+        }}
+      >
+        {NAV_LINKS.map((link) => (
+          <Link
+            key={link.to}
+            to={link.to}
+            onClick={handleNavLinkClick}
+            style={{ display: "block", padding: "12px 24px", borderBottom: "1px solid var(--border)" }}
+          >
+            {t(link.key)}
+          </Link>
+        ))}
+      </nav>
     </>
   );
 }

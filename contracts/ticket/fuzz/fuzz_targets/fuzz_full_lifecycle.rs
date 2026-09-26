@@ -7,7 +7,7 @@
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
-use soroban_sdk::{testutils::Address as _, Env, String};
+use soroban_sdk::{testutils::{Address as _, StellarAsset}, token, Env, String};
 use ticket::{TicketContractClient, TicketStatus};
 
 fuzz_target!(|data: &[u8]| {
@@ -26,9 +26,13 @@ fuzz_target!(|data: &[u8]| {
     let organizer = soroban_sdk::Address::generate(&env);
     let buyer     = soroban_sdk::Address::generate(&env);
     let new_owner = soroban_sdk::Address::generate(&env);
+    let token_admin = soroban_sdk::Address::generate(&env);
+    let token_id = env.register_stellar_asset_contract(token_admin);
+    token::StellarAssetClient::new(&env, &token_id).mint(&buyer, &1_000_000_000i128);
 
     client.initialize(
         &organizer,
+        &token_id,
         &String::from_str(&env, "Lifecycle Fuzz"),
         &5u64,
         &1_000i128,
