@@ -6,6 +6,7 @@
   "scripts": {
     "test:api": "node --test test/api/integration.test.js",
     "test:chaos": "node --test test/chaos/fault-injection.test.js",
+    "test:parity": "node --test test/parity/sandbox-host.parity.test.js",
     "test:property": "vitest run",
     "test:playwright": "playwright test",
     "test:playwright:debug": "playwright test --debug",

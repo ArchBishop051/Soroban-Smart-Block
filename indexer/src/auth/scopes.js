@@ -121,6 +121,7 @@ export const ROUTE_SCOPES = {
   "GET /api/sandbox/:id": R_CONTRACTS,
   "POST /api/simulate": R_CONTRACTS,
   "POST /api/sandbox/simulate": R_CONTRACTS,
+  "POST /api/sandbox/ledger-entries": R_CONTRACTS,
   "POST /api/auth-tree": R_CONTRACTS,
   "POST /api/batch": R_CONTRACTS,
   "POST /api/batch/estimate-gas": R_CONTRACTS,
@@ -135,6 +136,10 @@ export const ROUTE_SCOPES = {
   "POST /api/verify": W_CONTRACTS,
   "POST /api/sandbox": W_CONTRACTS,
   "DELETE /api/sandbox/:id": W_CONTRACTS,
+  "POST /api/collab/sessions": W_CONTRACTS,
+  // Authorised by the session owner token (x-collab-token), not an API key.
+  "POST /api/collab/sessions/:id/rotate": PUBLIC,
+  "POST /api/collab/sessions/:id/kick": PUBLIC,
 
   // Webhooks
   "GET /api/webhooks": W_WEBHOOKS,

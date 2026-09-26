@@ -17,7 +17,6 @@ import { logger } from "./logger.js";
 
 import { evaluateFilter, validateFilter } from "./filters/filter.js";
 import crypto from "crypto";
-import dns from "dns/promises";
 import { db } from "./db.js";
 import { enqueue as dlqEnqueue } from "./deadLetterQueue.js";
 import { decryptSecret } from "./secrets/index.js";
@@ -38,78 +37,24 @@ export function generateSecret() {
 
 // ── SSRF-safe URL validation ─────────────────────────────────────────────────
 
-function isPrivateIPv4(ip) {
-  const octets = ip.split(".").map(Number);
-  if (octets.length !== 4 || octets.some((o) => !Number.isInteger(o) || o < 0 || o > 255)) return true; // malformed — treat as unsafe
-  const [a, b] = octets;
-  if (a === 10) return true; // 10.0.0.0/8
-  if (a === 127) return true; // loopback
-  if (a === 0) return true; // "this network"
-  if (a === 169 && b === 254) return true; // link-local
-  if (a === 172 && b >= 16 && b <= 31) return true; // 172.16.0.0/12
-  if (a === 192 && b === 168) return true; // 192.168.0.0/16
-  if (a === 100 && b >= 64 && b <= 127) return true; // 100.64.0.0/10 (CGNAT)
-  return false;
-}
-
-function isPrivateIPv6(ip) {
-  const lower = ip.toLowerCase();
-  if (lower === "::1") return true; // loopback
-  if (lower === "::") return true; // unspecified
-  if (lower.startsWith("fe80:") || lower.startsWith("fc") || lower.startsWith("fd")) return true; // link-local / unique-local
-  if (lower.startsWith("::ffff:")) return isPrivateIPv4(lower.slice("::ffff:".length)); // IPv4-mapped
-  return false;
-}
-
 /**
- * Reject webhook URLs that could be used for SSRF (internal network access):
- * non-http(s) schemes, and hostnames that resolve to a private/loopback/
- * link-local address.
+ * Reject webhook URLs that could be used for SSRF (internal network access).
+ * Delegates to the shared hardened client (safeHttp.js).
  *
  * @param {string} rawUrl
  * @throws {Error} if the URL is unsafe or malformed
  */
 export async function assertSafeWebhookUrl(rawUrl) {
-  let parsed;
-  try {
-    parsed = new URL(rawUrl);
-  } catch {
-    throw new Error("url must be a valid absolute URL");
-  }
-
-  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
-    throw new Error("url must use http or https");
-  }
-
-  const hostname = parsed.hostname.toLowerCase();
-  if (hostname === "localhost" || hostname.endsWith(".localhost") || hostname.endsWith(".local")) {
-    throw new Error("url must not point to a local/internal host");
-  }
-
-  let addresses;
-  try {
-    addresses = await dns.lookup(hostname, { all: true });
-  } catch {
-    throw new Error("url host could not be resolved");
-  }
-
-  for (const { address, family } of addresses) {
-    const unsafe = family === 6 ? isPrivateIPv6(address) : isPrivateIPv4(address);
-    if (unsafe) throw new Error("url must not point to a private/internal network address");
-  }
+  await assertSafeUrl(rawUrl);
 }
 
 /** HEAD request used at subscription-creation time to confirm the URL is reachable. */
 export async function checkReachable(url) {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), DELIVERY_TIMEOUT_MS);
   try {
-    await fetch(url, { method: "HEAD", signal: controller.signal });
+    await safeFetch(url, { method: "HEAD", timeoutMs: DELIVERY_TIMEOUT_MS });
     return true;
   } catch (err) {
     throw new Error(`url is not reachable: ${err.message}`);
-  } finally {
-    clearTimeout(timer);
   }
 }
 
@@ -138,17 +83,16 @@ function buildPayload(decoded) {
 /** POST `body` to `url`, signed with `secret`. Returns the outcome for logging; never throws. */
 async function sendOnce(url, secret, body) {
   const start = Date.now();
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), DELIVERY_TIMEOUT_MS);
   try {
-    const res = await fetch(url, {
+    const res = await safeFetch(url, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
         "X-Webhook-Signature": signPayload(decryptSecret(secret), body),
       },
       body,
-      signal: controller.signal,
+      timeoutMs: DELIVERY_TIMEOUT_MS,
+      maxBytes: 1024 * 1024,
     });
     const responseBody = await res.text().catch(() => "");
     return {
@@ -166,8 +110,6 @@ async function sendOnce(url, secret, body) {
       duration_ms: Date.now() - start,
       error: err,
     };
-  } finally {
-    clearTimeout(timer);
   }
 }
 

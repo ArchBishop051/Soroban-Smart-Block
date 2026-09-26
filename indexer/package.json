@@ -31,6 +31,7 @@
     "express-rate-limit": "^8.5.2",
     "graphql": "^16.8.2",
     "helmet": "^8.2.0",
+    "lib0": "^0.2.118",
     "lru-cache": "^10.4.3",
     "maxmind": "^4.3.22",
     "node-cron": "^3.0.3",
@@ -43,7 +44,9 @@
     "stripe": "^14.0.0",
     "swagger-ui-express": "^5.0.1",
     "ws": "^8.21.0",
+    "y-protocols": "^1.0.7",
     "yaml": "^2.9.0",
+    "yjs": "^13.6.33",
     "zod": "^4.4.3"
   },
   "devDependencies": {

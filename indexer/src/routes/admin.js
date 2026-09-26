@@ -847,7 +847,7 @@ export default function registerAdminRoutes(app) {
         // Fetch directory listing
         let entries;
         try {
-          const dirRes = await fetch(dirUrl, { headers: githubHeaders() });
+          const dirRes = await safeFetch(dirUrl, { headers: githubHeaders(), allowedHosts: GITHUB_HOSTS, allowHttp: false });
           if (!dirRes.ok) {
             const body = await dirRes.text();
             return res.status(502).json({ error: `GitHub API error: ${dirRes.status}`, detail: body.slice(0, 200) });
@@ -869,7 +869,7 @@ export default function registerAdminRoutes(app) {
 
         for (const file of jsonFiles) {
           try {
-            const rawRes = await fetch(file.download_url, { headers: githubHeaders() });
+            const rawRes = await safeFetch(file.download_url, { headers: githubHeaders(), allowedHosts: GITHUB_HOSTS, allowHttp: false });
             if (!rawRes.ok) {
               errors.push({ file: file.name, error: `HTTP ${rawRes.status}` });
               continue;

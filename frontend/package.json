@@ -28,7 +28,11 @@
     "react-dom": "18.3.1",
     "react-flow-renderer": "10.3.17",
     "react-router-dom": "^6.30.0",
-    "vite-plugin-monaco-editor": "^1.1.0"
+    "vite-plugin-monaco-editor": "^1.1.0",
+    "y-monaco": "^0.1.6",
+    "y-protocols": "^1.0.7",
+    "y-websocket": "^3.1.0",
+    "yjs": "^13.6.33"
   },
   "devDependencies": {
     "@eslint/js": "^9.0.0",

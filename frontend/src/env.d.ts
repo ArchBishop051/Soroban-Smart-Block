@@ -15,7 +15,13 @@ declare module "monaco-editor" {
   export namespace editor {
     let create: (domElement: HTMLElement, options?: any) => IStandaloneCodeEditor;
     let setModelLanguage: (model: unknown, languageId: string) => void;
+    let createModel: (value: string, language?: string) => ITextModel;
+    interface ITextModel {
+      dispose(): void;
+    }
     interface IStandaloneCodeEditor {
+      updateOptions(options: any): void;
+      setModel(model: ITextModel | null): void;
       getValue(): string;
       setValue(value: string): void;
       getModel(): unknown;

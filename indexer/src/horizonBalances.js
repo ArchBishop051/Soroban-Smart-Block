@@ -6,8 +6,13 @@
  */
 import config from "./config.js";
 import { cacheAside } from "./cacheLayer.js";
+import { safeFetch } from "./safeHttp.js";
 
 const HORIZON_URL = config.HORIZON_URL.replace(/\/+$/, "");
+// HORIZON_URL is operator-configured (never user input) and may be a private
+// host in local/docker setups, so the private-address check is waived; the
+// timeout, size and scheme limits still apply.
+const HORIZON_FETCH_OPTS = { allowPrivate: true, allowHttp: HORIZON_URL.startsWith("http://") };
 
 /** Thrown when the account does not exist on the network (Horizon 404). */
 export class AccountNotFoundError extends Error {}
@@ -32,7 +37,7 @@ export async function fetchWalletBalances(address) {
   return cacheAside(
     `wallet:balances:${address}`,
     async () => {
-      const res = await fetch(`${HORIZON_URL}/accounts/${address}`);
+      const res = await safeFetch(`${HORIZON_URL}/accounts/${address}`, HORIZON_FETCH_OPTS);
       if (res.status === 404) {
         throw new AccountNotFoundError("Account not found on network");
       }
@@ -58,7 +63,7 @@ export async function fetchAccountMeta(address) {
   return cacheAside(
     `horizon:account:${address}`,
     async () => {
-      const res = await fetch(`${HORIZON_URL}/accounts/${address}`);
+      const res = await safeFetch(`${HORIZON_URL}/accounts/${address}`, HORIZON_FETCH_OPTS);
       if (res.status === 404) return null;
       if (!res.ok) {
         throw new Error(`Horizon request failed with status ${res.status}`);
@@ -77,7 +82,7 @@ export async function fetchAccountMeta(address) {
 /** Fetch one classic balance at a specific ledger for reconciliation. */
 export async function fetchWalletBalanceAtLedger(address, { assetCode = 'XLM', issuer = null, ledger } = {}) {
   const query = ledger != null ? `?for_ledger=${encodeURIComponent(ledger)}` : '';
-  const res = await fetch(`${HORIZON_URL}/accounts/${address}${query}`);
+  const res = await safeFetch(`${HORIZON_URL}/accounts/${address}${query}`, HORIZON_FETCH_OPTS);
   if (res.status === 404) throw new AccountNotFoundError('Account not found on network');
   if (!res.ok) throw new Error(`Horizon request failed with status ${res.status}`);
   const data = await res.json();

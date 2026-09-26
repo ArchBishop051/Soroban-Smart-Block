@@ -1,4 +1,8 @@
 import { gunzipSync, brotliDecompressSync, unzipSync } from 'node:zlib';
+import { safeFetch } from '../safeHttp.js';
+
+// DATALAKE_URL is operator-configured and may be a private bucket endpoint.
+const defaultFetch = (url) => safeFetch(url, { allowPrivate: true, maxBytes: 512 * 1024 * 1024, timeoutMs: 120_000 });
 
 /**
  * Reads Galexie/CDP LedgerCloseMeta exports. Parsing is injected so the
@@ -7,7 +11,7 @@ import { gunzipSync, brotliDecompressSync, unzipSync } from 'node:zlib';
  * file and returns `{ ledgers: [{ sequence, events, txResults, stateChanges }] }`.
  */
 export class DataLakeSource {
-  constructor({ baseUrl, schema = { ledgersPerFile: 1, filesPerPartition: 1000 }, fetchImpl = fetch, decodeBatch, decompress = defaultDecompress } = {}) {
+  constructor({ baseUrl, schema = { ledgersPerFile: 1, filesPerPartition: 1000 }, fetchImpl = defaultFetch, decodeBatch, decompress = defaultDecompress } = {}) {
     if (!baseUrl) throw new Error('DATALAKE_URL is required');
     if (typeof decodeBatch !== 'function') throw new Error('decodeBatch is required');
     this.baseUrl = baseUrl.replace(/\/$/, '');
