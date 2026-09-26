@@ -6,7 +6,8 @@
 mod test;
 
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, symbol_short, Address, Env, String, Symbol,
+    contract, contracterror, contractimpl, contracttype, symbol_short, token, Address, Env,
+    String, Symbol,
 };
 
 // ── Storage keys ──────────────────────────────────────────────────────────────
@@ -15,6 +16,8 @@ const ADMIN: Symbol = symbol_short!("ADMIN");
 const MAX_TIX: Symbol = symbol_short!("MAX_TIX");
 const PRICE: Symbol = symbol_short!("PRICE");
 const NEXT_ID: Symbol = symbol_short!("NEXT_ID");
+const TOKEN: Symbol = symbol_short!("TOKEN");
+const EVENT_STATUS: Symbol = symbol_short!("STATUS");
 
 // ── Data types ────────────────────────────────────────────────────────────────
 
@@ -24,6 +27,15 @@ pub enum TicketStatus {
     Valid,
     Used,
     Transferred,
+    Cancelled,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub enum EventStatus {
+    Active,
+    Completed,
+    Cancelled,
 }
 
 #[contracttype]
@@ -55,15 +67,22 @@ impl TicketContract {
     pub fn initialize(
         env: Env,
         admin: Address,
+        payment_token: Address,
         event_name: String,
         max_tickets: u64,
         price: i128,
         max_resale_price: i128,
     ) {
         admin.require_auth();
+        assert!(price > 0, "price must be positive");
+        assert!(max_resale_price >= price, "resale cap below face price");
         assert!(!env.storage().instance().has(&ADMIN), "already initialized");
 
         env.storage().instance().set(&ADMIN, &admin);
+        env.storage().instance().set(&TOKEN, &payment_token);
+        env.storage()
+            .instance()
+            .set(&EVENT_STATUS, &EventStatus::Active);
         env.storage().instance().set(&MAX_TIX, &max_tickets);
         env.storage().instance().set(&PRICE, &price);
         env.storage()
@@ -78,8 +97,13 @@ impl TicketContract {
     /// Mint a ticket to a recipient. Only admin (organizer) can call this.
     pub fn mint_ticket(env: Env, organizer: Address, recipient: Address) -> u64 {
         organizer.require_auth();
+        recipient.require_auth();
         let admin: Address = env.storage().instance().get(&ADMIN).unwrap();
         assert!(organizer == admin, "only organizer can mint");
+        assert!(
+            Self::current_event_status(&env) == EventStatus::Active,
+            "event is not active"
+        );
 
         let max: u64 = env.storage().instance().get(&MAX_TIX).unwrap();
         let next_id: u64 = env.storage().instance().get(&NEXT_ID).unwrap();
@@ -106,6 +130,13 @@ impl TicketContract {
             max_resale_price: max_resale,
         };
 
+        let payment_token: Address = env.storage().instance().get(&TOKEN).unwrap();
+        token::Client::new(&env, &payment_token).transfer(
+            &recipient,
+            &env.current_contract_address(),
+            &price,
+        );
+
         env.storage().persistent().set(&next_id, &ticket);
         env.storage().instance().set(&NEXT_ID, &(next_id + 1));
 
@@ -116,8 +147,15 @@ impl TicketContract {
     }
 
     /// Transfer a ticket from one user to another, enforcing resale price cap.
-    pub fn transfer_ticket(env: Env, from: Address, to: Address, ticket_id: u64, sale_price: i128) {
+    pub fn transfer_ticket(
+        env: Env,
+        from: Address,
+        to: Address,
+        ticket_id: u64,
+        sale_price: i128,
+    ) {
         from.require_auth();
+        assert!(Self::current_event_status(&env) == EventStatus::Active, "event is not active");
 
         let mut ticket: Ticket = env
             .storage()
@@ -134,6 +172,11 @@ impl TicketContract {
             sale_price <= ticket.max_resale_price,
             "price exceeds resale cap"
         );
+        assert!(sale_price > 0, "sale price must be positive");
+
+        let admin: Address = env.storage().instance().get(&ADMIN).unwrap();
+        let payment_token: Address = env.storage().instance().get(&TOKEN).unwrap();
+        token::Client::new(&env, &payment_token).transfer(&from, &admin, &sale_price);
 
         ticket.owner = to.clone();
         ticket.status = TicketStatus::Transferred;
@@ -148,6 +191,7 @@ impl TicketContract {
         verifier.require_auth();
         let admin: Address = env.storage().instance().get(&ADMIN).unwrap();
         assert!(verifier == admin, "only organizer can verify");
+        assert!(Self::current_event_status(&env) == EventStatus::Active, "event is not active");
 
         let mut ticket: Ticket = env
             .storage()
@@ -166,6 +210,51 @@ impl TicketContract {
         }
     }
 
+    /// Close the event permanently. No further transfers, minting, or scans are allowed.
+    pub fn complete_event(env: Env, organizer: Address) {
+        organizer.require_auth();
+        let admin: Address = env.storage().instance().get(&ADMIN).unwrap();
+        assert!(organizer == admin, "only organizer can complete");
+        assert!(Self::current_event_status(&env) == EventStatus::Active, "event is not active");
+        env.storage()
+            .instance()
+            .set(&EVENT_STATUS, &EventStatus::Completed);
+        env.events().publish((symbol_short!("COMPLETED"),), ());
+    }
+
+    /// Cancel the event and refund every current ticket holder from escrow.
+    pub fn cancel_event(env: Env, organizer: Address) {
+        organizer.require_auth();
+        let admin: Address = env.storage().instance().get(&ADMIN).unwrap();
+        assert!(organizer == admin, "only organizer can cancel");
+        assert!(Self::current_event_status(&env) == EventStatus::Active, "event is not active");
+
+        let payment_token: Address = env.storage().instance().get(&TOKEN).unwrap();
+        let contract_address = env.current_contract_address();
+        let count: u64 = env.storage().instance().get(&NEXT_ID).unwrap_or(0);
+        for ticket_id in 0..count {
+            let mut ticket: Ticket = env.storage().persistent().get(&ticket_id).unwrap();
+            if ticket.status != TicketStatus::Used && ticket.status != TicketStatus::Cancelled {
+                token::Client::new(&env, &payment_token).transfer(
+                    &contract_address,
+                    &ticket.owner,
+                    &ticket.original_price,
+                );
+                ticket.status = TicketStatus::Cancelled;
+                env.storage().persistent().set(&ticket_id, &ticket);
+            }
+        }
+        env.storage()
+            .instance()
+            .set(&EVENT_STATUS, &EventStatus::Cancelled);
+        env.events().publish((symbol_short!("CANCELLED"),), ());
+    }
+
+    /// Return the current lifecycle state of the event.
+    pub fn event_status(env: Env) -> EventStatus {
+        Self::current_event_status(&env)
+    }
+
     /// Fetch ticket metadata.
     pub fn get_ticket(env: Env, ticket_id: u64) -> Result<Ticket, Error> {
         env.storage()
@@ -177,5 +266,12 @@ impl TicketContract {
     /// Total tickets minted so far.
     pub fn tickets_sold(env: Env) -> u64 {
         env.storage().instance().get(&NEXT_ID).unwrap_or(0)
+    }
+
+    fn current_event_status(env: &Env) -> EventStatus {
+        env.storage()
+            .instance()
+            .get(&EVENT_STATUS)
+            .unwrap_or(EventStatus::Active)
     }
 }

@@ -12,7 +12,7 @@
 #![cfg(test)]
 
 use super::*;
-use soroban_sdk::{testutils::Address as _, Env, String};
+use soroban_sdk::{testutils::{Address as _, StellarAsset}, token, Env, String};
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
 
@@ -25,9 +25,13 @@ fn setup() -> (Env, TicketContractClient<'static>, Address, Address) {
 
     let organizer = Address::generate(&env);
     let buyer = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let token_id = env.register_stellar_asset_contract(token_admin);
+    token::StellarAssetClient::new(&env, &token_id).mint(&buyer, &200_000_000i128);
 
     client.initialize(
         &organizer,
+        &token_id,
         &String::from_str(&env, "Harvesta Live 2025"),
         &100u64,
         &50_000_000i128, // 5 XLM in stroops
@@ -45,8 +49,11 @@ fn setup_with_capacity(max: u64) -> (Env, TicketContractClient<'static>, Address
     let contract_id = env.register_contract(None, TicketContract);
     let client = TicketContractClient::new(&env, &contract_id);
     let organizer = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let token_id = env.register_stellar_asset_contract(token_admin);
     client.initialize(
         &organizer,
+        &token_id,
         &String::from_str(&env, "Test Event"),
         &max,
         &1_000i128,
@@ -91,6 +98,14 @@ fn test_resale_cap_enforced() {
 
     let new_owner = Address::generate(&env);
     client.transfer_ticket(&buyer, &new_owner, &0u64, &100_000_000i128);
+}
+
+#[test]
+#[should_panic(expected = "sale price must be positive")]
+fn test_zero_price_transfer_rejected() {
+    let (_env, client, organizer, buyer) = setup();
+    client.mint_ticket(&organizer, &buyer);
+    client.transfer_ticket(&buyer, &organizer, &0u64, &0i128);
 }
 
 #[test]

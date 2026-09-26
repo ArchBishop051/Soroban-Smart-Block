@@ -1842,7 +1842,7 @@ paths:
                 $ref: "#/components/schemas/ErrorResponse"
     post:
       summary: Add a multi-signature source verification for a contract
-      description: Submits a new WASM source verification record signed by a verifier.
+      description: Submits a new WASM source verification record. The API verifies a Stellar Ed25519 signature over `soroban-source-verification:v1:<wasm_hash>:<compiler_hash>` before storing it.
       security:
         - ApiKeyAuth: []
         - BearerAuth: []
@@ -1863,16 +1863,19 @@ paths:
               properties:
                 wasm_hash:
                   type: string
-                  example: "abc123def456"
+                  pattern: "^[a-f0-9]{64}$"
+                  example: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
                 signer:
                   type: string
                   example: "GABC..."
                 signature:
                   type: string
+                  description: Base64-encoded 64-byte Stellar Ed25519 signature.
                   example: "base64-signature"
                 compiler_hash:
                   type: string
-                  example: "sha256-of-compiler-binary"
+                  pattern: "^[a-f0-9]{64}$"
+                  example: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
       responses:
         "201":
           description: Verification record stored
@@ -1885,7 +1888,7 @@ paths:
                     type: boolean
                     example: true
         "400":
-          description: Missing required field
+          description: Missing required field or invalid signature
           content:
             application/json:
               schema:
