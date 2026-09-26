@@ -9,6 +9,7 @@ const NAV_LINKS = [
   { to: "/contracts", label: "Registry" },
   { to: "/contracts/register", label: "Register" },
   { to: "/search", label: "Search" },
+  { to: "/analytics/sql", label: "Analytics SQL" },
   { to: "/xdr", label: "XDR Workbench" },
   { to: "/rpc-metrics", label: "RPC Metrics" },
   { to: "/graph", label: "Dep Graph" },

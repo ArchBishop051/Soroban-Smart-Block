@@ -51,6 +51,7 @@ import { requestContext } from "./logger.js";
 import { runAllChecks } from "./doctor-lib.js";
 import { registry } from "./metrics.js";
 import pg from "pg";
+import { analyticsPool, executeAnalyticsQuery, toCsv } from "./analyticsSql.js";
 import { getBurnAlerts } from "./burnDetector.js";
 import { formatAmount } from "./formatAmount.js";
 import { sendVerificationEmail, isConfigured } from "./emailService.js";
@@ -433,6 +434,42 @@ export function createApi({ logDestination, dbOverride } = {}) {
   app.get("/api/openapi.yaml", (_req, res) => {
     if (fs.existsSync(openApiPath)) res.type("yaml").sendFile(openApiPath);
     else res.status(404).json({ error: "Not found" });
+  });
+
+  app.post("/api/sql", async (req, res) => {
+    const body = req.body;
+    if (
+      !body ||
+      typeof body !== "object" ||
+      Array.isArray(body) ||
+      Object.keys(body).some((key) => !["query", "format"].includes(key))
+    ) {
+      return res.status(400).json({ error: "Expected only query and format fields" });
+    }
+    try {
+      const result = await executeAnalyticsQuery(body.query, {
+        clientId: req.rateContext?.keyId ?? req.rateContext?.clientId ?? "anonymous",
+        tier: req.rateContext?.tier ?? "unauthenticated",
+        format: body.format ?? "json",
+      });
+      if (result.format === "csv") {
+        res.setHeader("Content-Type", "text/csv; charset=utf-8");
+        res.setHeader("Content-Disposition", "attachment; filename=analytics.csv");
+        res.setHeader("X-Row-Count", String(result.row_count));
+        res.setHeader("X-Results-Truncated", String(result.truncated));
+        return res.send(toCsv(result.rows));
+      }
+      res.json(result);
+    } catch (error) {
+      if (error.statusCode && error.statusCode < 500) {
+        return res.status(error.statusCode).json({ error: error.message });
+      }
+      if (!analyticsPool) {
+        return res.status(503).json({ error: "Analytics database is not configured" });
+      }
+      logger.error("[analytics-sql] Query failed:", error.message);
+      res.status(500).json({ error: "Analytics query failed" });
+    }
   });
 
   // ── Health check endpoints ──────────────────────────────────────────────

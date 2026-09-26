@@ -27,6 +27,7 @@ const RegistrationSuccessPage = lazy(() => import("./pages/RegistrationSuccessPa
 const AbiDiffPage = lazy(() => import("./pages/AbiDiffPage"));
 const DashboardPage = lazy(() => import("./pages/DashboardPage"));
 const Status = lazy(() => import("./pages/Status"));
+const AnalyticsSqlPage = lazy(() => import("./pages/AnalyticsSqlPage"));
 
 function Fallback() {
   return <p style={{ padding: 32, textAlign: "center", color: "var(--muted)" }}>Loading…</p>;
@@ -66,6 +67,7 @@ export default function App() {
             <Route path="/nft/:contractId" element={<NftGallery />} />
             <Route path="/dashboard" element={<DashboardPage />} />
             <Route path="/status" element={<Status />} />
+            <Route path="/analytics/sql" element={<AnalyticsSqlPage />} />
           </Routes>
         </Suspense>
       </main>
