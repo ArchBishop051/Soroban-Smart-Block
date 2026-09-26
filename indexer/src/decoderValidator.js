@@ -129,3 +129,31 @@ export function validateAndSanitizeDecodedEvent(decoded, logger = console) {
 
   return decoded;
 }
+
+/**
+ * Validate the output of a sandboxed decoder plugin (#900).
+ * A plugin returns `{ description, function? }`; anything else is rejected.
+ *
+ * @returns {{ valid: true, value: { description: string, function?: string } } | { valid: false, reason: string }}
+ */
+export function validatePluginOutput(output) {
+  if (output === null || typeof output !== "object" || Array.isArray(output)) {
+    return { valid: false, reason: "plugin output must be an object" };
+  }
+  const keys = Object.keys(output);
+  const unknown = keys.filter((k) => k !== "description" && k !== "function");
+  if (unknown.length) return { valid: false, reason: `unexpected field(s): ${unknown.join(", ")}` };
+  if (typeof output.description !== "string" || output.description.trim() === "") {
+    return { valid: false, reason: "description must be a non-empty string" };
+  }
+  if (output.function !== undefined && (typeof output.function !== "string" || !/^[A-Za-z0-9_]{1,64}$/.test(output.function))) {
+    return { valid: false, reason: "function must be an identifier of at most 64 characters" };
+  }
+  return {
+    valid: true,
+    value: {
+      description: sanitizeDecodedText(output.description),
+      ...(output.function !== undefined ? { function: output.function } : {}),
+    },
+  };
+}

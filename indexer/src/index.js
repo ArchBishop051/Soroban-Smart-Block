@@ -1,4 +1,6 @@
 import "dotenv/config";
+import { invalidateContract as invalidateContractSpec } from "./contractSpecCache.js";
+import { initRuntimeConfig } from "./runtimeConfig.js";
 import "./tracing.js";
 import { pathToFileURL } from "node:url";
 import { rpc as SorobanRpc } from "@stellar/stellar-sdk";
@@ -12,6 +14,7 @@ import { decode, getDecodeStats } from "./decoder.js";
 import { startAbiSync } from "./githubAbiSync.js";
 import { seedBuiltinAbis } from "./abiSeeder.js";
 import { startContractVerifier } from "./contractVerifier.js";
+import { startQueryJobMaintenance } from "./jobs/queryJobs.js";
 import { withRetry } from "./rpcRetry.js";
 import { isHighBloatRisk } from "./bloatDetector.js";
 import { detectUpgrade } from "./upgradeDetector.js";
@@ -34,6 +37,7 @@ import { checkForReorg, recordLedgerHash } from "./reorgWorker.js";
 import { startReDecodeWorker } from "./reDecodeWorker.js";
 import { warmCache } from "./cacheWarming.js";
 import { cacheInvalidate } from "./cacheLayer.js";
+import { enqueuePurge } from "./cdnPurge.js";
 import {
   eventsIngested,
   decodeLatency,
@@ -52,6 +56,7 @@ import { processRetries as dlqProcessRetries, enqueue as dlqEnqueue, getDlqDepth
 import { recordLedger as gapRecordLedger } from "./predictiveGapDetector.js";
 import { deliverWebhooksForEvent, retryWebhookDelivery } from "./webhookDelivery.js";
 import { runIntegrityChecks } from "./routes/admin.js";
+import { createIngestPipeline } from "./ingestPipeline.js";
 
 const RPC_URL = config.SOROBAN_RPC_URL;
 const START_LEDGER = config.START_LEDGER;
@@ -60,6 +65,9 @@ const REORG_CHECK_INTERVAL = config.REORG_CHECK_INTERVAL;
 // Max events per RPC page — Soroban caps at 200
 const PAGE_LIMIT = 200;
 const MAX_GAP_RETRIES = 3;
+const INGEST_CONCURRENCY = 4;
+const INGEST_BATCH_SIZE = 64;
+const INGEST_MAX_QUEUE = 2000;
 
 const rpc = new SorobanRpc.Server(RPC_URL, { allowHttp: true });
 
@@ -203,6 +211,7 @@ export async function processSingleEvent(rawSorobanEvent, context = undefined) {
       `[${rawSorobanEvent.ledger}] CONTRACT UPGRADE ${rawSorobanEvent.contractId}: ${upgrade.oldHash} → ${upgrade.newHash}`,
     );
     decoded.upgrade = upgrade;
+    invalidateContractSpec(rawSorobanEvent.contractId); // new WASM → new spec from this ledger on (#895)
     if (decoded.abi_version > 0) {
       await db.markNeedsRedecode(rawSorobanEvent.contractId, decoded.abi_version);
     }
@@ -246,6 +255,73 @@ export async function processSingleEvent(rawSorobanEvent, context = undefined) {
 
   logger.info(`[${rawSorobanEvent.ledger}] ${decoded.function}: ${decoded.description}`);
   return decoded;
+}
+
+export async function processEventBatch(batch, contextByTx = new Map()) {
+  if (!Array.isArray(batch) || batch.length === 0) return [];
+
+  const resolved = await Promise.all(
+    batch.map(async (rawSorobanEvent) => {
+      const { feeBump, archivalInfo } = contextByTx.get(rawSorobanEvent.txHash) ??
+        (await loadTransactionContext(rawSorobanEvent.txHash));
+      const decodeStart = Date.now();
+      const decoded = await decode(rawSorobanEvent);
+      const contractMeta = await db.getContractMeta(rawSorobanEvent.contractId).catch(() => null);
+      decoded.abi_version = Number(contractMeta?.abi_version ?? 0);
+      decodeLatency.observe(Date.now() - decodeStart);
+      eventsIngested.inc({ function: decoded.function });
+      decoded.is_high_bloat_risk = isHighBloatRisk(rawSorobanEvent, rawSorobanEvent.contractId);
+      decoded.footprint_contention = rawSorobanEvent.footprint_contention ?? false;
+
+      const upgrade = detectUpgrade(rawSorobanEvent);
+      if (upgrade) {
+        decoded.upgrade = upgrade;
+        if (decoded.abi_version > 0) {
+          await db.markNeedsRedecode(rawSorobanEvent.contractId, decoded.abi_version).catch(() => {});
+        }
+      }
+
+      decoded.storage_tiers = classifyStorageWrites(rawSorobanEvent);
+      decoded.fee_bump = feeBump;
+      decoded.archival_info = archivalInfo;
+      return { rawSorobanEvent, decoded, contractMeta };
+    }),
+  );
+
+  await db.upsertEventsValidatedBatch(
+    resolved.map(({ decoded }) => decoded),
+    logger,
+  );
+
+  for (const { rawSorobanEvent, decoded, contractMeta } of resolved) {
+    cacheInvalidate("wallet:events:*").catch(() => {});
+    deliverWebhooksForEvent(decoded).catch((err) =>
+      logger.error("[webhookDelivery] dispatch failed:", err.message),
+    );
+
+    const diffs = extractStateDiffs(rawSorobanEvent, decoded);
+    if (diffs.length) await db.insertStateDiffs(diffs).catch(() => {});
+
+    const evictions = detectEvictions(rawSorobanEvent, rawSorobanEvent.ledger, rawSorobanEvent.txHash);
+    if (evictions.length) {
+      await db
+        .insertArchivalEvictions(evictions)
+        .catch((err) => logger.error("[archivalEviction] insert failed:", err.message));
+    }
+
+    publish(decoded);
+    handleVaultEvent(decoded);
+
+    if (contractMeta) {
+      processCircuitBreakerEvent(decoded, contractMeta).catch((err) =>
+        logger.error("[circuitBreakerIndexer] Error:", err.message),
+      );
+    }
+
+    logger.info(`[${rawSorobanEvent.ledger}] ${decoded.function}: ${decoded.description}`);
+  }
+
+  return resolved.map(({ decoded }) => decoded);
 }
 
 /**
@@ -299,8 +375,28 @@ async function indexLedger(ledger) {
       }),
     );
 
-    for (const ev of res.events) {
-      await processSingleEvent(ev, transactionContextCache.get(ev.txHash));
+    const ingestPipeline = createIngestPipeline({
+      concurrency: INGEST_CONCURRENCY,
+      batchSize: INGEST_BATCH_SIZE,
+      maxQueue: INGEST_MAX_QUEUE,
+      processBatch: async (batch) => {
+        await processEventBatch(batch, transactionContextCache);
+      },
+    });
+
+    const { accepted, dropped } = ingestPipeline.enqueue(res.events);
+    if (dropped > 0) {
+      logger.warn(
+        { ledger, dropped, accepted, total: res.events.length, maxQueue: INGEST_MAX_QUEUE },
+        "ingest queue overflow: shed events to protect lag budget",
+      );
+    }
+    await ingestPipeline.drain();
+
+    // Purge the CDN entries this page changed: "latest" lists plus every
+    // contract it touched (debounced/batched in cdnPurge.js).
+    if (res.events.length) {
+      enqueuePurge(["latest", ...new Set(res.events.map((e) => `contract:${e.contractId}`).filter((k) => k !== "contract:undefined"))]);
     }
 
     // Scan transactions for UploadContractWasm operations (non-blocking)
@@ -346,7 +442,9 @@ async function run() {
   warmCache().catch((e) => logger.warn({ err: e.message }, "cache warm failed"));
   seedBuiltinAbis().catch((e) => logger.warn({ err: e.message }, "builtin ABI seed failed"));
   startAbiSync();
+  initRuntimeConfig(pool).catch((err) => logger.error("[runtimeConfig] init failed:", err.message)); // hot-reloadable config (#894)
   startContractVerifier(); // periodically verify DB ABI hashes against on-chain registry
+  startQueryJobMaintenance().catch((err) => logger.error("[jobs] startup failed:", err.message)); // async query jobs (#906)
   startBurnDetector();
   startMetricsCollector(); // RPC latency probes
   startNodeRecoveryPoll(); // re-check unhealthy multi-node RPC failover nodes

@@ -1,0 +1,221 @@
+/**
+ * Soroban Smart Block Explorer — Print Stylesheet (Issue #805)
+ * Standardized A4 portrait print formatting, chrome suppression,
+ * page-break management, and audit verification stamps.
+ */
+
+@media print {
+  @page {
+    size: A4 portrait;
+    margin: 14mm 12mm 14mm 12mm;
+  }
+
+  /* Reset layout for print */
+  html, body {
+    background: #ffffff !important;
+    color: #111827 !important;
+    font-size: 10.5pt !important;
+    line-height: 1.45 !important;
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+    margin: 0 !important;
+    padding: 0 !important;
+  }
+
+  /* Universal print color & shadow overrides */
+  *, *::before, *::after {
+    background: transparent !important;
+    color: #111827 !important;
+    box-shadow: none !important;
+    text-shadow: none !important;
+  }
+
+  /* Suppress screen navigation, footer chrome, buttons, modals, dev tools */
+  nav,
+  header:not(.print-header),
+  footer:not(.print-footer),
+  aside,
+  button,
+  .no-print,
+  .badge-container button,
+  input,
+  select,
+  textarea,
+  [role="tablist"],
+  .theme-toggle,
+  .network-switcher,
+  .wallet-connect,
+  .drawer-overlay,
+  .modal-backdrop,
+  .dev-workspace-btn {
+    display: none !important;
+  }
+
+  /* Main container spans full printable area */
+  main {
+    max-width: 100% !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    width: 100% !important;
+  }
+
+  /* Clean print cards with soft borders */
+  .card {
+    background: #ffffff !important;
+    border: 1px solid #d1d5db !important;
+    border-radius: 4px !important;
+    padding: 12px 14px !important;
+    margin-bottom: 14px !important;
+    break-inside: avoid !important;
+    page-break-inside: avoid !important;
+  }
+
+  /* Section headers */
+  h2, h3, h4 {
+    color: #0f172a !important;
+    break-after: avoid !important;
+    page-break-after: avoid !important;
+  }
+
+  h2 {
+    font-size: 15pt !important;
+    margin-bottom: 8px !important;
+  }
+
+  h3 {
+    font-size: 12pt !important;
+    margin-top: 14px !important;
+    margin-bottom: 6px !important;
+    border-bottom: 1px solid #e5e7eb !important;
+    padding-bottom: 4px !important;
+  }
+
+  /* Data tables formatting */
+  table {
+    width: 100% !important;
+    border-collapse: collapse !important;
+    margin-top: 8px !important;
+    margin-bottom: 12px !important;
+    break-inside: auto;
+  }
+
+  thead {
+    display: table-header-group;
+  }
+
+  tr {
+    break-inside: avoid !important;
+    page-break-inside: avoid !important;
+  }
+
+  th, td {
+    border: 1px solid #d1d5db !important;
+    padding: 6px 8px !important;
+    font-size: 9pt !important;
+    text-align: left !important;
+  }
+
+  th {
+    background-color: #f3f4f6 !important;
+    font-weight: 600 !important;
+    color: #1f2937 !important;
+  }
+
+  /* Stellar addresses, hashes & code snippets */
+  code, pre {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace !important;
+    font-size: 8.5pt !important;
+    word-break: break-all !important;
+    white-space: pre-wrap !important;
+    background: #f8fafc !important;
+    border: 1px solid #e2e8f0 !important;
+    border-radius: 2px !important;
+    padding: 1px 3px !important;
+  }
+
+  /* Hyperlinks formatted cleanly without underline clutter */
+  a {
+    color: #1d4ed8 !important;
+    text-decoration: none !important;
+  }
+
+  a[href^="http"]:after {
+    content: "" !important;
+  }
+
+  /* Compliance and status badges */
+  .badge {
+    border: 1px solid #9ca3af !important;
+    background: #f3f4f6 !important;
+    color: #1f2937 !important;
+    padding: 2px 6px !important;
+    font-size: 8pt !important;
+    border-radius: 3px !important;
+    font-weight: 600 !important;
+  }
+
+  .badge.clawback {
+    border-color: #dc2626 !important;
+    background: #fee2e2 !important;
+    color: #991b1b !important;
+  }
+
+  /* Dedicated print-only banner & verification stamp */
+  .print-only {
+    display: block !important;
+  }
+
+  .print-header {
+    display: flex !important;
+    justify-content: space-between !important;
+    align-items: center !important;
+    border-bottom: 2px solid #2563eb !important;
+    padding-bottom: 8px !important;
+    margin-bottom: 14px !important;
+  }
+
+  .print-header-brand {
+    font-size: 13pt !important;
+    font-weight: 700 !important;
+    color: #1e3a8a !important;
+    letter-spacing: -0.3px !important;
+  }
+
+  .print-header-meta {
+    font-size: 8pt !important;
+    color: #4b5563 !important;
+    text-align: right !important;
+  }
+
+  .print-footer {
+    display: flex !important;
+    justify-content: space-between !important;
+    align-items: center !important;
+    border-top: 1px solid #d1d5db !important;
+    padding-top: 8px !important;
+    margin-top: 20px !important;
+    font-size: 8pt !important;
+    color: #6b7280 !important;
+    break-inside: avoid !important;
+    page-break-inside: avoid !important;
+  }
+
+  .print-watermark-reorg {
+    display: block !important;
+    background: #fef2f2 !important;
+    border: 2px dashed #ef4444 !important;
+    color: #b91c1c !important;
+    padding: 8px 12px !important;
+    font-weight: 700 !important;
+    text-align: center !important;
+    margin-bottom: 12px !important;
+    border-radius: 4px !important;
+  }
+}
+
+/* Hide print-only elements on web screen */
+@media screen {
+  .print-only {
+    display: none !important;
+  }
+}

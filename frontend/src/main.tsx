@@ -4,6 +4,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter } from "react-router-dom";
 import App from "./App";
 import { NetworkProvider } from "./contexts/NetworkContext";
+import { ThemeProvider } from "./contexts/ThemeContext";
 import { initCsrf } from "./hooks/useCsrf";
 import { initSentry } from "./sentry";
 import "./index.css";
@@ -20,11 +21,13 @@ initCsrf().catch(() => {});
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
     <QueryClientProvider client={qc}>
-      <NetworkProvider>
-        <BrowserRouter>
-          <App />
-        </BrowserRouter>
-      </NetworkProvider>
+      <ThemeProvider>
+        <NetworkProvider>
+          <BrowserRouter>
+            <App />
+          </BrowserRouter>
+        </NetworkProvider>
+      </ThemeProvider>
     </QueryClientProvider>
   </React.StrictMode>,
 );

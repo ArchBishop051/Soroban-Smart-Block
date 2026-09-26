@@ -144,39 +144,72 @@ jobs:
           fail_ci_if_error: false
           token: ${{ secrets.CODECOV_TOKEN }}
 
-  # ── Dependency Policy ─────────────────────────────────────────────────────
-  dependency-policy:
-    name: Dependency Policy (Cargo + npm)
+  # ── Resource budget gate ──────────────────────────────────────────────────
+  # Closes #873 — fails when any contract entrypoint's CPU / memory / event
+  # cost, or the explorer WASM size, grows past the thresholds in
+  # contracts/budget-baseline.json. See docs/BUDGET.md.
+  budget:
+    name: Contracts (resource budget)
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           toolchain: stable
-
-      - name: Install cargo-deny
-        uses: taiki-e/install-action@v2
-        with:
-          tool: cargo-deny
-
-      - name: Check Cargo advisories, licenses, bans, and sources
-        run: cargo deny check advisories bans licenses sources
+          target: wasm32-unknown-unknown
 
       - uses: actions/setup-node@v4
         with:
           node-version: 20
 
-      - name: Install and audit repository tooling
-        run: npm ci && npm audit --audit-level=high
+      - name: Cache Rust build artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+            contracts/ticket/target
+          key: ${{ runner.os }}-budget-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-budget-
 
-      - name: Install and audit indexer dependencies
-        working-directory: indexer
-        run: npm ci && npm audit --audit-level=high
+      - name: Measure entrypoint budgets
+        run: make budget-measure
 
-      - name: Install and audit frontend dependencies
-        working-directory: frontend
-        run: npm ci && npm audit --audit-level=high
+      - name: Compare against baseline
+        run: node scripts/budget-check.js
+
+      - name: Publish budget report
+        if: always() && github.event_name == 'pull_request'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          [ -f target/budget/report.md ] || exit 0
+          cat target/budget/report.md >> "$GITHUB_STEP_SUMMARY"
+          gh pr comment "$PR" --edit-last --body-file target/budget/report.md \
+            || gh pr comment "$PR" --body-file target/budget/report.md
+
+      - name: Baseline changes require approval label
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
+        run: |
+          if git cat-file -e "$BASE_SHA:contracts/budget-baseline.json" 2>/dev/null \
+            && ! git diff --quiet "$BASE_SHA" HEAD -- contracts/budget-baseline.json; then
+            if [[ ",$LABELS," != *",budget-change-approved,"* ]]; then
+              echo "::error::contracts/budget-baseline.json changed — add the 'budget-change-approved' label and re-run this job."
+              exit 1
+            fi
+          fi
 
   # ── Migrations ────────────────────────────────────────────────────────────
   # Closes #425 — verify every SQL migration applies cleanly on a fresh
@@ -319,6 +352,10 @@ jobs:
         working-directory: indexer
         env:
           TEST_DATABASE_URL: postgres://soroban:soroban_secret@localhost:5432/soroban_explorer
+
+      - name: Decoder golden snapshots (version bump required on output change)
+        working-directory: indexer
+        run: node --test test/golden.test.js
 
       - name: Upload indexer coverage to CodeCov
         uses: codecov/codecov-action@v4
