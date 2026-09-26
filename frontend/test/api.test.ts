@@ -29,13 +29,23 @@ describe("api utility", () => {
 
   it("events builds query string with all params", async () => {
     mockFetch({ data: [{ seq: 2 }], next_cursor: 2 });
-    await api.events({ contract: "C1", fn: "transfer", after_seq: 42, limit: 50, type: "soroban" });
+    await api.events({
+      contract: "C1",
+      fn: "transfer",
+      after_seq: 42,
+      limit: 50,
+      type: "soroban",
+      from: "2026-09-01",
+      to: "2026-09-25",
+    });
     const [url] = (fetch as any).mock.calls[0];
     expect(url).toContain("contract=C1");
     expect(url).toContain("fn=transfer");
     expect(url).toContain("after_seq=42");
     expect(url).toContain("limit=50");
     expect(url).toContain("type=soroban");
+    expect(url).toContain("from=2026-09-01");
+    expect(url).toContain("to=2026-09-25");
   });
 
   it("events omits undefined params", async () => {

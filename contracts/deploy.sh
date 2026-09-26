@@ -10,6 +10,7 @@ NETWORK="${1:-testnet}"
 IDENTITY="${2:-deployer}"
 CONTRACT="${3:-soroban-explorer-contract}"
 WASM_PATH="../target/wasm32-unknown-unknown/release/${CONTRACT}.wasm"
+MANIFEST_PATH="${WASM_PATH}.build-manifest"
 
 echo "Network: ${NETWORK}"
 echo "Identity: ${IDENTITY}"
@@ -24,6 +25,29 @@ if [ ! -f "${WASM_PATH}" ]; then
     exit 1
 fi
 echo "✅ WASM found"
+
+# The manifest binds the bytes being deployed to the checked-out source and
+# Cargo.lock. Never deploy an artifact that was built from another revision.
+if [ ! -f "${MANIFEST_PATH}" ]; then
+    echo "❌ Build manifest not found at ${MANIFEST_PATH}"
+    echo "   Run: ../scripts/build-contract.sh ${CONTRACT}"
+    exit 1
+fi
+
+set -a
+. "${MANIFEST_PATH}"
+set +a
+EXPECTED_COMMIT=$(git rev-parse HEAD)
+ACTUAL_WASM_SHA256=$(sha256sum "${WASM_PATH}" | awk '{print $1}')
+ACTUAL_CARGO_LOCK_SHA256=$(sha256sum ../Cargo.lock | awk '{print $1}')
+if [ "${format:-}" != "soroban-wasm-build-manifest-v1" ] \
+    || [ "${git_commit:-}" != "${EXPECTED_COMMIT}" ] \
+    || [ "${wasm_sha256:-}" != "${ACTUAL_WASM_SHA256}" ] \
+    || [ "${cargo_lock_sha256:-}" != "${ACTUAL_CARGO_LOCK_SHA256}" ]; then
+    echo "❌ WASM build manifest does not match this source tree"
+    exit 1
+fi
+echo "✅ WASM manifest matches source commit, Cargo.lock, and binary hash"
 
 # 2. Fund deployer on testnet
 if [ "${NETWORK}" = "testnet" ]; then

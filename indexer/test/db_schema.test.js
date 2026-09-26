@@ -47,7 +47,7 @@ describe("DB schema integration", () => {
     `);
     const cols = new Set(rows.map((r) => r.column_name));
     for (const col of ["seq", "contract_id", "function", "ledger", "description",
-                        "cpu_instructions", "is_clawback", "zk_host_calls"]) {
+              "cpu_instructions", "is_clawback", "zk_host_calls", "ingestion_id"]) {
       assert.ok(cols.has(col), `Missing column: ${col}`);
     }
   });
@@ -69,7 +69,8 @@ describe("DB schema integration", () => {
     `);
     const idxs = new Set(rows.map((r) => r.indexname));
     for (const idx of ["idx_events_contract", "idx_events_ledger",
-                        "idx_events_contract_ledger", "idx_events_search_fts"]) {
+                        "idx_events_contract_ledger", "idx_events_search_fts",
+                        "idx_events_ingestion_id"]) {
       assert.ok(idxs.has(idx), `Missing index: ${idx}`);
     }
   });

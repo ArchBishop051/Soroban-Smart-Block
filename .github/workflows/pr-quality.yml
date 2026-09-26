@@ -58,3 +58,15 @@ jobs:
         uses: toshimaru/auto-author-assign@v2.1.1
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Post decoder replay diff summary
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          git fetch origin main --depth=1
+          if ! git diff --name-only origin/main...HEAD | grep -Eq 'indexer/src/(decoder|wasmFingerprint)\.js'; then exit 0; fi
+          gh api --method POST "repos/$REPO/issues/$PR_NUMBER/comments" \
+            -f body="### Decoder replay diff\n\nReplay fixtures are deterministic and isolated from production. Run \`npm run admin -- replay --from 1 --to 1 --db ephemeral --diff prod\` locally to inspect the field-level summary for this change."

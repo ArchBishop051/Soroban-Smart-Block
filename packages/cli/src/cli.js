@@ -12,8 +12,10 @@
  *   npx soroban-explorer contract <id>
  *   npx soroban-explorer search <query>
  *   npx soroban-explorer tail [--contract <id>]
+ *   npx soroban-explorer submit --file events.json --explorer-id <C...> --source <identity>
  */
 
+import { execFileSync } from "child_process";
 import http from "http";
 import https from "https";
 import fs from "fs/promises";
@@ -41,6 +43,8 @@ Commands:
   contract   Show contract metadata and registered functions
   search     Search across contracts, events, and wallets
   tail       Stream live events to the terminal
+  submit     Submit events from a JSON file to the explorer contract in batches
+             (requires the stellar CLI; --file, --explorer-id, --source, --network)
   help       Show this help
 
 Global options:
@@ -57,7 +61,8 @@ Examples:
   soroban-explorer contract CDA2...
   soroban-explorer search "swap"
   soroban-explorer tail --contract CDA2...
-  soroban-explorer events --json --limit 10`;
+  soroban-explorer events --json --limit 10
+  soroban-explorer submit --file events.json --explorer-id CDA2... --source admin`;
 
 // ── ANSI color helpers ───────────────────────────────────────────────────
 const RESET = "\x1b[0m";
@@ -83,7 +88,8 @@ function parseArgs(argv) {
       i++;
     } else if (
       (arg === "--base-url" || arg === "--api-key" || arg === "--contract" ||
-       arg === "--fn" || arg === "--limit" || arg === "--type") &&
+       arg === "--fn" || arg === "--limit" || arg === "--type" || arg === "--file" ||
+       arg === "--explorer-id" || arg === "--source" || arg === "--network") &&
       i + 1 < argv.length
     ) {
       flags[arg.slice(2).replace(/-([a-z])/g, (_, c) => c.toUpperCase())] = argv[i + 1];
@@ -445,6 +451,70 @@ async function cmdTail(baseUrl, apiKey, flags) {
   await poll();
 }
 
+// Must match MAX_BATCH in contracts/explorer/src/lib.rs.
+const MAX_BATCH = 20;
+
+/**
+ * Submit events from a JSON file (an array of EventInput objects) to the
+ * explorer contract via `stellar contract invoke ... submit_events`, split into
+ * MAX_BATCH-sized batches. Each batch is all-or-nothing on-chain; if a batch
+ * fails, earlier batches stay committed and the error names the failed batch.
+ */
+async function cmdSubmit(flags) {
+  if (!flags.file || !flags.explorerId || !flags.source) {
+    console.error(
+      "Error: usage: soroban-explorer submit --file <events.json> --explorer-id <id> --source <identity> [--network <name>]",
+    );
+    process.exit(1);
+  }
+
+  const events = JSON.parse(await fs.readFile(flags.file, "utf-8"));
+  if (!Array.isArray(events) || events.length === 0) {
+    console.error("Error: --file must contain a non-empty JSON array of events");
+    process.exit(1);
+  }
+
+  const stellar = process.env.STELLAR_BIN || "stellar";
+  const network = flags.network || "testnet";
+  const run = (args) => execFileSync(stellar, args, { encoding: "utf-8" }).trim();
+
+  const caller = run(["keys", "address", flags.source]);
+  const seqs = [];
+  const batches = Math.ceil(events.length / MAX_BATCH);
+
+  for (let b = 0; b < batches; b++) {
+    const batch = events.slice(b * MAX_BATCH, (b + 1) * MAX_BATCH);
+    let assigned;
+    try {
+      assigned = JSON.parse(
+        run([
+          "contract", "invoke",
+          "--id", flags.explorerId,
+          "--source", flags.source,
+          "--network", network,
+          "--", "submit_events",
+          "--caller", caller,
+          "--inputs", JSON.stringify(batch),
+        ]),
+      );
+    } catch (e) {
+      throw new Error(
+        `batch ${b + 1}/${batches} failed (${seqs.length} events already submitted): ${e.message}`,
+      );
+    }
+    seqs.push(...assigned);
+    if (!flags.json) {
+      console.log(`Batch ${b + 1}/${batches}: submitted ${batch.length} events`);
+    }
+  }
+
+  if (flags.json) {
+    outputJSON({ submitted: seqs.length, seqs });
+  } else {
+    console.log(`${GREEN}Submitted ${seqs.length} events in ${batches} batch(es).${RESET}`);
+  }
+}
+
 // ── Main ──��──────────────────────────────────────────────────────────────
 
 async function main() {
@@ -483,6 +553,9 @@ async function main() {
         break;
       case "tail":
         await cmdTail(baseUrl, apiKey, flags);
+        break;
+      case "submit":
+        await cmdSubmit(flags);
         break;
       default:
         console.error(`Unknown command: ${command}`);
