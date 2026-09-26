@@ -1,5 +1,6 @@
 import { lazy, Suspense } from "react";
 import { Routes, Route } from "react-router-dom";
+import { useTranslation } from "react-i18next";
 import Nav from "./components/Nav";
 import ErrorBoundary from "./components/ErrorBoundary";
 import { useTranslation } from "./i18n";
@@ -10,6 +11,7 @@ const RegisterContractPage = lazy(() => import("./pages/RegisterContractPage"));
 const ContractPage = lazy(() => import("./pages/ContractPage"));
 const WalletPage = lazy(() => import("./pages/WalletPage"));
 const EventPage = lazy(() => import("./pages/EventPage"));
+const TransactionPage = lazy(() => import("./pages/TransactionPage"));
 const SearchPage = lazy(() => import("./pages/SearchPage"));
 const XdrInspector = lazy(() => import("./pages/XdrInspector"));
 const RpcMetricsDashboard = lazy(() => import("./pages/RpcMetricsDashboard"));
@@ -53,12 +55,14 @@ export default function App() {
             <Route path="/contract/:id/abi-diff" element={<AbiDiffPage />} />
             <Route path="/wallet/:address" element={<WalletPage />} />
             <Route path="/event/:seq" element={<EventPage />} />
+            <Route path="/tx/:hash" element={<TransactionPage />} />
             <Route path="/search" element={<SearchPage />} />
             <Route path="/xdr" element={<XdrInspector />} />
             <Route path="/rpc-metrics" element={<RpcMetricsDashboard />} />
             <Route path="/graph" element={<GraphPage />} />
             <Route path="/sandbox" element={<Sandbox />} />
             <Route path="/sandbox/:id" element={<SharedSandbox />} />
+            <Route path="/watchlist" element={<WatchlistPage />} />
             <Route path="/setup" element={<SetupPage />} />
             <Route path="/batch" element={<BatchMultiCall />} />
             <Route path="/sub-invocations" element={<SubInvocationPage />} />
@@ -70,6 +74,7 @@ export default function App() {
             <Route path="/nft/:contractId" element={<NftGallery />} />
             <Route path="/dashboard" element={<DashboardPage />} />
             <Route path="/status" element={<Status />} />
+            <Route path="/filter-builder" element={<FilterBuilder />} />
           </Routes>
         </Suspense>
       </main>

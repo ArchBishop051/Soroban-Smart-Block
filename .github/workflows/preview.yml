@@ -1,0 +1,134 @@
+name: Preview Environment
+
+# Deploys each PR to namespace pr-<n> with a fresh, seeded Postgres, posts the
+# URL, runs the Playwright smoke suite, and tears down on close.
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, closed]
+  schedule:
+    - cron: "*/30 * * * *"   # TTL sweep for stale previews
+
+concurrency:
+  group: preview-${{ github.event.pull_request.number || 'sweep' }}
+  cancel-in-progress: true
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+  NS: pr-${{ github.event.pull_request.number }}
+  PREVIEW_HOST: pr-${{ github.event.pull_request.number }}.${{ vars.PREVIEW_DOMAIN }}
+  MAX_PREVIEWS: 10          # cost cap: concurrent preview namespaces
+  PREVIEW_TTL_HOURS: 72
+
+jobs:
+  deploy:
+    if: github.event_name == 'pull_request' && github.event.action != 'closed'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: write
+      pull-requests: write
+    # Fork PRs run in restricted mode: no secrets, so images are built but not
+    # pushed or deployed.
+    env:
+      RESTRICTED: ${{ github.event.pull_request.head.repo.full_name != github.repository }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        if: env.RESTRICTED == 'false'
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build images
+        run: |
+          PUSH=$([ "$RESTRICTED" = "false" ] && echo --push || echo --load)
+          for c in indexer frontend; do
+            docker buildx build $PUSH -t "$REGISTRY/$IMAGE_NAME/$c:pr-${{ github.event.pull_request.number }}" \
+              --cache-from type=registry,ref=$REGISTRY/$IMAGE_NAME/$c:buildcache ./$c
+          done
+      - uses: azure/setup-helm@v4
+        if: env.RESTRICTED == 'false'
+      - name: Deploy preview
+        if: env.RESTRICTED == 'false'
+        run: |
+          echo "${{ secrets.PREVIEW_KUBECONFIG }}" | base64 -d > "$RUNNER_TEMP/kubeconfig"
+          export KUBECONFIG="$RUNNER_TEMP/kubeconfig"
+          COUNT=$(kubectl get ns -l explorer/preview=true --no-headers 2>/dev/null | wc -l)
+          if ! kubectl get ns "$NS" >/dev/null 2>&1 && [ "$COUNT" -ge "$MAX_PREVIEWS" ]; then
+            echo "::error::Preview cap ($MAX_PREVIEWS) reached"; exit 1
+          fi
+          kubectl create ns "$NS" --dry-run=client -o yaml | kubectl apply -f -
+          kubectl label ns "$NS" explorer/preview=true --overwrite
+          kubectl annotate ns "$NS" explorer/created-at="$(date +%s)" --overwrite
+          kubectl apply -n "$NS" -f - <<YAML
+          apiVersion: v1
+          kind: ResourceQuota
+          metadata: {name: preview-cap}
+          spec: {hard: {requests.cpu: "2", requests.memory: 4Gi, limits.cpu: "4", limits.memory: 8Gi}}
+          YAML
+          kubectl create configmap seed-data -n "$NS" --from-file=seed-data/ --dry-run=client -o yaml | kubectl apply -f -
+          helm upgrade --install explorer deploy/helm/soroban-explorer -n "$NS" --wait --timeout 8m \
+            --set image.tag=pr-${{ github.event.pull_request.number }} \
+            --set canary.enabled=false --set ingest.enabled=${{ vars.PREVIEW_TESTNET_INGEST || 'false' }} \
+            --set preview.enabled=true --set preview.host=$PREVIEW_HOST \
+            --set api.replicas=1 --set frontend.replicas=1
+      - name: Playwright smoke
+        if: env.RESTRICTED == 'false'
+        working-directory: e2e
+        run: |
+          npm ci && npx playwright install --with-deps chromium
+          FRONTEND_URL=https://$PREVIEW_HOST API_URL=https://$PREVIEW_HOST npx playwright test test/playwright --reporter=html
+      - uses: actions/upload-artifact@v4
+        if: always() && env.RESTRICTED == 'false'
+        id: report
+        with:
+          name: playwright-preview-pr-${{ github.event.pull_request.number }}
+          path: e2e/playwright-report
+      - name: Comment preview URL
+        if: always()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const restricted = process.env.RESTRICTED === 'true';
+            const body = restricted
+              ? '🔒 Preview skipped: PRs from forks run in restricted mode (build only, no secrets).'
+              : `🚀 Preview: https://${process.env.PREVIEW_HOST}\n\nPlaywright report: ${{ steps.report.outputs.artifact-url || 'n/a' }}`;
+            const marker = '<!-- preview-env -->';
+            const { owner, repo } = context.repo;
+            const issue_number = context.issue.number;
+            const comments = await github.paginate(github.rest.issues.listComments, { owner, repo, issue_number });
+            const existing = comments.find(c => c.body.includes(marker));
+            if (existing) await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body: `${marker}\n${body}` });
+            else await github.rest.issues.createComment({ owner, repo, issue_number, body: `${marker}\n${body}` });
+
+  teardown:
+    if: github.event_name == 'pull_request' && github.event.action == 'closed' && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - name: Delete preview namespace
+        run: |
+          echo "${{ secrets.PREVIEW_KUBECONFIG }}" | base64 -d > "$RUNNER_TEMP/kubeconfig"
+          KUBECONFIG="$RUNNER_TEMP/kubeconfig" kubectl delete ns "$NS" --ignore-not-found --wait=false
+
+  ttl-sweep:
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Remove stale previews
+        run: |
+          echo "${{ secrets.PREVIEW_KUBECONFIG }}" | base64 -d > "$RUNNER_TEMP/kubeconfig"
+          export KUBECONFIG="$RUNNER_TEMP/kubeconfig"
+          NOW=$(date +%s)
+          kubectl get ns -l explorer/preview=true -o jsonpath='{range .items[*]}{.metadata.name} {.metadata.annotations.explorer/created-at}{"\n"}{end}' |
+          while read -r ns created; do
+            PR=${ns#pr-}
+            STATE=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json state -q .state 2>/dev/null || echo UNKNOWN)
+            if [ "$STATE" != "OPEN" ] || [ $((NOW - ${created:-0})) -gt $((PREVIEW_TTL_HOURS * 3600)) ]; then
+              kubectl delete ns "$ns" --wait=false
+            fi
+          done
+        env:
+          GH_TOKEN: ${{ github.token }}

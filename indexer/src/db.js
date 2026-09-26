@@ -5,6 +5,7 @@ import { withSpan } from "./tracing.js";
 import { getIndexerNetwork } from "./networkConfig.js";
 import { decodeCursor, hashFilters, formatPageResponse } from "./cursor.js";
 import config from "./config.js";
+import { encryptSecret } from "./secrets/index.js";
 
 // Migration 031 made `daemon_state` and `ledger_hashes` network-scoped:
 // their primary keys are now (network, key) and (network, ledger). Every
@@ -567,8 +568,8 @@ export const db = {
          (contract_id, function, ledger, tx_hash, description, raw_topics, raw_data,
           cpu_instructions, mem_bytes, fee_charged, is_high_bloat_risk, upgrade_info, storage_tiers, is_clawback,
           footprint_contention, ttl_extension, fee_bump, archival_info, zk_host_calls, abi_version, slippage_bps,
-          topic0, topic1, topic2, topic3, topic_count)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26)
+          topic0, topic1, topic2, topic3, topic_count, lineage_batch_id)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27)
        ON CONFLICT (contract_id, ledger, tx_hash) DO NOTHING`,
       [
         ev.contract_id,
@@ -595,6 +596,7 @@ export const db = {
         // Hashed topic columns (#903): canonical-XDR sha256 per topic.
         ...[0, 1, 2, 3].map((i) => (ev.topic_hashes?.[i] ? Buffer.from(ev.topic_hashes[i], "hex") : null)),
         ev.topic_count ?? null,
+        ev.lineage_batch_id ?? null,
       ],
     );
     return rows[0]?.seq ?? null;
@@ -2006,6 +2008,18 @@ export const db = {
     );
   },
 
+  async getSubInvocationsByTransaction(txHash, limit = 200) {
+    const { rows } = await pool.query(
+      `SELECT id, parent_tx_hash, depth, contract_id, function, args, ledger
+       FROM sub_invocations
+       WHERE parent_tx_hash = $1
+       ORDER BY depth ASC, id ASC
+       LIMIT $2`,
+      [txHash, limit],
+    );
+    return rows;
+  },
+
   /** aggregate caller→callee edges for the global dependency graph. */
   async getSubInvocationEdges(limit = 500) {
     const { rows } = await pool.query(
@@ -2749,7 +2763,7 @@ export const db = {
       `INSERT INTO webhook_subscriptions (api_key_id, url, contract_id, function_filter, wallet_address, secret, filter)
        VALUES ($1, $2, $3, $4, $5, $6, $7)
        RETURNING id, api_key_id, url, contract_id, function_filter, wallet_address, filter, active, failure_count, created_at, last_triggered_at`,
-      [api_key_id, url, contract_id ?? null, function_filter ?? null, wallet_address ?? null, secret, filter ? JSON.stringify(filter) : null],
+      [api_key_id, url, contract_id ?? null, function_filter ?? null, wallet_address ?? null, encryptSecret(secret), filter ? JSON.stringify(filter) : null],
     );
     return rows[0];
   },

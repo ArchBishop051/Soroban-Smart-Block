@@ -56,15 +56,21 @@ jobs:
           awk -v mb="$SIZE_MB" 'BEGIN { exit (mb < 150) ? 0 : 1 }' \
             || (echo "ERROR: indexer image is ${SIZE_MB} MB — must be < 150MB" && exit 1)
 
-      # 3. Acceptance criterion 4 — container must run as a non-root user.
-      - name: Verify non-root user (uid != 0)
+      # 3. Container must run as a non-root user (distroless has no whoami).
+      - name: Verify non-root user
         run: |
-          USER_OUT=$(docker run --rm indexer:ci whoami 2>/dev/null || true)
-          echo "whoami = ${USER_OUT}"
-          if [ -z "$USER_OUT" ] || [ "$USER_OUT" = "root" ]; then
-            echo "ERROR: container is running as root (or whoami unavailable)"
-            exit 1
-          fi
+          USER_OUT=$(docker image inspect indexer:ci --format '{{.Config.User}}')
+          echo "User = ${USER_OUT}"
+          case "$USER_OUT" in ""|root|0|0:*) echo "ERROR: image runs as root"; exit 1;; esac
+
+      # 3b. Hardened runtime profile boots (#930).
+      - name: Smoke test read-only, non-root, no capabilities
+        run: |
+          docker run -d --name indexer-ro --read-only --user 65532 --cap-drop ALL \
+            --security-opt no-new-privileges --tmpfs /tmp indexer:ci
+          sleep 5
+          docker logs indexer-ro
+          ! docker logs indexer-ro 2>&1 | grep -E "EROFS|EACCES"
 
       # 4. Trivy scan — fail on HIGH/CRITICAL. Project .trivyignore is respected.
       - name: Trivy vulnerability scan (HIGH/CRITICAL fail)
@@ -84,8 +90,8 @@ jobs:
         run: |
           HC=$(docker inspect --format='{{index .Config.Healthcheck.Test}}' indexer:ci)
           echo "HEALTHCHECK = ${HC}"
-          if [ -z "$HC" ] || ! echo "$HC" | grep -q "wget"; then
-            echo "ERROR: HEALTHCHECK is missing or does not use wget"
+          if [ -z "$HC" ] || ! echo "$HC" | grep -q "fetch"; then
+            echo "ERROR: HEALTHCHECK is missing or does not probe /health"
             exit 1
           fi
 

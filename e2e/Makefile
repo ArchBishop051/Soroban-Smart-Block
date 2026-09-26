@@ -1,4 +1,4 @@
-.PHONY: setup install test test-api test-chaos test-property test-playwright test-k6 test-synthetic test-visual test-all help
+.PHONY: setup install test e2e-scenarios test-api test-chaos test-property test-playwright test-k6 test-synthetic test-visual test-all help
 
 help:
 	@echo "E2E Test Suite — Soroban Smart Block Explorer"
@@ -18,6 +18,7 @@ help:
 	@echo "  make test-k6-soak       Soak test (~4 hours, 200 req/s)"
 	@echo "  make test-synthetic     Synthetic event monitoring"
 	@echo "  make test-visual        Percy visual regression (~15 min)"
+	@echo "  make e2e-scenarios      Seeded local-network workload + manifest assertions (<15 min)"
 	@echo ""
 	@echo "Combined:"
 	@echo "  make test               Fast E2E (API + chaos + property + playwright, ~30 min)"
@@ -83,3 +84,8 @@ clean:
 	find . -name ".DS_Store" -delete
 
 .DEFAULT_GOAL := help
+
+# Seeded workload against stellar/quickstart (--standalone) — see workloads/ and README.
+e2e-scenarios:
+	npm run workload -- --seed $${WORKLOAD_SEED:-42}
+	npm run test:scenarios

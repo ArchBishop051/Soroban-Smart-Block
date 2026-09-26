@@ -1,18 +1,30 @@
 name: Publish SDK
 
+# Changesets-driven releases (#942). Pushes to main open/update a
+# "Version Packages" PR; merging it publishes with npm provenance.
 on:
-  release:
-    types: [published]
+  push:
+    branches: [main]
+    paths: [".changeset/**", "packages/**", "docs/api/**"]
+  pull_request:
+    paths: [".changeset/**", "packages/**", "docs/api/**"]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
 
 permissions:
-  contents: read
-  packages: write
+  contents: write
+  pull-requests: write
+  id-token: write
 
 jobs:
-  publish:
+  release:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -20,34 +32,59 @@ jobs:
           node-version: "20"
           registry-url: "https://registry.npmjs.org"
 
+      # npm >= 11.5 publishes via OIDC trusted publishing (no npm token).
       - name: Install dependencies
         run: |
-          cd packages/sdk
+          npm install -g npm@^11.5
           npm ci
 
-      - name: Generate TypeScript types from OpenAPI
+      # Gate: packages must build and test against the current API spec.
+      - name: Build and test SDK against current spec
+        working-directory: packages/sdk
         run: |
-          cd packages/sdk
           npm run generate-types
-
-      - name: Build SDK package
-        run: |
-          cd packages/sdk
           npm run build
-
-      - name: Run type checking
-        run: |
-          cd packages/sdk
           npm run typecheck
-
-      - name: Run tests
-        run: |
-          cd packages/sdk
           npm test
 
-      - name: Publish to npm
+      - name: Require major changeset on breaking OpenAPI changes
         run: |
-          cd packages/sdk
-          npm publish
+          BASE=$(git merge-base HEAD origin/main)
+          SPEC=docs/api/openapi.yaml
+          git show "$BASE:$SPEC" > /tmp/base-spec 2>/dev/null || exit 0
+          curl -fsSL https://raw.githubusercontent.com/oasdiff/oasdiff/main/install.sh | sh -s -- -b /usr/local/bin
+          if ! oasdiff breaking /tmp/base-spec "$SPEC" --fail-on ERR; then
+            grep -lE '"@soroban-explorer/(client|sdk)": major' .changeset/*.md \
+              || { echo "::error::Breaking API change needs a major changeset for client/sdk"; exit 1; }
+          fi
+
+      - name: Dry-run version
+        if: github.event_name == 'pull_request'
+        run: |
+          npx changeset status --verbose
+          npx changeset version
+          git diff --stat
+
+      # changeset publish skips already-published versions, so a failed
+      # partial publish is safe to re-run.
+      - name: Version PR or publish
+        id: changesets
+        if: github.event_name != 'pull_request'
+        uses: changesets/action@v1
+        with:
+          version: npm run version-packages
+          publish: npm run release
+          title: "chore: version packages"
+          commit: "chore: version packages"
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NPM_CONFIG_PROVENANCE: "true"
+
+      - name: Publish next pre-release
+        if: github.event_name == 'push' && steps.changesets.outputs.published != 'true'
+        continue-on-error: true
+        run: |
+          npx changeset version --snapshot next
+          npx changeset publish --tag next --no-git-tag
+        env:
+          NPM_CONFIG_PROVENANCE: "true"

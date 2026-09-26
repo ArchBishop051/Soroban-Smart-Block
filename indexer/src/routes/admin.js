@@ -37,8 +37,7 @@ import {
   CursorFilterMismatchError,
 } from "../cursor.js";
 import config from "../config.js";
-import { safeFetch } from "../safeHttp.js";
-import { GITHUB_HOSTS } from "../githubAbiSync.js";
+import { getEventLineage } from "../lineage.js";
 // Note: getRedisClient (rateLimit/tokenBucket.js) and runAllChecks
 // (doctor-lib.js) were imported here but never called anywhere in this
 // file — dead imports left over from the removed legacy /api/doctor route
@@ -241,6 +240,20 @@ export default function registerAdminRoutes(app) {
   });
 
   // ── GET /api/admin/integrity ─────────────────────────────────────────────
+  // ── GET /api/admin/events/:seq/lineage ─────────────────────────────────────
+  // Full provenance chain for one event (#945).
+  router.get("/events/:seq/lineage", async (req, res) => {
+    try {
+      const seq = Number(req.params.seq);
+      if (!Number.isSafeInteger(seq) || seq < 1) return res.status(400).json({ error: "Invalid event id" });
+      const lineage = await getEventLineage(seq, { full: true });
+      if (!lineage) return res.status(404).json({ error: "Not found" });
+      res.json(lineage);
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
   router.get("/integrity", async (_req, res) => {
     try {
       const result = await runIntegrityChecks();
@@ -251,6 +264,20 @@ export default function registerAdminRoutes(app) {
     } catch (e) {
       return res.status(500).json({ error: e.message });
     }
+  });
+
+  // ── Abuse scoring (#931): flagged principals with evidence + manual override ──
+  router.get("/abuse", (_req, res) => {
+    res.json({ shadowMode: isShadowMode(), flagged: listFlagged() });
+  });
+
+  router.post("/abuse/:principal/override", (req, res) => {
+    const hours = Number(req.body?.hours ?? 24);
+    if (!Number.isFinite(hours) || hours <= 0 || hours > 24 * 30) {
+      return res.status(400).json({ error: "hours must be between 0 and 720" });
+    }
+    overridePrincipal(req.params.principal, hours);
+    res.json({ principal: req.params.principal, overriddenForHours: hours });
   });
 
   // ── POST /api/admin/alerts/:condition/resolve ─────────────────────────────
