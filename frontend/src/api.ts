@@ -1028,4 +1028,17 @@ export const api = {
       if (!r.ok) throw Object.assign(new Error(data.error ?? `API ${r.status}`), { status: r.status, data });
       return data as { ok: boolean };
     }),
+
+  // Issue #805: Certified PDF reports & detached verification
+  eventReportUrl: (seq: number) => `${BASE}/reports/event/${seq}`,
+  contractReportUrl: (id: string) => `${BASE}/reports/contract/${encodeURIComponent(id)}`,
+  verifyReport: (data: unknown, expectedHash: string) =>
+    mutationFetch(`${BASE}/reports/verify`, {
+      method: "POST",
+      body: JSON.stringify({ data, expected_hash: expectedHash }),
+    }).then(async (r) => {
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.error || "Verification failed");
+      return data as { verified: boolean; computed_hash: string; algorithm: string };
+    }),
 };
