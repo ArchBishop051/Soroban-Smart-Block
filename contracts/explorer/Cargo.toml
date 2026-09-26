@@ -9,7 +9,7 @@ autotests = false
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-soroban-sdk = { version = "21.7.7", features = ["alloc"] }
+soroban-sdk = { version = "21.0.0", features = ["alloc"] }
 
 [features]
 testutils = ["soroban-sdk/testutils"]
@@ -19,7 +19,7 @@ testutils = ["soroban-sdk/testutils"]
 unexpected_cfgs = { level = "warn", check-cfg = ["cfg(kani)"] }
 
 [dev-dependencies]
-soroban-sdk = { version = "21.7.7", features = ["testutils"] }
+soroban-sdk = { version = "21.0.0", features = ["testutils"] }
 proptest    = { version = "1.4", default-features = false, features = ["alloc"] }
 
 [[test]]
