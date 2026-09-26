@@ -267,6 +267,10 @@ jobs:
         env:
           TEST_DATABASE_URL: postgres://soroban:soroban_secret@localhost:5432/soroban_explorer
 
+      - name: New API feature security tests
+        run: npm run test:issues
+        working-directory: indexer
+
       - name: Upload indexer coverage to CodeCov
         uses: codecov/codecov-action@v4
         with:

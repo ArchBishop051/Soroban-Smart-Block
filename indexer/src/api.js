@@ -52,6 +52,7 @@ import { runAllChecks } from "./doctor-lib.js";
 import { registry } from "./metrics.js";
 import pg from "pg";
 import { analyticsPool, executeAnalyticsQuery, toCsv } from "./analyticsSql.js";
+import { ALLOWED_RPC_METHODS, proxyRpcRequest } from "./rpcProxy.js";
 import { getBurnAlerts } from "./burnDetector.js";
 import { formatAmount } from "./formatAmount.js";
 import { sendVerificationEmail, isConfigured } from "./emailService.js";
@@ -469,6 +470,33 @@ export function createApi({ logDestination, dbOverride } = {}) {
       }
       logger.error("[analytics-sql] Query failed:", error.message);
       res.status(500).json({ error: "Analytics query failed" });
+    }
+  });
+
+  app.post("/api/rpc", async (req, res) => {
+    const body = req.body;
+    const id = body?.id ?? null;
+    const rpcError = (status, code, message) =>
+      res.status(status).json({ jsonrpc: "2.0", id, error: { code, message } });
+
+    if (Buffer.byteLength(JSON.stringify(body ?? {})) > 32_768) {
+      return rpcError(413, -32600, "RPC request exceeds 32768 bytes");
+    }
+    if (!body || Array.isArray(body) || body.jsonrpc !== "2.0" || typeof body.method !== "string") {
+      return rpcError(400, -32600, "Invalid JSON-RPC request");
+    }
+    if (!ALLOWED_RPC_METHODS.has(body.method)) {
+      return rpcError(403, -32601, "RPC method is not allowed");
+    }
+
+    try {
+      const result = await proxyRpcRequest(body.method, body.params ?? {});
+      res.json({ jsonrpc: "2.0", id, result });
+    } catch (error) {
+      const status = error.statusCode ?? 502;
+      const code = status === 400 ? -32602 : -32000;
+      if (status >= 500) logger.warn("[rpc-proxy] RPC request failed:", error.message);
+      rpcError(status, code, status >= 500 ? "Soroban RPC request failed" : error.message);
     }
   });
 
