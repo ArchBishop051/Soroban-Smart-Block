@@ -266,6 +266,20 @@ export default function registerAdminRoutes(app) {
     }
   });
 
+  // ── Abuse scoring (#931): flagged principals with evidence + manual override ──
+  router.get("/abuse", (_req, res) => {
+    res.json({ shadowMode: isShadowMode(), flagged: listFlagged() });
+  });
+
+  router.post("/abuse/:principal/override", (req, res) => {
+    const hours = Number(req.body?.hours ?? 24);
+    if (!Number.isFinite(hours) || hours <= 0 || hours > 24 * 30) {
+      return res.status(400).json({ error: "hours must be between 0 and 720" });
+    }
+    overridePrincipal(req.params.principal, hours);
+    res.json({ principal: req.params.principal, overriddenForHours: hours });
+  });
+
   // ── POST /api/admin/alerts/:condition/resolve ─────────────────────────────
   router.post("/alerts/:condition/resolve", (req, res) => {
     const { condition } = req.params;

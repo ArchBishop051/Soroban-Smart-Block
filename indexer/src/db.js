@@ -5,6 +5,7 @@ import { withSpan } from "./tracing.js";
 import { getIndexerNetwork } from "./networkConfig.js";
 import { decodeCursor, hashFilters, formatPageResponse } from "./cursor.js";
 import config from "./config.js";
+import { encryptSecret } from "./secrets/index.js";
 
 // Migration 031 made `daemon_state` and `ledger_hashes` network-scoped:
 // their primary keys are now (network, key) and (network, ledger). Every
@@ -2762,7 +2763,7 @@ export const db = {
       `INSERT INTO webhook_subscriptions (api_key_id, url, contract_id, function_filter, wallet_address, secret, filter)
        VALUES ($1, $2, $3, $4, $5, $6, $7)
        RETURNING id, api_key_id, url, contract_id, function_filter, wallet_address, filter, active, failure_count, created_at, last_triggered_at`,
-      [api_key_id, url, contract_id ?? null, function_filter ?? null, wallet_address ?? null, secret, filter ? JSON.stringify(filter) : null],
+      [api_key_id, url, contract_id ?? null, function_filter ?? null, wallet_address ?? null, encryptSecret(secret), filter ? JSON.stringify(filter) : null],
     );
     return rows[0];
   },

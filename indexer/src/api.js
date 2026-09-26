@@ -63,6 +63,7 @@ import { concurrentRequestLimiter } from "./rateLimit/concurrentLimiter.js";
 import { tokenBucketMiddleware } from "./rateLimit/tokenBucket.js";
 import { graphqlComplexityLimiter } from "./rateLimit/graphqlComplexity.js";
 import { abuseDetector } from "./rateLimit/abuseDetector.js";
+import { abuseScorer } from "./abuse/scorer.js";
 import { rateLimitHeaderWriter } from "./rateLimit/headers.js";
 import { auditLoggerMiddleware, ensureAuditPartitions } from "./audit/auditLogger.js";
 import registerAdminRoutes from "./routes/admin.js";
@@ -520,6 +521,7 @@ export function createApi({ logDestination, dbOverride } = {}) {
   app.use(graphqlComplexityLimiter);
   if (process.env.RATE_LIMITING_DISABLED !== "true") {
     app.use(abuseDetector);
+    app.use(abuseScorer);
   }
   app.use(rateLimitHeaderWriter);
 
@@ -651,6 +653,19 @@ export function createApi({ logDestination, dbOverride } = {}) {
       });
     }
   };
+
+  // RFC 9116 security contact (#932) — mirrors frontend/public/.well-known/security.txt.
+  app.get("/.well-known/security.txt", (_req, res) => {
+    res.type("text/plain").send(
+      [
+        "Contact: https://github.com/Soroban-Smart-Block-Explorer/Soroban-Smart-Block/security/advisories/new",
+        "Expires: 2027-09-26T00:00:00.000Z",
+        "Policy: https://github.com/Soroban-Smart-Block-Explorer/Soroban-Smart-Block/blob/main/SECURITY.md",
+        "Preferred-Languages: en",
+        "",
+      ].join("\n"),
+    );
+  });
 
   app.get("/health", healthHandler);
   app.get("/api/health", healthHandler);

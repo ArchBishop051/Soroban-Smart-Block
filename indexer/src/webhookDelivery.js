@@ -20,6 +20,7 @@ import crypto from "crypto";
 import dns from "dns/promises";
 import { db } from "./db.js";
 import { enqueue as dlqEnqueue } from "./deadLetterQueue.js";
+import { decryptSecret } from "./secrets/index.js";
 
 const DELIVERY_TIMEOUT_MS = 5_000;
 const MAX_RESPONSE_BODY_CHARS = 4_000;
@@ -144,7 +145,7 @@ async function sendOnce(url, secret, body) {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "X-Webhook-Signature": signPayload(secret, body),
+        "X-Webhook-Signature": signPayload(decryptSecret(secret), body),
       },
       body,
       signal: controller.signal,
