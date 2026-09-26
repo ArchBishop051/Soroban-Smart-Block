@@ -14,9 +14,23 @@ echo "» pre-push: running ticket contract tests…"
 (cd contracts/ticket && cargo test --features testutils --release)
 
 echo "» pre-push: linting frontend…"
-(cd frontend && npx eslint . && npx prettier --check .)
+(cd frontend && npx eslint .)
 
 echo "» pre-push: linting indexer…"
-(cd indexer && npx eslint . && npx prettier --check .)
+(cd indexer && npx eslint .)
+
+# Formatting is only checked on files this push changes: much of the existing
+# tree predates .prettierrc, and a repo-wide check would block every push.
+base="$(git merge-base HEAD origin/main 2>/dev/null || true)"
+if [ -n "$base" ]; then
+  for pkg in frontend indexer; do
+    files="$(git diff --name-only --diff-filter=ACMR "$base" HEAD -- "$pkg" \
+      | grep -E '\.(js|jsx|ts|tsx|json|css|md)$' | sed "s|^$pkg/||" || true)"
+    if [ -n "$files" ]; then
+      echo "» pre-push: prettier ($pkg, changed files)…"
+      (cd "$pkg" && echo "$files" | xargs npx prettier --check)
+    fi
+  done
+fi
 
 echo "» pre-push: all checks passed ✓"

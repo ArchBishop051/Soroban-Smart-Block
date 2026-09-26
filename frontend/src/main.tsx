@@ -4,7 +4,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter } from "react-router-dom";
 import App from "./App";
 import { NetworkProvider } from "./contexts/NetworkContext";
-import { I18nProvider } from "./i18n";
+import { ThemeProvider } from "./contexts/ThemeContext";
 import { initCsrf } from "./hooks/useCsrf";
 import { initSentry } from "./sentry";
 import "./index.css";
@@ -18,16 +18,22 @@ const qc = new QueryClient();
 // before any user action triggers a POST / PATCH / DELETE.
 initCsrf().catch(() => {});
 
+if ("serviceWorker" in navigator) {
+  window.addEventListener("load", () => {
+    navigator.serviceWorker.register("/sw.js").catch(() => {});
+  });
+}
+
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
-    <I18nProvider>
-      <QueryClientProvider client={qc}>
+    <QueryClientProvider client={qc}>
+      <ThemeProvider>
         <NetworkProvider>
           <BrowserRouter>
             <App />
           </BrowserRouter>
         </NetworkProvider>
-      </QueryClientProvider>
-    </I18nProvider>
+      </ThemeProvider>
+    </QueryClientProvider>
   </React.StrictMode>,
 );

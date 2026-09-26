@@ -11,6 +11,8 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -119,6 +121,43 @@ describe("soroban-explorer CLI", () => {
       const result = runCli(["--base-url", "https://example.com", "events"]);
       // Will fail connecting to example.com but not with argument error
       assert.ok(!result.stderr.includes("Unknown option"));
+    });
+  });
+  describe("submit", () => {
+    it("should require --file, --explorer-id and --source", () => {
+      const result = runCli(["submit", "--file", "events.json"]);
+      assert.equal(result.status, 1);
+      assert.ok(result.stderr.includes("usage"));
+    });
+
+    it("should split the file into MAX_BATCH-sized submit_events calls", () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cli-submit-"));
+      const log = path.join(dir, "calls.log");
+      const fakeStellar = path.join(dir, "stellar");
+      // Fake `stellar` CLI: logs the batch size of each submit_events call and
+      // returns one sequence number per input.
+      fs.writeFileSync(
+        fakeStellar,
+        `#!/usr/bin/env node
+const args = process.argv.slice(2);
+if (args[0] === "keys") { console.log("GFAKECALLER"); process.exit(0); }
+const inputs = JSON.parse(args[args.indexOf("--inputs") + 1]);
+require("fs").appendFileSync(${JSON.stringify(log)}, inputs.length + "\\n");
+console.log(JSON.stringify(inputs.map((_, i) => i)));
+`,
+      );
+      fs.chmodSync(fakeStellar, 0o755);
+      const eventsFile = path.join(dir, "events.json");
+      const event = { contract_id: "00".repeat(32), function: "swap", ledger: 1, description: "d", raw_topics: [], raw_data: "" };
+      fs.writeFileSync(eventsFile, JSON.stringify(Array(45).fill(event)));
+
+      const result = runCli(
+        ["submit", "--file", eventsFile, "--explorer-id", "CEXPLORER", "--source", "admin", "--json"],
+        { STELLAR_BIN: fakeStellar },
+      );
+      assert.equal(result.status, 0, result.stderr);
+      assert.deepEqual(fs.readFileSync(log, "utf-8").trim().split("\n"), ["20", "20", "5"]);
+      assert.equal(JSON.parse(result.stdout).submitted, 45);
     });
   });
 });

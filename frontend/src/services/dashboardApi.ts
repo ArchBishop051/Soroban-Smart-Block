@@ -73,6 +73,10 @@ export interface ApiKeyRecord {
   daily_limit: number | null;
   expires_at: string | null;
   allowed_ips: string[] | null;
+  /** Permission scopes (#901), e.g. read:events, write:webhooks. */
+  scopes?: string[];
+  allowed_contract_ids?: string[] | null;
+  allowed_origins?: string[] | null;
   revoked: boolean;
   last_used_at: string | null;
   usage_count: number;
@@ -80,10 +84,25 @@ export interface ApiKeyRecord {
   updated_at: string;
 }
 
+export interface BillingStatus {
+  provider: string;
+  tier: string;
+  status: string;
+  plan: string;
+  cancel_at_period_end: boolean;
+  subscription_id: string | null;
+  customer_id: string | null;
+  last_updated_at: string | null;
+}
+
 export interface UsageStats {
   today: number;
   this_month: number;
   limit_daily: number;
+  remaining_daily: number;
+  rate_limit: number;
+  rate_limit_window: string;
+  remaining_rate_limit: number;
   events_received: number;
 }
 
@@ -117,11 +136,19 @@ export interface Paginated<T> {
 }
 
 export const dashboardApi = {
-  me: () => request<ApiKeyRecord & { usage: UsageStats }>("/dashboard/me"),
+  me: () => request<ApiKeyRecord & { usage: UsageStats; billing: BillingStatus }>("/dashboard/me"),
 
   listApiKeys: () => request<{ data: ApiKeyRecord[] }>("/dashboard/api-keys").then((r) => r.data),
 
-  createApiKey: (body: { name: string; tier?: string; rate_limit?: number; expires_at?: string }) =>
+  createApiKey: (body: {
+    name: string;
+    tier?: string;
+    rate_limit?: number;
+    expires_at?: string;
+    scopes?: string[];
+    allowed_contract_ids?: string[];
+    allowed_origins?: string[];
+  }) =>
     request<{ key: string; record: ApiKeyRecord }>("/dashboard/api-keys", {
       method: "POST",
       body: JSON.stringify(body),

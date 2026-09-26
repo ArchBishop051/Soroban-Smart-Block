@@ -15,6 +15,7 @@ import { logger } from "./logger.js";
  *      once WEBHOOK_MAX_CONSECUTIVE_FAILURES consecutive attempts fail.
  */
 
+import { evaluateFilter, validateFilter } from "./filters/filter.js";
 import crypto from "crypto";
 import dns from "dns/promises";
 import { db } from "./db.js";
@@ -121,6 +122,7 @@ function truncate(str) {
 function buildPayload(decoded) {
   return JSON.stringify({
     seq: decoded.seq ?? null,
+    event_id: decoded.event_id ?? null,
     contract_id: decoded.contract_id,
     function: decoded.function,
     ledger: decoded.ledger,
@@ -256,12 +258,25 @@ function eventMatchesWallet(decoded, walletAddress) {
   return false;
 }
 
+/** Apply a subscription's filter DSL predicate (#902); no filter matches everything. */
+function eventMatchesFilter(decoded, filter) {
+  if (!filter) return true;
+  try {
+    const ast = typeof filter === "string" ? JSON.parse(filter) : filter;
+    return evaluateFilter(validateFilter(ast))(decoded);
+  } catch {
+    return false; // an unreadable stored filter never matches
+  }
+}
+
 /** Find active subscriptions matching a newly-indexed event and deliver to each (fire-and-forget). */
 export async function deliverWebhooksForEvent(decoded) {
   const candidates = await db.getMatchingWebhookSubscriptions(decoded.contract_id, decoded.function);
   // The DB query returns every active wallet-address subscription unfiltered;
   // apply the per-subscription wallet match here (topics + description).
-  const subs = candidates.filter((sub) => eventMatchesWallet(decoded, sub.wallet_address));
+  const subs = candidates.filter(
+    (sub) => eventMatchesWallet(decoded, sub.wallet_address) && eventMatchesFilter(decoded, sub.filter),
+  );
   await Promise.all(
     subs.map((sub) =>
       deliverToSubscription(sub, decoded).catch((err) =>
