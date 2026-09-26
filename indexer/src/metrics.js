@@ -114,6 +114,27 @@ export const apiRequestDuration = new Histogram({
   registers: [registry],
 });
 
+export const loadShedRequestsTotal = new Counter({
+  name: "soroban_load_shed_requests_total",
+  help: "HTTP requests rejected by adaptive load shedding, by route and API tier",
+  labelNames: ["route", "tier"],
+  registers: [registry],
+});
+
+export const adaptiveConcurrencyLimit = new Gauge({
+  name: "soroban_adaptive_concurrency_limit",
+  help: "Current adaptive in-flight request limit by route class",
+  labelNames: ["route"],
+  registers: [registry],
+});
+
+export const activeRequests = new Gauge({
+  name: "soroban_active_requests",
+  help: "Current in-flight request count by route class",
+  labelNames: ["route"],
+  registers: [registry],
+});
+
 /**
  * Update DB pool gauges from a pg.Pool instance.
  * Call this periodically (e.g. every 15 s).

@@ -53,6 +53,7 @@ import { registry } from "./metrics.js";
 import pg from "pg";
 import { analyticsPool, executeAnalyticsQuery, toCsv } from "./analyticsSql.js";
 import { ALLOWED_RPC_METHODS, proxyRpcRequest } from "./rpcProxy.js";
+import { adaptiveLoadShedder, getLoadShedderMetrics } from "./loadShedder.js";
 import { getBurnAlerts } from "./burnDetector.js";
 import { formatAmount } from "./formatAmount.js";
 import { sendVerificationEmail, isConfigured } from "./emailService.js";
@@ -378,6 +379,9 @@ export function createApi({ logDestination, dbOverride } = {}) {
   );
   app.use(auditLoggerMiddleware);
   app.use(apiKeyAuthenticator);
+  if (process.env.RATE_LIMITING_DISABLED !== "true") {
+    app.use(adaptiveLoadShedder);
+  }
   // RATE_LIMITING_DISABLED short-circuits the per-client throttles. Intended
   // only for load/perf harnesses (e.g. the k6 PR baseline job) that drive
   // thousands of requests/second from a single origin and would otherwise
@@ -524,6 +528,9 @@ export function createApi({ logDestination, dbOverride } = {}) {
 
   app.get("/health", healthHandler);
   app.get("/api/health", healthHandler);
+  app.get("/api/load-shedder", (_req, res) => {
+    res.json(getLoadShedderMetrics());
+  });
 
   // Public status page data (issue #758): current health + rolling uptime
   // history, backed by the periodic samples uptimeRecorder.js writes.
