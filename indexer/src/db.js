@@ -575,6 +575,16 @@ export const db = {
     return rows;
   },
 
+  /** Look up an event by its canonical ID on a network (#892). */
+  async getEventByEventId(eventId, network = getIndexerNetwork()) {
+    const { rows } = await pool.query(
+      `SELECT *, CASE WHEN contract_id IS NULL OR contract_id = '' THEN 'classic' ELSE 'soroban' END AS type
+       FROM events WHERE network = $1 AND event_id = $2`,
+      [network, eventId],
+    );
+    return rows[0] ?? null;
+  },
+
   async getEvent(seq) {
     const sql = `SELECT *, CASE WHEN contract_id IS NULL OR contract_id = '' THEN 'classic' ELSE 'soroban' END AS type
                  FROM events WHERE seq = $1`;

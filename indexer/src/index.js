@@ -1,4 +1,6 @@
 import "dotenv/config";
+import { invalidateContract as invalidateContractSpec } from "./contractSpecCache.js";
+import { initRuntimeConfig } from "./runtimeConfig.js";
 import "./tracing.js";
 import { pathToFileURL } from "node:url";
 import { rpc as SorobanRpc } from "@stellar/stellar-sdk";
@@ -209,6 +211,7 @@ export async function processSingleEvent(rawSorobanEvent, context = undefined) {
       `[${rawSorobanEvent.ledger}] CONTRACT UPGRADE ${rawSorobanEvent.contractId}: ${upgrade.oldHash} → ${upgrade.newHash}`,
     );
     decoded.upgrade = upgrade;
+    invalidateContractSpec(rawSorobanEvent.contractId); // new WASM → new spec from this ledger on (#895)
     if (decoded.abi_version > 0) {
       await db.markNeedsRedecode(rawSorobanEvent.contractId, decoded.abi_version);
     }
@@ -439,6 +442,7 @@ async function run() {
   warmCache().catch((e) => logger.warn({ err: e.message }, "cache warm failed"));
   seedBuiltinAbis().catch((e) => logger.warn({ err: e.message }, "builtin ABI seed failed"));
   startAbiSync();
+  initRuntimeConfig(pool).catch((err) => logger.error("[runtimeConfig] init failed:", err.message)); // hot-reloadable config (#894)
   startContractVerifier(); // periodically verify DB ABI hashes against on-chain registry
   startQueryJobMaintenance().catch((err) => logger.error("[jobs] startup failed:", err.message)); // async query jobs (#906)
   startBurnDetector();

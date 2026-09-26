@@ -174,6 +174,54 @@ export default function registerAdminRoutes(app) {
   // Apply admin auth to all routes on this router.
   router.use(adminAuthMiddleware);
 
+  // ── Runtime configuration (#894) ───────────────────────────────────────
+  // View, apply (optimistic concurrency on version) and revert runtime
+  // settings without a restart. Every request here is audit-logged by
+  // auditLoggerMiddleware, and each version records author and comment.
+  router.get('/runtime-config', async (_req, res) => {
+    try {
+      res.json({ current: getRuntimeConfigCurrent(), history: await listRuntimeConfigHistory(pool) });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  router.put('/runtime-config', async (req, res) => {
+    const { config, expectedVersion, comment } = req.body ?? {};
+    const author = req.admin?.id ?? req.admin?.username ?? 'admin';
+    try {
+      const previousVersion = getRuntimeConfigCurrent().version;
+      const baseline = await sampleHealth();
+      const applied = await applyRuntimeConfig(pool, { config, expectedVersion, author, comment });
+      res.json({ applied, guardrail: 'watching for 5 minutes' });
+
+      // Auto-rollback if the change degrades error rate or lag.
+      if (previousVersion > 0) {
+        watchGuardrail({
+          sample: sampleHealth,
+          baseline,
+          revert: () =>
+            revertRuntimeConfig(pool, previousVersion, { author: 'guardrail', comment: `auto-revert of version ${applied.version}` }),
+          alert: (message) => fireAlert(ALERT_CONDITIONS.RUNTIME_CONFIG_REVERTED, message),
+        }).catch((err) => console.error('[runtimeConfig] guardrail failed:', err.message));
+      }
+    } catch (err) {
+      res.status(err instanceof RuntimeConfigError ? err.status : 500).json({ error: err.message });
+    }
+  });
+
+  router.post('/runtime-config/revert/:version', async (req, res) => {
+    try {
+      const reverted = await revertRuntimeConfig(pool, Number(req.params.version), {
+        author: req.admin?.id ?? req.admin?.username ?? 'admin',
+        comment: req.body?.comment,
+      });
+      res.json({ applied: reverted });
+    } catch (err) {
+      res.status(err instanceof RuntimeConfigError ? err.status : 500).json({ error: err.message });
+    }
+  });
+
   // ── GET /api/admin/integrity ─────────────────────────────────────────────
   router.get("/integrity", async (_req, res) => {
     try {

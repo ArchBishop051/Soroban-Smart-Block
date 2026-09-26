@@ -15,7 +15,7 @@ export default function EventPage() {
 
   const { data: ev, isLoading } = useQuery({
     queryKey: ["event", seq],
-    queryFn: () => api.event(Number(seq)),
+    queryFn: () => api.event(seq),
   });
 
   // Summary of everything the event's transaction did (#897).
@@ -165,6 +165,7 @@ export default function EventPage() {
         ) : (
           <Row label="Type" value="Classic (no Soroban contract)" />
         )}
+        {ev.event_id && <Row label="Event ID" value={<Link to={`/event/${ev.event_id}`}>{ev.event_id}</Link>} mono />}
         {ev.tx_hash && <Row label="Tx Hash" value={ev.tx_hash} mono />}
         {narrative && narrative.event_count > 1 && <Row label="Transaction" value={narrative.sentence} />}
         {ev.raw_topics.length > 0 && <Row label="Topics" value={ev.raw_topics.join(", ")} mono />}

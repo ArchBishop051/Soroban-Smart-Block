@@ -854,13 +854,24 @@ export function createApi({ logDestination, dbOverride } = {}) {
     },
   );
 
-  // GET /api/events/:seq
+  // GET /api/events/:id — canonical event ID (#892). Numeric seq is still
+  // accepted for one deprecation cycle and redirected to the event ID.
   app.get(
     "/api/events/:seq",
     makeCache("events_single", (req) => `events:single:${req.params.seq}`),
     async (req, res) => {
       try {
+        if (EVENT_ID_RE.test(req.params.seq)) {
+          const byId = await db.getEventByEventId(req.params.seq);
+          if (!byId) return res.status(404).json({ error: `Event ${req.params.seq} not found` });
+          return res.json(byId);
+        }
         const ev = await db.getEvent(Number(req.params.seq));
+        if (ev?.event_id) {
+          res.set("Deprecation", "true");
+          res.set("Link", `</api/events/${ev.event_id}>; rel="canonical"`);
+          return res.redirect(301, `/api/events/${ev.event_id}`);
+        }
         if (!ev) {
           return res.status(404).json({
             type: "about:blank",

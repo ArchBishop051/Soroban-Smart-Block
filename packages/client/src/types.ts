@@ -2,6 +2,8 @@
 
 /** A decoded on-chain event from the indexer. */
 export interface DecodedEvent {
+  /** Canonical, chain-derived ID (Soroban RPC format); null until re-indexed. */
+  event_id?: string | null;
   seq: number;
   ledger: number;
   contract_id: string | null;

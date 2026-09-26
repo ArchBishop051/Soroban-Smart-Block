@@ -20,6 +20,7 @@ const SetupPage = lazy(() => import("./pages/SetupPage"));
 const BatchMultiCall = lazy(() => import("./pages/BatchMultiCall"));
 const SubInvocationPage = lazy(() => import("./pages/SubInvocationPage"));
 const RateLimitDashboard = lazy(() => import("./pages/RateLimitDashboard"));
+const AdminRuntimeConfigPage = lazy(() => import("./pages/AdminRuntimeConfigPage"));
 const AuditLogPage = lazy(() => import("./pages/AuditLogPage"));
 const NftGallery = lazy(() => import("./pages/NftGallery"));
 const RegistrationSuccessPage = lazy(() => import("./pages/RegistrationSuccessPage"));
@@ -59,6 +60,7 @@ export default function App() {
             <Route path="/batch" element={<BatchMultiCall />} />
             <Route path="/sub-invocations" element={<SubInvocationPage />} />
             <Route path="/admin/rate-limits" element={<RateLimitDashboard />} />
+            <Route path="/admin/runtime-config" element={<AdminRuntimeConfigPage />} />
             {/* Issue #737: admin audit-trail UI */}
             <Route path="/admin/audit-log" element={<AuditLogPage />} />
             <Route path="/nft/:contractId" element={<NftGallery />} />
