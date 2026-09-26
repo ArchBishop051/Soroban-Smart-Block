@@ -80,6 +80,9 @@
     "archival_info": {
       "type": ["object", "null"]
     },
+    "protocol_version": { "type": ["integer", "null"] },
+    "protocol_degraded": { "type": "boolean" },
+    "raw_xdr": { "type": ["string", "null"] },
     "zk_host_calls": {
       "type": "object"
     },

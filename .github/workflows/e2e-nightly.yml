@@ -58,6 +58,21 @@ jobs:
         run: npx playwright install --with-deps
         working-directory: e2e
 
+  future-protocol:
+    name: Future protocol compatibility
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Pull next protocol quickstart image
+        run: docker pull stellar/quickstart:future
+      - uses: actions/setup-node@v4
+        with: { node-version: 20 }
+      - run: npm ci
+        working-directory: indexer
+      - name: Run protocol fixture suite
+        run: npm test -- --runInBand protocolReadiness rpcVerifier
+        working-directory: indexer
+
   # ── Spike Test ────────────────────────────────────────────────────────────
   spike-test:
     name: k6 Spike Test (0→2000 req/s)
@@ -348,7 +363,7 @@ jobs:
     name: E2E Results Summary
     runs-on: ubuntu-latest
     if: always()
-    needs: [spike-test, soak-test, integration-test, synthetic]
+    needs: [spike-test, soak-test, integration-test, synthetic, future-protocol]
     steps:
       - name: Check test results
         run: |
@@ -360,6 +375,7 @@ jobs:
           echo "| Soak Test | ${{ needs.soak-test.result }} |"
           echo "| API Integration | ${{ needs.integration-test.result }} |"
           echo "| Synthetic | ${{ needs.synthetic.result }} |"
+          echo "| Future protocol | ${{ needs.future-protocol.result }} |"
 
       - name: Slack notification on failure
         if: failure()

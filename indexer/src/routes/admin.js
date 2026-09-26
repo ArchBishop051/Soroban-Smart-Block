@@ -244,6 +244,19 @@ export default function registerAdminRoutes(app) {
     res.json({ condition, resolved });
   });
 
+  router.get('/jobs', async (req, res) => {
+    try { res.json({ data: await listJobs({ status: req.query.status, limit: req.query.limit }) }); }
+    catch (e) { res.status(500).json({ error: e.message }); }
+  });
+  router.post('/jobs', async (req, res) => {
+    try { res.status(201).json(await enqueueJob(req.body)); }
+    catch (e) { res.status(400).json({ error: e.message }); }
+  });
+  router.post('/jobs/:id/cancel', async (req, res) => {
+    try { await cancelJob(req.params.id); res.json({ ok: true, id: req.params.id }); }
+    catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
   // ── GET /api/admin/api-keys ────────────────────────────────────────────────
   router.get("/api-keys", async (req, res) => {
     try {
