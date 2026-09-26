@@ -35,6 +35,20 @@ function statusForError(message) {
   return 500;
 }
 
+function billingStatusForRecord(record) {
+  const tier = record?.tier || "free";
+  return {
+    provider: "stripe",
+    tier,
+    status: tier === "free" ? "inactive" : "active",
+    plan: tier,
+    cancel_at_period_end: false,
+    subscription_id: null,
+    customer_id: null,
+    last_updated_at: record?.updated_at ?? null,
+  };
+}
+
 router.get("/me", async (req, res) => {
   try {
     const record = await getKeyById(req.rateContext.keyId);
@@ -43,7 +57,33 @@ router.get("/me", async (req, res) => {
       getKeyUsage(req.rateContext.keyId),
       db.countWebhookDeliveriesForApiKey(req.rateContext.keyId),
     ]);
-    res.json({ ...record, usage: { ...usage, events_received } });
+
+    const limitDaily = Number(record.daily_limit ?? 0) || (
+      record.tier === "enterprise" ? 100000 :
+      record.tier === "pro" ? 10000 :
+      record.tier === "free" ? 1000 :
+      0
+    );
+    const rateLimit = Number(record.rate_limit ?? 0) || (
+      record.tier === "enterprise" ? 5000 :
+      record.tier === "pro" ? 2000 :
+      record.tier === "free" ? 300 :
+      0
+    );
+
+    res.json({
+      ...record,
+      usage: {
+        ...usage,
+        limit_daily: limitDaily,
+        remaining_daily: Math.max(limitDaily - Number(usage.today || 0), 0),
+        rate_limit: rateLimit,
+        rate_limit_window: "minute",
+        remaining_rate_limit: Math.max(rateLimit - Number(usage.today || 0), 0),
+        events_received,
+      },
+      billing: billingStatusForRecord(record),
+    });
   } catch (e) {
     res.status(statusForError(e.message)).json({ error: e.message });
   }

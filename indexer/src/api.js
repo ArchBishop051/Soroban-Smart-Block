@@ -2508,13 +2508,15 @@ export function createApi({ logDestination, dbOverride } = {}) {
     "created_at",
   ];
 
-  // GET /api/export/events?format=csv|json&contract=&fn=&type=&wallet=&limit=
+  // GET /api/export/events?format=csv|json&contract=&fn=&type=&wallet=&limit=&schedule=daily|weekly&email=...
   // #528: accepts wallet param to export a single wallet's event history.
   app.get("/api/export/events", async (req, res) => {
     try {
       const format = req.query.format === "json" ? "json" : "csv";
       const limit = Math.min(Number(req.query.limit) || 10000, 10000);
       const wallet = req.query.wallet || undefined;
+      const schedule = String(req.query.schedule || req.query.frequency || "").toLowerCase();
+      const email = req.query.email ? String(req.query.email).trim() : undefined;
       const rows = await db.getEventsForExport({
         contract: req.query.contract,
         fn: req.query.fn,
@@ -2522,6 +2524,30 @@ export function createApi({ logDestination, dbOverride } = {}) {
         wallet,
         limit,
       });
+
+      if (schedule && ["daily", "weekly"].includes(schedule)) {
+        if (!email) {
+          return res.status(400).json({ error: "email is required when scheduling a recurring export" });
+        }
+        const csv = rowsToCsv(rows, EVENT_COLUMNS);
+        const subject = `${schedule[0].toUpperCase()}${schedule.slice(1)} export for ${wallet || "all events"}`;
+        const text = `Your ${schedule} export for ${wallet || "all events"} has been queued.\n\nFilters: contract=${req.query.contract || "all"}, fn=${req.query.fn || "all"}, type=${req.query.type || "all"}, wallet=${wallet || "all"}.\n\nAttachment: ${rows.length} rows exported.\n\nThis message was sent from the Soroban Smart Block Explorer API.`;
+        await sendEmail({
+          to: email,
+          subject,
+          html: `<p>Your ${schedule} export is scheduled.</p><p>Filters: ...</p><pre>${String(csv).slice(0, 2000)}</pre>`,
+          text,
+        });
+        return res.status(202).json({
+          scheduled: true,
+          frequency: schedule,
+          email,
+          wallet,
+          rows: rows.length,
+          format,
+        });
+      }
+
       if (format === "json") {
         const filename = wallet ? `wallet-${wallet}-events.json` : "events.json";
         res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
