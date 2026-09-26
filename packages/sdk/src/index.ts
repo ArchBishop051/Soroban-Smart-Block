@@ -250,3 +250,5 @@ export function createClient(config?: ClientConfig): ExplorerApiClient {
 }
 
 export default ExplorerApiClient;
+
+export * from './verify';

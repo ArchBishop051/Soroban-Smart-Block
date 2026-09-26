@@ -234,15 +234,39 @@
             },
             {
               "disabled": false,
+              "key": "cursor",
+              "value": "<string>",
+              "description": "Opaque signed keyset cursor"
+            },
+            {
+              "disabled": false,
+              "key": "after",
+              "value": "<string>",
+              "description": "Opaque signed keyset cursor for forward pagination"
+            },
+            {
+              "disabled": false,
+              "key": "before",
+              "value": "<string>",
+              "description": "Opaque signed keyset cursor for backward pagination"
+            },
+            {
+              "disabled": false,
               "key": "after_seq",
               "value": "<integer>",
-              "description": "Event seq cursor (`next_cursor` from the previous page); omit for the first page"
+              "description": "Legacy event seq cursor; omit for the first page"
             },
             {
               "disabled": false,
               "key": "limit",
               "value": "25",
               "description": "Max number of items to return (max 200)"
+            },
+            {
+              "disabled": false,
+              "key": "count",
+              "value": "estimate",
+              "description": "Total count calculation strategy (exact COUNT or reltuples estimate)"
             }
           ],
           "variable": []
@@ -630,8 +654,27 @@
           "query": [
             {
               "disabled": false,
+              "key": "cursor",
+              "value": "<string>",
+              "description": "Opaque signed keyset cursor"
+            },
+            {
+              "disabled": false,
+              "key": "after",
+              "value": "<string>",
+              "description": "Opaque signed keyset cursor for forward pagination"
+            },
+            {
+              "disabled": false,
+              "key": "before",
+              "value": "<string>",
+              "description": "Opaque signed keyset cursor for backward pagination"
+            },
+            {
+              "disabled": false,
               "key": "page",
-              "value": "1"
+              "value": "1",
+              "description": "Legacy page number (deprecated)"
             },
             {
               "disabled": false,
@@ -643,6 +686,18 @@
               "key": "type",
               "value": "<string>",
               "description": "Filter by protocol type (Issue"
+            },
+            {
+              "disabled": false,
+              "key": "q",
+              "value": "<string>",
+              "description": "Search term matching name or description"
+            },
+            {
+              "disabled": false,
+              "key": "count",
+              "value": "estimate",
+              "description": "Total count calculation strategy (exact COUNT or reltuples estimate)"
             }
           ],
           "variable": []
@@ -1149,13 +1204,38 @@
           "query": [
             {
               "disabled": false,
+              "key": "cursor",
+              "value": "<string>",
+              "description": "Opaque signed keyset cursor"
+            },
+            {
+              "disabled": false,
+              "key": "after",
+              "value": "<string>",
+              "description": "Opaque signed keyset cursor for forward pagination"
+            },
+            {
+              "disabled": false,
+              "key": "before",
+              "value": "<string>",
+              "description": "Opaque signed keyset cursor for backward pagination"
+            },
+            {
+              "disabled": false,
               "key": "page",
-              "value": "1"
+              "value": "1",
+              "description": "Legacy page number (deprecated)"
             },
             {
               "disabled": false,
               "key": "limit",
               "value": "25"
+            },
+            {
+              "disabled": false,
+              "key": "count",
+              "value": "estimate",
+              "description": "Total count calculation strategy (exact COUNT or reltuples estimate)"
             }
           ],
           "variable": [
@@ -2418,13 +2498,38 @@
           "query": [
             {
               "disabled": false,
+              "key": "cursor",
+              "value": "<string>",
+              "description": "Opaque signed keyset cursor"
+            },
+            {
+              "disabled": false,
+              "key": "after",
+              "value": "<string>",
+              "description": "Opaque signed keyset cursor for forward pagination"
+            },
+            {
+              "disabled": false,
+              "key": "before",
+              "value": "<string>",
+              "description": "Opaque signed keyset cursor for backward pagination"
+            },
+            {
+              "disabled": false,
               "key": "limit",
               "value": "20"
             },
             {
               "disabled": false,
               "key": "offset",
-              "value": "0"
+              "value": "0",
+              "description": "Legacy offset (deprecated)"
+            },
+            {
+              "disabled": false,
+              "key": "count",
+              "value": "estimate",
+              "description": "Total count calculation strategy (exact COUNT or reltuples estimate)"
             }
           ],
           "variable": []
@@ -3429,13 +3534,32 @@
             },
             {
               "disabled": false,
+              "key": "cursor",
+              "value": "<string>",
+              "description": "Opaque signed keyset cursor"
+            },
+            {
+              "disabled": false,
+              "key": "after",
+              "value": "<string>",
+              "description": "Opaque signed keyset cursor for forward pagination"
+            },
+            {
+              "disabled": false,
+              "key": "before",
+              "value": "<string>",
+              "description": "Opaque signed keyset cursor for backward pagination"
+            },
+            {
+              "disabled": false,
               "key": "limit",
               "value": "100"
             },
             {
               "disabled": false,
               "key": "offset",
-              "value": "0"
+              "value": "0",
+              "description": "Legacy offset (deprecated)"
             }
           ],
           "variable": []
