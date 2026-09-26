@@ -1,0 +1,12 @@
+# Warm standby in the secondary region: scaled down, ingest disabled until
+# promotion (deploy/dr/failover.sh flips these). Points at the DR replica.
+region: secondary
+databaseUrlSecret: soroban-explorer-db-dr
+api:
+  replicas: 1
+frontend:
+  replicas: 1
+ingest:
+  enabled: false
+canary:
+  enabled: false

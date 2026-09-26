@@ -19,7 +19,7 @@ on:
       - "v*"
 
 concurrency:
-  group: deploy-${{ github.ref }}
+  group: ${{ (startsWith(github.ref, 'refs/heads/release/') || github.event.inputs.environment == 'staging') && 'staging-deploy-lock' || format('deploy-{0}', github.ref) }}
   cancel-in-progress: false
 
 env:
@@ -222,7 +222,7 @@ jobs:
           sleep 10
           curl -sf "${{ vars.APP_URL }}/api/health"
 
-  # ── 3b. Deploy to staging (blue-green) ───────────────────────────────────────
+  # ── 3b. Deploy to staging (canary) ───────────────────────────────────────
   deploy-staging:
     name: Deploy — staging
     runs-on: ubuntu-latest
@@ -237,15 +237,37 @@ jobs:
       - name: Health check (baseline blue)
         run: curl -sf "${{ vars.APP_URL }}/api/health"
 
-      - name: Deploy green environment
+      - uses: azure/setup-helm@v4
+
+      - name: Install Argo Rollouts kubectl plugin
         run: |
-          echo "Starting blue-green deploy for staging"
-          echo "IMAGE_TAG=${{ needs.resolve-env.outputs.image_tag }}"
-          # In a real deployment:
-          # 1. Start green containers alongside blue
-          # 2. Run health checks on green
-          # 3. Swap load balancer to green
-          # 4. Remove blue containers
+          curl -sLo kubectl-argo-rollouts https://github.com/argoproj/argo-rollouts/releases/download/v1.7.2/kubectl-argo-rollouts-linux-amd64
+          sudo install kubectl-argo-rollouts /usr/local/bin/
+
+      - name: Configure kubeconfig
+        run: echo "${{ secrets.KUBECONFIG }}" | base64 -d > "$RUNNER_TEMP/kubeconfig"
+
+      # Progressive delivery: 5% -> 25% -> 50% -> 100% with SLO analysis at
+      # each step (deploy/rollouts/analysis-templates.yaml). A failed analysis
+      # aborts the rollout and Argo reverts traffic to the stable ReplicaSet.
+      - name: Canary rollout
+        env:
+          KUBECONFIG: ${{ runner.temp }}/kubeconfig
+          NS: soroban-explorer-${{ needs.resolve-env.outputs.environment }}
+        run: |
+          kubectl apply -n "$NS" -f deploy/rollouts/
+          helm upgrade --install explorer deploy/helm/soroban-explorer -n "$NS" \
+            --set image.tag=${{ needs.resolve-env.outputs.image_tag }} \
+            --set ingress.host=${{ vars.APP_HOST }}
+          for r in explorer-api explorer-frontend explorer-ingest; do
+            kubectl argo rollouts status "$r" -n "$NS" --timeout 60m
+          done
+
+      - name: Report failing analysis
+        if: failure()
+        env:
+          KUBECONFIG: ${{ runner.temp }}/kubeconfig
+        run: kubectl get analysisrun -n soroban-explorer-${{ needs.resolve-env.outputs.environment }} -o wide | tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: Post-deploy health check (green)
         run: |
@@ -268,32 +290,38 @@ jobs:
       - name: Health check (baseline)
         run: curl -sf "${{ vars.APP_URL }}/api/health"
 
-      - name: Canary deploy — 10% traffic
-        run: |
-          echo "Shifting 10% traffic to new deployment..."
-          echo "IMAGE_TAG=${{ needs.resolve-env.outputs.image_tag }}"
-          # In a real deployment: configure load balancer weights
+      - uses: azure/setup-helm@v4
 
-      - name: Monitor canary (5 min)
+      - name: Install Argo Rollouts kubectl plugin
         run: |
-          echo "Monitoring canary at 10% for 5 minutes..."
-          for i in $(seq 1 10); do
-            curl -sf "${{ vars.APP_URL }}/api/health"
-            sleep 30
+          curl -sLo kubectl-argo-rollouts https://github.com/argoproj/argo-rollouts/releases/download/v1.7.2/kubectl-argo-rollouts-linux-amd64
+          sudo install kubectl-argo-rollouts /usr/local/bin/
+
+      - name: Configure kubeconfig
+        run: echo "${{ secrets.KUBECONFIG }}" | base64 -d > "$RUNNER_TEMP/kubeconfig"
+
+      # Progressive delivery: 5% -> 25% -> 50% -> 100% with SLO analysis at
+      # each step (deploy/rollouts/analysis-templates.yaml). A failed analysis
+      # aborts the rollout and Argo reverts traffic to the stable ReplicaSet.
+      - name: Canary rollout
+        env:
+          KUBECONFIG: ${{ runner.temp }}/kubeconfig
+          NS: soroban-explorer-${{ needs.resolve-env.outputs.environment }}
+        run: |
+          kubectl apply -n "$NS" -f deploy/rollouts/
+          helm upgrade --install explorer deploy/helm/soroban-explorer -n "$NS" \
+            --set image.tag=${{ needs.resolve-env.outputs.image_tag }} \
+            --set ingress.host=${{ vars.APP_HOST }}
+          for r in explorer-api explorer-frontend explorer-ingest; do
+            kubectl argo rollouts status "$r" -n "$NS" --timeout 60m
           done
 
-      - name: Canary deploy — 50% traffic
-        run: echo "Shifting to 50% traffic..."
+      - name: Report failing analysis
+        if: failure()
+        env:
+          KUBECONFIG: ${{ runner.temp }}/kubeconfig
+        run: kubectl get analysisrun -n soroban-explorer-${{ needs.resolve-env.outputs.environment }} -o wide | tee -a "$GITHUB_STEP_SUMMARY"
 
-      - name: Monitor at 50% (5 min)
-        run: |
-          for i in $(seq 1 10); do
-            curl -sf "${{ vars.APP_URL }}/api/health"
-            sleep 30
-          done
-
-      - name: Full rollout — 100% traffic
-        run: echo "Full rollout complete."
 
   # ── 4. Post-deployment Smoke Tests ───────────────────────────────────────────
   smoke-tests:
