@@ -10,6 +10,31 @@
     <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
     <link rel="manifest" href="/manifest.json" />
     <meta name="theme-color" content="#0d1117" />
+    <script>
+      (function () {
+        try {
+          var pref = localStorage.getItem("sb-theme-preference");
+          var theme = "dark";
+          if (pref === "light" || pref === "dark" || pref === "high-contrast") {
+            theme = pref;
+          } else {
+            var prefersHighContrast = window.matchMedia && window.matchMedia("(prefers-contrast: more)").matches;
+            if (prefersHighContrast) {
+              theme = "high-contrast";
+            } else if (window.matchMedia && window.matchMedia("(prefers-color-scheme: light)").matches) {
+              theme = "light";
+            } else {
+              theme = "dark";
+            }
+          }
+          document.documentElement.setAttribute("data-theme", theme);
+          var meta = document.querySelector('meta[name="theme-color"]');
+          if (meta) {
+            meta.setAttribute("content", theme === "light" ? "#f6f8fa" : (theme === "high-contrast" ? "#000000" : "#0d1117"));
+          }
+        } catch (e) {}
+      })();
+    </script>
 
     <meta property="og:type" content="website" />
     <meta property="og:site_name" content="Soroban Smart Block Explorer" />

@@ -2,6 +2,8 @@
 
 This document describes the real data flow and component topology of the Soroban Smart Block Explorer.
 
+For registry and event-log retention, keeper scheduling, and archived-key recovery, see [Contract Storage TTL Retention](operational-ttl-retention.md).
+
 ## Data Flow Diagram
 
 ```mermaid

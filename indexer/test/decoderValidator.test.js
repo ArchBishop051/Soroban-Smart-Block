@@ -110,6 +110,11 @@ describe("decoderValidator", () => {
       const result = validateDecodedEvent(withOptional);
       assert.equal(result.valid, true);
     });
+
+    it("should accept a nullable ingestion identity", () => {
+      assert.equal(validateDecodedEvent({ ...validEvent, ingestion_id: "testnet:123:event-1" }).valid, true);
+      assert.equal(validateDecodedEvent({ ...validEvent, ingestion_id: null }).valid, true);
+    });
   });
 
   describe("validateAndSanitizeDecodedEvent", () => {

@@ -9,6 +9,7 @@ import { logger } from "./logger.js";
  */
 
 import { db } from "./db.js";
+import { enqueuePurge } from "./cdnPurge.js";
 import * as alertManager from "./alertManager.js";
 import config from "./config.js";
 
@@ -26,7 +27,13 @@ async function getRecentLedgerHashes(limit = config.REORG_CHECK_INTERVAL + confi
 
 /** Delete orphaned rows and atomically persist the rewind cursor. */
 export async function rollback(forkLedger) {
+  const rolledBack = (await db.getEventsFromLedger?.(forkLedger).catch(() => [])) ?? [];
   await db.rollbackFromLedger(forkLedger);
+  // Purge the rolled-back events and everything ledger-scoped at the edge.
+  enqueuePurge([
+    "latest",
+    ...rolledBack.flatMap((e) => [`event:${e.seq}`, `contract:${e.contract_id}`]),
+  ]);
   logger.warn(`[reorg] Rolled back ledger ${forkLedger}+`);
 }
 

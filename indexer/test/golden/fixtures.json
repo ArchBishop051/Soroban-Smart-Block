@@ -1,0 +1,13 @@
+{
+  "openzeppelin": [
+    { "topics": ["ownership_transfer_completed"], "data": { "new_owner": "GBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB" } },
+    { "topics": ["role_granted", "minter", "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"], "data": { "caller": "GBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB" } },
+    { "topics": ["paused"], "data": { "caller": "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC" } },
+    { "topics": ["consecutive_mint", "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"], "data": { "from_token_id": 1, "to_token_id": 3 } }
+  ],
+  "smart-wallet": [
+    { "topics": ["sw_v1", "add_signer", "passkey-1"], "data": ["Secp256r1", "passkey-1", { "expiration": 500 }] },
+    { "topics": ["signer_removed", "GKEY"], "data": null },
+    { "topics": ["policy_added", "CPOLICY"], "data": { "limit": "100" } }
+  ]
+}

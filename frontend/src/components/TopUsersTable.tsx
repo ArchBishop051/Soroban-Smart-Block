@@ -5,6 +5,8 @@ interface TopUser {
   api_key_id: string;
   key_name: string;
   total_requests: number;
+  balance_confidence?: "high" | "medium" | "low" | "unknown";
+  drift_status?: "matched" | "corrected" | "unknown";
 }
 
 type Window = "1h" | "24h" | "7d";
@@ -50,6 +52,7 @@ export default function TopUsersTable({ data, window, onWindowChange }: Props) {
               <th style={{ textAlign: "left", padding: "6px 8px", color: "#6b7280" }}>Key Name</th>
               <th style={{ textAlign: "left", padding: "6px 8px", color: "#6b7280" }}>Key ID</th>
               <th style={{ textAlign: "right", padding: "6px 8px", color: "#6b7280" }}>Requests</th>
+              <th style={{ textAlign: "left", padding: "6px 8px", color: "#6b7280" }}>Balance confidence</th>
             </tr>
           </thead>
           <tbody>
@@ -62,6 +65,9 @@ export default function TopUsersTable({ data, window, onWindowChange }: Props) {
                 </td>
                 <td style={{ padding: "6px 8px", textAlign: "right", fontWeight: 600 }}>
                   {Number(row.total_requests).toLocaleString()}
+                </td>
+                <td style={{ padding: "6px 8px" }}>
+                  {row.balance_confidence ? <span title={row.drift_status ? `Reconciliation: ${row.drift_status}` : undefined} style={{ color: row.balance_confidence === "high" ? "#15803d" : row.balance_confidence === "medium" ? "#a16207" : "#b91c1c", fontWeight: 600 }}>{row.balance_confidence}</span> : "—"}
                 </td>
               </tr>
             ))}

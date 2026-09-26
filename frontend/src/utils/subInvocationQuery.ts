@@ -170,25 +170,35 @@ export function detectReentrancy(items: SubInvocationExtended[]): SubInvocationE
 export function buildDependencyMap(
   items: SubInvocationExtended[],
 ): Record<string, string[]> {
-  const map: Record<string, Set<string>> = {};
+  const graph = new Map<string, Set<string>>();
+
+  for (const inv of items) {
+    if (!graph.has(inv.contract_id)) graph.set(inv.contract_id, new Set());
+  }
+
   const byTx = new Map<string, SubInvocationExtended[]>();
   for (const inv of items) {
     const bucket = byTx.get(inv.parent_tx_hash) ?? [];
     bucket.push(inv);
     byTx.set(inv.parent_tx_hash, bucket);
   }
+
   for (const [, chain] of byTx) {
     const sorted = [...chain].sort((a, b) => a.depth - b.depth);
     for (let i = 1; i < sorted.length; i++) {
       const caller = sorted[i - 1].contract_id;
       const callee = sorted[i].contract_id;
       if (caller !== callee) {
-        if (!map[caller]) map[caller] = new Set();
-        map[caller].add(callee);
+        if (!graph.has(caller)) graph.set(caller, new Set());
+        if (!graph.has(callee)) graph.set(callee, new Set());
+        graph.get(caller)!.add(callee);
       }
     }
   }
-  return Object.fromEntries(Object.entries(map).map(([k, v]) => [k, [...v]]));
+
+  return Object.fromEntries(
+    [...graph.entries()].map(([contractId, deps]) => [contractId, [...deps].sort()]),
+  );
 }
 
 export function computeLongestChain(items: SubInvocationExtended[]): SubInvocationExtended[] {

@@ -73,3 +73,16 @@ export async function fetchAccountMeta(address) {
     "horizon_account",
   );
 }
+
+/** Fetch one classic balance at a specific ledger for reconciliation. */
+export async function fetchWalletBalanceAtLedger(address, { assetCode = 'XLM', issuer = null, ledger } = {}) {
+  const query = ledger != null ? `?for_ledger=${encodeURIComponent(ledger)}` : '';
+  const res = await fetch(`${HORIZON_URL}/accounts/${address}${query}`);
+  if (res.status === 404) throw new AccountNotFoundError('Account not found on network');
+  if (!res.ok) throw new Error(`Horizon request failed with status ${res.status}`);
+  const data = await res.json();
+  const balance = (data.balances || []).find((entry) => assetCode === 'XLM'
+    ? entry.asset_type === 'native'
+    : entry.asset_code === assetCode && entry.asset_issuer === issuer);
+  return Number(balance?.balance || 0);
+}
