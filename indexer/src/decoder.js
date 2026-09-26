@@ -3,6 +3,9 @@ import { scValToNative } from "@stellar/stellar-sdk";
 import { db } from "./db.js";
 import { detectSac, detectSacAsset, sacLabel } from "./sac.js";
 import { extractRoleAssignment } from "./roleTracker.js";
+import { decodeOpenZeppelinEvent } from "./decoders/openzeppelin/index.js";
+import { decodeSmartWalletEvent } from "./smartWallet.js";
+import { decoderTag } from "./decoderVersions.js";
 import { decodeRwaEvent } from "./rwaDecoder.js";
 import { parseHeuristic } from "./heuristicParser.js";
 import { parseTTLHostFunction, formatTTLExtension } from "./ttlExtensionParser.js";
@@ -10,6 +13,24 @@ import { parseZkHostFunctions, computeZkCostDelta } from "./zkHostFunctions.js";
 import { resolveAsset } from "./horizonClient.js";
 import config from "./config.js";
 import { decoderSuccessTotal, decoderFailureTotal } from "./metrics.js";
+import { PluginRegistry } from "./plugins/registry.js";
+import { topicColumns } from "./rpcFilters.js";
+import { enqueue as enqueueDeadLetter } from "./deadLetterQueue.js";
+
+// Sandboxed community decoder plugins (#900). Loaded lazily; with no plugins
+// installed this adds no work to the decode path.
+let pluginRegistry = null;
+function getPluginRegistry() {
+  if (!pluginRegistry) {
+    pluginRegistry = new PluginRegistry({
+      onViolation: (plugin, violation, rawEvent) => {
+        logger.warn(`[plugins] ${plugin} violation (${violation.kind}): ${violation.message}`);
+        enqueueDeadLetter(rawEvent, new Error(`decoder plugin ${plugin} ${violation.kind}: ${violation.message}`)).catch(() => {});
+      },
+    }).loadDirectory();
+  }
+  return pluginRegistry;
+}
 
 // Classic operation types decoded from Horizon alongside Soroban events.
 const PATH_PAYMENT_TYPES = new Set(["path_payment_strict_send", "path_payment_strict_receive"]);
@@ -201,6 +222,36 @@ export function getDecodeStats() {
 }
 
 /**
+ * Check that an event's decoded values match the registered function shape.
+ * A function-name match alone is insufficient because upgraded or malicious
+ * contracts can emit the same symbol with a different payload.
+ */
+export function validateAbiEventShape(fnAbi, args) {
+  if (!fnAbi) return { valid: false, warning: "abi_function_missing" };
+  const params = Array.isArray(fnAbi.params) ? fnAbi.params : [];
+  if (params.length !== args.length) {
+    return { valid: false, warning: `abi_arity_mismatch:${params.length}:${args.length}` };
+  }
+
+  for (let i = 0; i < params.length; i++) {
+    const kind = String(params[i]?.type ?? params[i]?.kind ?? "").toLowerCase();
+    const value = args[i];
+    const isInteger = typeof value === "bigint" || (typeof value === "number" && Number.isInteger(value));
+    const matches = kind.includes("address") || kind.includes("contract")
+      ? typeof value === "string" && /^[GCM][A-Z2-7]{20,}$/.test(value)
+      : kind.includes("bool")
+        ? typeof value === "boolean"
+        : kind.includes("string") || kind.includes("symbol")
+          ? typeof value === "string" || typeof value === "symbol"
+          : kind.includes("u") || kind.includes("i")
+            ? isInteger
+            : true;
+    if (!matches) return { valid: false, warning: `abi_type_mismatch:${i}:${kind || "unknown"}` };
+  }
+  return { valid: true, warning: null };
+}
+
+/**
  * Decode a raw Soroban RPC event into a human-readable record.
  * Uses the ABI template when available; falls back to a generic description.
  */
@@ -208,6 +259,14 @@ export async function decode(ev, opts = {}) {
   try {
     const decoded = await decodeEvent(ev, opts);
     _recordDecodeOutcome(true);
+    // Hashed topic columns for RPC-compatible topic filters (#903).
+    if (decoded && Array.isArray(ev.topic)) {
+      try {
+        Object.assign(decoded, topicColumns(ev.topic));
+      } catch {
+        // topics without XDR (e.g. test fixtures) — leave unset
+      }
+    }
     return decoded;
   } catch (err) {
     _recordDecodeOutcome(false);
@@ -234,6 +293,7 @@ async function decodeEvent(ev, { currentAbi = false } = {}) {
     const wrapUnwrap = nativeXlmDescription(fnName, topics.slice(1), data);
     if (wrapUnwrap) {
       return {
+        decoder_version: decoderTag("native-sac"),
         contract_id: contractId,
         function: wrapUnwrap.function,
         ledger: ev.ledger,
@@ -251,6 +311,7 @@ async function decodeEvent(ev, { currentAbi = false } = {}) {
     const description = stellarSwapDescription(fnName, topics.slice(1), data, ev.ledger);
     if (description) {
       return {
+        decoder_version: decoderTag("stellarswap"),
         contract_id: contractId,
         function: fnName,
         ledger: ev.ledger,
@@ -268,11 +329,33 @@ async function decodeEvent(ev, { currentAbi = false } = {}) {
     const description = blendDescription(fnName, topics.slice(1), data, ev.ledger);
     if (description) {
       return {
+        decoder_version: decoderTag("blend"),
         contract_id: contractId,
         function: fnName,
         ledger: ev.ledger,
         tx_hash: ev.txHash,
         description,
+        raw_topics: topics.map((t) => stripNul(t)),
+        raw_data: safeStringify(data),
+        ...extractGasCosts(ev),
+      };
+    }
+  }
+
+  // Community decoder plugins, each in its own sandbox (#900).
+  const plugins = getPluginRegistry();
+  if (plugins.size > 0) {
+    const decodedByPlugin = await plugins.decode(
+      { contract_id: contractId, function: fnName, ledger: ev.ledger, tx_hash: ev.txHash, topics, data },
+      ev,
+    );
+    if (decodedByPlugin) {
+      return {
+        contract_id: contractId,
+        function: decodedByPlugin.function ?? fnName,
+        ledger: ev.ledger,
+        tx_hash: ev.txHash,
+        description: decodedByPlugin.description,
         raw_topics: topics.map((t) => stripNul(t)),
         raw_data: safeStringify(data),
         ...extractGasCosts(ev),
@@ -288,6 +371,17 @@ async function decodeEvent(ev, { currentAbi = false } = {}) {
         .getContractMetaByLedger(contractId, ev.ledger)
         .catch(() => null) ?? await db.getContractMeta(contractId).catch(() => null);
   const fnAbi = meta?.functions?.find((f) => f.name === fnName);
+  const abiArgs = [...topics.slice(1), ...(data == null ? [] : [data])];
+  const abiCheck = fnAbi ? validateAbiEventShape(fnAbi, abiArgs) : { valid: false, warning: meta ? "abi_function_missing" : "abi_missing" };
+  const trustedFnAbi = abiCheck.valid ? fnAbi : null;
+
+  // On-chain contract spec (#895): used when no ABI is registered. Only the
+  // cache is read here; a miss schedules a background fetch.
+  const { isSac: isSacContract } = detectSac(contractId);
+  const spec = meta ? null : getCachedSpec(contractId);
+  if (!meta && !spec) prefetchSpec(contractId, { isSac: isSacContract });
+  const specArgs = spec ? nameArgs(spec, fnName, [...topics.slice(1), ...(data !== undefined && data !== null ? [data] : [])]) : null;
+  const decodeSource = meta ? "abi" : specArgs ? specArgs.source : "heuristic";
 
   // Check if this contract is a registered vault
   const vaultMeta = await db.getVault(contractId).catch(() => null);
@@ -316,21 +410,26 @@ async function decodeEvent(ev, { currentAbi = false } = {}) {
   if (!description) {
     description = vaultMeta
       ? vaultDescription(fnName, topics.slice(1), data, contractLabel, vaultMeta, topics)
-      : fnAbi
+      : trustedFnAbi
         ? buildDescription(fnName, topics.slice(1), data, contractLabel, topics)
-        : genericDescription(fnName, topics.slice(1), data, contractLabel, topics);
+        : specArgs?.source === "spec"
+          ? specDescription(fnName, specArgs.args, contractLabel)
+          : genericDescription(fnName, topics.slice(1), data, contractLabel, topics);
   }
 
-  // Attach heuristic params when no ABI was available
+  // Attach heuristic params when neither an ABI nor a matching spec was available
   const heuristicParams =
-    !fnAbi && !vaultMeta && !meta ? parseHeuristic([...topics.slice(1), ...(data != null ? [data] : [])]) : undefined;
+    !fnAbi && !vaultMeta && !meta && specArgs?.source !== "spec"
+      ? parseHeuristic([...topics.slice(1), ...(data != null ? [data] : [])])
+      : undefined;
 
   // DEX swap slippage (issue #554) — only computable when the ABI-matched
   // swap args carry a min_amount_out (6th positional arg, see buildDescription).
   const slippageBps =
-    fnAbi && SWAP_FUNCTIONS.has(fnName) ? extractSwapSlippageBps(topics.slice(1)) : null;
+    trustedFnAbi && SWAP_FUNCTIONS.has(fnName) ? extractSwapSlippageBps(topics.slice(1)) : null;
 
   const decoded = {
+    decode_source: decodeSource,
     contract_id: contractId,
     function: fnName,
     ledger: ev.ledger,
@@ -344,6 +443,8 @@ async function decodeEvent(ev, { currentAbi = false } = {}) {
     ...extractGasCosts(ev),
     ...(heuristicParams && { heuristic_params: heuristicParams }),
     ...(slippageBps != null && { slippage_bps: slippageBps }),
+    decode_status: trustedFnAbi ? "verified" : meta ? "unverified" : "heuristic",
+    ...(abiCheck.warning ? { decode_warnings: [abiCheck.warning] } : {}),
   };
 
   // Protocol 26: detect TTL extension host function calls on this event
@@ -372,6 +473,7 @@ async function decodeEvent(ev, { currentAbi = false } = {}) {
     }).catch((err) => logger.error("[roleTracker] upsertRole failed:", err.message));
   }
 
+  decoded.decoder_version = decoderTag("abi");
   return decoded;
 }
 
@@ -424,6 +526,7 @@ export async function decodeClassicOperation(ev) {
     raw_topics: [op.type, op.from, op.to].filter((t) => typeof t === "string"),
     raw_data: safeStringify(op),
     type: "classic",
+    decoder_version: decoderTag("classic"),
   };
 }
 
@@ -499,6 +602,17 @@ function vaultDescription(fn, args, data, contractName, vaultMeta, fullTopics = 
  *   "Address {short-from} transferred {amount} {token} to {short-to} on {contractName}"
  * where short addresses are truncated to "AAAAAA…ZZZZ" (6 + 4 chars).
  */
+/** Description with argument names from the on-chain spec (#895). */
+function specDescription(fnName, namedArgs, contractName) {
+  const render = (v) => {
+    if (typeof v === "string" && /^[GC][A-Z2-7]{55}$/.test(v)) return fmt(v);
+    const s = typeof v === "string" ? v : safeStringify(v);
+    return s && s.length > 80 ? `${s.slice(0, 77)}…` : s;
+  };
+  const parts = Object.entries(namedArgs).map(([k, v]) => `${k}: ${render(v)}`);
+  return `${fnName}(${parts.join(", ")}) on ${contractName}`;
+}
+
 export function buildDescription(fn, args, data, contractName, fullTopics = null) {
   switch (fn) {
     case "swap":

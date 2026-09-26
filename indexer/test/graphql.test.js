@@ -45,6 +45,9 @@ const mockDb = {
     is_high_bloat_risk: false,
     is_clawback: false,
   }),
+  listContractsCursor: () => ({ data: [{ id: "CABC123", name: "Example" }], next_cursor: null }),
+  getWalletEventsCursor: () => ({ data: [], next_cursor: null }),
+  getSubInvocationsCursor: () => ({ data: [], next_cursor: null }),
 };
 
 describe("GraphQL Security", () => {
@@ -325,6 +328,34 @@ describe("GraphQL Security", () => {
   });
 
   describe("Edge Cases", () => {
+    test("supports variables, field aliases, and all bounded root collections", async () => {
+      const query = `
+        query Browse($size: Int!, $address: String!) {
+          events(first: $size) { data { name: function_name ledger_sequence } }
+          contracts(first: $size) { data { id name } }
+          wallet(address: $address, first: $size) { data { seq } }
+          subInvocations(first: $size) { data { id } }
+        }
+      `;
+      const response = await request(app)
+        .post("/graphql")
+        .send({ query, operationName: "Browse", variables: { size: 10, address: "G" + "A".repeat(55) } })
+        .expect(200);
+
+      assert.equal(response.body.data.events.data[0].name, "transfer");
+      assert.equal(response.body.data.events.data[0].ledger_sequence, 1000);
+      assert.equal(response.body.data.contracts.data[0].id, "CABC123");
+      assert.deepEqual(response.body.data.wallet.data, []);
+    });
+
+    test("rejects an oversized page even if the query is otherwise valid", async () => {
+      const response = await request(app)
+        .post("/graphql")
+        .send({ query: "query($size: Int!) { events(first: $size) { data { seq } } }", variables: { size: 101 } })
+        .expect(400);
+      assert.match(response.body.errors[0].message, /Page size must be between 1 and 100/);
+    });
+
     test("should handle missing query gracefully", async () => {
       const response = await request(app)
         .post("/graphql")

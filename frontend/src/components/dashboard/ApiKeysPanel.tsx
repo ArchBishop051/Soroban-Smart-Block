@@ -4,6 +4,23 @@ import { dashboardApi, type ApiKeyRecord } from "../../services/dashboardApi";
 
 const TIERS = ["free", "pro", "enterprise"];
 
+// Scopes a self-service key can hold (#901). New keys are read-only by default.
+const SCOPE_OPTIONS: { value: string; label: string }[] = [
+  { value: "read:events", label: "Read events" },
+  { value: "read:contracts", label: "Read contracts" },
+  { value: "write:contracts", label: "Register / update contracts" },
+  { value: "write:webhooks", label: "Manage webhooks" },
+  { value: "read:usage", label: "Read usage" },
+  { value: "write:keys", label: "Manage API keys" },
+];
+const DEFAULT_SCOPES = ["read:events", "read:contracts"];
+
+const splitList = (value: string) =>
+  value
+    .split(",")
+    .map((v) => v.trim())
+    .filter(Boolean);
+
 function RevealedKey({ label, value, onDismiss }: { label: string; value: string; onDismiss: () => void }) {
   return (
     <div
@@ -82,16 +99,30 @@ export default function ApiKeysPanel() {
   const [name, setName] = useState("");
   const [tier, setTier] = useState("free");
   const [expiresAt, setExpiresAt] = useState("");
+  const [scopes, setScopes] = useState<string[]>(DEFAULT_SCOPES);
+  const [contracts, setContracts] = useState("");
+  const [origins, setOrigins] = useState("");
   const [revealed, setRevealed] = useState<{ label: string; value: string } | null>(null);
 
   const keysQuery = useQuery({ queryKey: ["dashboard", "api-keys"], queryFn: dashboardApi.listApiKeys });
 
   const createMutation = useMutation({
-    mutationFn: () => dashboardApi.createApiKey({ name, tier, expires_at: expiresAt || undefined }),
+    mutationFn: () =>
+      dashboardApi.createApiKey({
+        name,
+        tier,
+        expires_at: expiresAt || undefined,
+        scopes,
+        allowed_contract_ids: splitList(contracts),
+        allowed_origins: splitList(origins),
+      }),
     onSuccess: (result) => {
       setRevealed({ label: `New key "${result.record.name}"`, value: result.key });
       setName("");
       setExpiresAt("");
+      setScopes(DEFAULT_SCOPES);
+      setContracts("");
+      setOrigins("");
       queryClient.invalidateQueries({ queryKey: ["dashboard", "api-keys"] });
     },
   });
@@ -120,7 +151,7 @@ export default function ApiKeysPanel() {
         <form
           onSubmit={(e) => {
             e.preventDefault();
-            if (!name.trim()) return;
+            if (!name.trim() || scopes.length === 0) return;
             createMutation.mutate();
           }}
           style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}
@@ -139,7 +170,36 @@ export default function ApiKeysPanel() {
             onChange={(e) => setExpiresAt(e.target.value)}
             title="Expiry date (optional)"
           />
-          <button type="submit" disabled={createMutation.isPending}>
+          <fieldset style={{ flexBasis: "100%", border: "none", padding: 0, margin: 0 }}>
+            <legend style={{ fontSize: 12, color: "var(--muted)" }}>Scopes (least privilege: read-only by default)</legend>
+            {SCOPE_OPTIONS.map((opt) => (
+              <label key={opt.value} style={{ marginRight: 12, fontSize: 13 }}>
+                <input
+                  type="checkbox"
+                  checked={scopes.includes(opt.value)}
+                  onChange={(e) =>
+                    setScopes((prev) =>
+                      e.target.checked ? [...prev, opt.value] : prev.filter((s) => s !== opt.value),
+                    )
+                  }
+                />{" "}
+                {opt.label}
+              </label>
+            ))}
+          </fieldset>
+          <input
+            value={contracts}
+            onChange={(e) => setContracts(e.target.value)}
+            placeholder="Restrict to contract IDs (comma-separated, optional)"
+            style={{ flex: 1, minWidth: 220 }}
+          />
+          <input
+            value={origins}
+            onChange={(e) => setOrigins(e.target.value)}
+            placeholder="Allowed browser origins (comma-separated, optional)"
+            style={{ flex: 1, minWidth: 220 }}
+          />
+          <button type="submit" disabled={createMutation.isPending || scopes.length === 0}>
             {createMutation.isPending ? "Creating…" : "Create key"}
           </button>
         </form>
@@ -168,6 +228,16 @@ export default function ApiKeysPanel() {
                 {key.key_prefix}… · created {new Date(key.created_at).toLocaleDateString()}
                 {key.expires_at && ` · expires ${new Date(key.expires_at).toLocaleDateString()}`}
               </div>
+              {key.scopes && (
+                <div style={{ fontSize: 12, marginTop: 4 }}>
+                  {key.scopes.map((scope) => (
+                    <span key={scope} className="badge" style={{ marginRight: 4 }}>
+                      {scope}
+                    </span>
+                  ))}
+                  {key.allowed_contract_ids?.length ? ` · contracts: ${key.allowed_contract_ids.join(", ")}` : ""}
+                </div>
+              )}
               <div style={{ marginTop: 4 }}>
                 <UsageRow apiKeyId={key.id} />
               </div>
