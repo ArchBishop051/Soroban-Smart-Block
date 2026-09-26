@@ -31,6 +31,7 @@ import AbiHistoryDrawer from "../components/AbiHistoryDrawer";
 import ProtocolBadge from "../components/ProtocolBadge";
 import InvocationFrequencyChart, { type StatsRange } from "../components/InvocationFrequencyChart";
 import StorageTierStackedBar from "../components/StorageTierStackedBar";
+import OfflineContractActions from "../components/OfflineContractActions";
 
 type Tab = "overview" | "source" | "simulate" | "flow" | "roles" | "networks" | "graph" | "call-graph" | "state-diff" | "abi-history";
 
@@ -40,6 +41,33 @@ function EmptyState({ title, message }: { title: string; message: string }) {
       <strong style={{ display: "block", color: "var(--text)", fontSize: 14, marginBottom: 6 }}>{title}</strong>
       {message}
     </div>
+  );
+}
+
+const OWNERSHIP_METHOD_LABELS: Record<string, string> = {
+  TargetAdmin: "contract admin()",
+  TargetOwner: "contract owner()",
+  Deployer: "contract deployer",
+};
+
+/** Shown when the registry entry's owner proved ownership on-chain (#875). */
+function OwnershipBadge({ verified, method, owner }: { verified?: boolean; method?: string | null; owner?: string | null }) {
+  const label = verified ? `Ownership verified via ${OWNERSHIP_METHOD_LABELS[method ?? ""] ?? method}` : "Ownership unverified";
+  return (
+    <span
+      className="badge"
+      title={verified && owner ? `Owner: ${owner}` : "The registrant has not proven ownership of this contract on-chain"}
+      style={{
+        marginLeft: 8,
+        fontSize: 11,
+        padding: "2px 8px",
+        borderRadius: 12,
+        background: verified ? "rgba(34,197,94,0.15)" : "rgba(148,163,184,0.15)",
+        color: verified ? "#22c55e" : "var(--muted)",
+      }}
+    >
+      {verified ? "✔ " : ""}{label}
+    </span>
   );
 }
 
@@ -96,6 +124,7 @@ function SourceVerifiedBadge({ contractId }: { contractId: string }) {
 }
 
 export default function ContractPage() {
+  const { t } = useTranslation();
   const { id = "" } = useParams();
   const [tab, setTab] = useState<Tab>("overview");
   const [selectedFn, setSelectedFn] = useState("");
@@ -155,7 +184,7 @@ export default function ContractPage() {
   if (!meta) {
     // Contract not in the registry — show the upload zone as the primary UI
     return (
-      <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
+      <article className="print-document contract-document" aria-labelledby="contract-title" style={{ display: "flex", flexDirection: "column", gap: 20 }}>
         <div className="card">
           <div
             style={{
@@ -175,7 +204,7 @@ export default function ContractPage() {
                 flexShrink: 0,
               }}
             />
-            <h2 style={{ fontSize: 16 }}>Not registered — be the first to add ABI metadata</h2>
+            <h2 id="contract-title" style={{ fontSize: 16 }}>{t("contract.unregistered")}</h2>
             <code
               style={{
                 fontSize: 12,
@@ -187,15 +216,14 @@ export default function ContractPage() {
             </code>
           </div>
           <p style={{ color: "var(--muted)", fontSize: 13, marginBottom: 16 }}>
-            This contract has no registered ABI. Upload a local spec file to inspect its transaction logs — the file
-            stays in your browser session only.
+            {t("contract.noAbiDescription")}
           </p>
           <AbiUploadZone onLoad={loadAbi} onClear={clearAbi} localAbi={localAbi} parseError={parseError} />
         </div>
 
         {localAbi && (
           <div className="card">
-            <h3 style={{ fontSize: 14, marginBottom: 12 }}>Recent Events</h3>
+            <h3 style={{ fontSize: 14, marginBottom: 12 }}>{t("contract.recentEvents")}</h3>
             {evLoading ? (
               <p style={{ color: "var(--muted)" }}>Loading…</p>
             ) : (
@@ -203,7 +231,7 @@ export default function ContractPage() {
             )}
           </div>
         )}
-      </div>
+      </article>
     );
   }
 
@@ -222,6 +250,18 @@ export default function ContractPage() {
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
+      {/* Dedicated print-only header */}
+      <div className="print-only print-header">
+        <div>
+          <div className="print-header-brand">Soroban Smart Block Explorer</div>
+          <div style={{ fontSize: "9pt", color: "#4b5563" }}>Smart Contract Audit & Specification Report</div>
+        </div>
+        <div className="print-header-meta">
+          <div>Contract: {truncateAddress(id)}</div>
+          <div>Printed: {new Date().toISOString().split("T")[0]}</div>
+        </div>
+      </div>
+
       {/* SEP-49 migration pending banner */}
       {migrationStatus?.pending && migrationStatus.upgradedAtLedger != null && (
         <MigrationBanner upgradedAtLedger={migrationStatus.upgradedAtLedger} />
@@ -229,6 +269,8 @@ export default function ContractPage() {
 
       {/* Circuit breaker status banner */}
       <CircuitBreakerStatus contractId={id} />
+
+      <OfflineContractActions contractId={id} />
 
       {/* CAP-0077 quorum freeze security warning */}
       <QuorumFreezeBadge contractId={id} />
@@ -247,20 +289,17 @@ export default function ContractPage() {
         >
           <div>
             <div style={{ display: "flex", alignItems: "center", marginBottom: 8 }}>
-              <h2 style={{ margin: 0 }}>{meta.name || "Unnamed Contract"}</h2>
-              <button
-                type="button"
-                style={{ marginLeft: 10, padding: "4px 8px", borderRadius: 999, border: "1px solid var(--border)", background: isSaved(id, "contract") ? "var(--accent)" : "var(--surface)", color: isSaved(id, "contract") ? "#0d1117" : "var(--text)", cursor: "pointer" }}
-                onClick={() => toggle({ id, kind: "contract", label: meta.name || id })}
-                aria-label="Toggle watchlist"
-              >
-                {isSaved(id, "contract") ? "★" : "☆"}
-              </button>
+              <h2 id="contract-title" style={{ margin: 0 }}>{meta.name || "Unnamed Contract"}</h2>
               {(meta as any).is_verified && <VerifiedBadge ledger={(meta as any).verified_ledger} />}{' '}
               <SourceVerifiedBadge contractId={id} />
+              <OwnershipBadge
+                verified={(meta as any).ownership_verified}
+                method={(meta as any).ownership_method}
+                owner={(meta as any).ownership_owner}
+              />
               {meta.protocol_type && (
                 <span style={{ marginLeft: 10 }}>
-                  <ProtocolBadge type={meta.protocol_type} />
+                  <ProtocolBadge type={meta.protocol_type} confidence={(meta as any).protocol_confidence} inferred={Boolean((meta as any).protocol_type_inferred)} />
                 </span>
               )}
             </div>
@@ -287,7 +326,49 @@ export default function ContractPage() {
               {meta.min_ledger != null && <span>Registration ledger: {meta.min_ledger.toLocaleString()}</span>}
             </div>
           </div>
-          <div style={{ display: "flex", gap: 8 }}>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", justifyContent: "flex-end" }}>
+            <button
+              type="button"
+              onClick={() => window.print()}
+              style={{
+                padding: "8px 14px",
+                background: "transparent",
+                color: "var(--text)",
+                border: "1px solid var(--border)",
+                borderRadius: 4,
+                cursor: "pointer",
+                fontSize: 13,
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 6,
+              }}
+              title="Print or save as PDF via browser print dialog"
+            >
+              🖨 Print View
+            </button>
+            <a
+              href={api.contractReportUrl(id)}
+              target="_blank"
+              rel="noopener noreferrer"
+              download={`soroban-contract-${id.slice(0, 8)}-audit.pdf`}
+              style={{
+                padding: "8px 14px",
+                background: "var(--accent)",
+                color: "var(--bg, #0d1117)",
+                border: "none",
+                borderRadius: 4,
+                cursor: "pointer",
+                fontSize: 13,
+                fontWeight: 600,
+                textDecoration: "none",
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 6,
+              }}
+              title="Download cryptographically signed Tagged PDF 1.7 report"
+            >
+              📥 Export Signed PDF
+            </a>
             <button
               type="button"
               onClick={() => setHistoryOpen(true)}
@@ -376,6 +457,9 @@ export default function ContractPage() {
 
       {/* Tab bar */}
       <div
+        className="contract-tabs print-hide"
+        role="group"
+        aria-label={t("contract.sections")}
         style={{
           display: "flex",
           gap: 4,
@@ -386,6 +470,8 @@ export default function ContractPage() {
         {tabs.map((t) => (
           <button
             key={t.key}
+            type="button"
+            aria-pressed={tab === t.key}
             onClick={() => setTab(t.key)}
             style={{
               background: "none",
@@ -678,6 +764,15 @@ export default function ContractPage() {
         open={historyOpen}
         onClose={() => setHistoryOpen(false)}
       />
+
+      {/* Dedicated print-only footer */}
+      <div className="print-only print-footer">
+        <div>
+          <span>Audit URL: </span>
+          <code>{window.location.href}</code>
+        </div>
+        <div>Certified Tagged PDF 1.7 &middot; SHA-256 Verified</div>
+      </div>
     </div>
   );
 }

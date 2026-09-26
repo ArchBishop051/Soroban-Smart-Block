@@ -7,7 +7,7 @@
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
-use soroban_sdk::{testutils::Address as _, Env, String};
+use soroban_sdk::{testutils::{Address as _, StellarAsset}, token, Env, String};
 use ticket::TicketContractClient;
 
 fuzz_target!(|data: &[u8]| {
@@ -16,8 +16,7 @@ fuzz_target!(|data: &[u8]| {
     }
 
     let sale_price = i128::from_le_bytes(data[0..16].try_into().unwrap());
-    // Avoid negative prices — the contract does not explicitly reject them
-    // but they would always satisfy the cap, making the test trivial.
+    // Avoid negative prices; zero is also invalid because every resale must settle.
     if sale_price < 0 {
         return;
     }
@@ -31,9 +30,13 @@ fuzz_target!(|data: &[u8]| {
     let organizer = soroban_sdk::Address::generate(&env);
     let buyer     = soroban_sdk::Address::generate(&env);
     let new_owner = soroban_sdk::Address::generate(&env);
+    let token_admin = soroban_sdk::Address::generate(&env);
+    let token_id = env.register_stellar_asset_contract(token_admin);
+    token::StellarAssetClient::new(&env, &token_id).mint(&buyer, &1_000_000_000i128);
 
     client.initialize(
         &organizer,
+        &token_id,
         &String::from_str(&env, "Fuzz Transfer"),
         &10u64,
         &1_000i128,
@@ -45,7 +48,9 @@ fuzz_target!(|data: &[u8]| {
 
     if sale_price > max_resale {
         assert!(result.is_err(), "transfer above cap must fail for price={sale_price}");
-    } else {
+    } else if sale_price > 0 {
         assert!(result.is_ok(), "transfer at/below cap must succeed for price={sale_price}");
+    } else {
+        assert!(result.is_err(), "zero-price transfer must fail");
     }
 });

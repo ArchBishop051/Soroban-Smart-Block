@@ -1,7 +1,42 @@
 import { BatchCall } from "./types/batch";
 import { getCsrfToken, refreshCsrfToken } from "./hooks/useCsrf";
+import { readCachedResponse, writeCachedResponse } from "./services/offlineStore";
 
 const BASE = "/api";
+
+function randomTraceId() {
+  const bytes = new Uint8Array(16);
+  crypto.getRandomValues(bytes);
+  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+function randomSpanId() {
+  const bytes = new Uint8Array(8);
+  crypto.getRandomValues(bytes);
+  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+function buildTraceHeaders() {
+  const traceId = randomTraceId();
+  const spanId = randomSpanId();
+  const version = "00";
+  const flags = "01";
+  const traceparent = `${version}-${traceId}-${spanId}-${flags}`;
+  return {
+    "X-Request-Id": crypto.randomUUID(),
+    traceparent,
+    "sentry-trace": traceparent,
+  };
+}
+
+function withTraceHeaders(init: RequestInit = {}): RequestInit {
+  const headers = new Headers(init.headers || {});
+  const traceHeaders = buildTraceHeaders();
+  for (const [key, value] of Object.entries(traceHeaders)) {
+    headers.set(key, value);
+  }
+  return { ...init, headers };
+}
 
 export interface SpecType {
   kind: "struct" | "enum" | "union" | "error_enum";
@@ -70,6 +105,10 @@ export interface HeuristicParam {
 }
 
 export interface DecodedEvent {
+  /** Canonical, chain-derived event ID (Soroban RPC format, #892). */
+  event_id?: string | null;
+  /** How the event was decoded (#895): registered ABI, on-chain spec, or heuristics. */
+  decode_source?: "abi" | "spec" | "spec_mismatch" | "heuristic" | null;
   seq: number;
   contract_id: string;
   function: string;
@@ -127,6 +166,9 @@ export interface DecodedEvent {
   factory_deployment?: FactoryDeploymentTree;
   // DEX swap slippage in basis points (1% = 100 bps); present only when computable
   slippage_bps?: number | null;
+  created_at?: string;
+  decode_status?: "verified" | "unverified" | "heuristic";
+  decode_warnings?: string[];
 }
 
 export interface SourceFile {
@@ -214,11 +256,11 @@ export interface AbiHistoryResponse {
 
 export interface ContractsListResponse {
   contracts: ContractListItem[];
+  next_cursor: string | null;
   pagination: {
     page: number;
     limit: number;
-    total: number;
-    total_pages: number;
+    has_next: boolean;
   };
 }
 
@@ -335,7 +377,7 @@ export interface ContractGraphData {
 }
 
 async function get<T>(path: string): Promise<T> {
-  const res = await fetch(BASE + path);
+  const res = await fetch(BASE + path, withTraceHeaders());
   if (!res.ok) throw new Error(`API ${res.status}: ${path}`);
   return res.json();
 }
@@ -357,11 +399,11 @@ async function mutationFetch(
     ...(token ? { "X-CSRF-Token": token } : {}),
   });
 
-  const res = await fetch(url, {
+  const res = await fetch(url, withTraceHeaders({
     credentials: "include",
     ...options,
     headers: buildHeaders(getCsrfToken()),
-  });
+  }));
 
   // On CSRF mismatch refresh the token and retry exactly once.
   if (res.status === 403) {
@@ -372,11 +414,11 @@ async function mutationFetch(
       body.error === "CSRF token mismatch"
     ) {
       await refreshCsrfToken();
-      return fetch(url, {
+      return fetch(url, withTraceHeaders({
         credentials: "include",
         ...options,
         headers: buildHeaders(getCsrfToken()),
-      });
+      }));
     }
   }
 
@@ -684,17 +726,47 @@ export interface TransactionTreeDiff {
   changed: { a: SubInvocationExtended; b: SubInvocationExtended }[];
 }
 
+/** Signers and policies of a contract account (#898). */
+export interface SmartWalletSigner {
+  key: string;
+  type: string;
+  expiration: number | null;
+  since_ledger: number | null;
+}
+export interface SmartWalletState {
+  address: string;
+  signers: SmartWalletSigner[];
+  policies: SmartWalletSigner[];
+  history: { subject: string; action: string; key: string; type: string; ledger: number; description: string }[];
+}
+
+/** One-line transaction summary (#897). */
+export interface TxNarrative {
+  tx_hash: string;
+  event_count: number;
+  action: string | null;
+  protocol: string | null;
+  actor: string | null;
+  sentence: string;
+  rule: string;
+  net_flows: Record<string, Record<string, string>>;
+}
+
 export const api = {
-  events: (params: { contract?: string; fn?: string; after_seq?: number; limit?: number; type?: string }) => {
+  events: (params: { contract?: string; fn?: string; after_seq?: number; limit?: number; type?: string; from?: string; to?: string }) => {
     const q = new URLSearchParams();
     if (params.contract) q.set("contract", params.contract);
     if (params.fn) q.set("fn", params.fn);
     if (params.after_seq) q.set("after_seq", String(params.after_seq));
     if (params.limit) q.set("limit", String(params.limit));
     if (params.type) q.set("type", params.type);
+    if (params.from) q.set("from", params.from);
+    if (params.to) q.set("to", params.to);
     return get<EventsPage>(`/events?${q}`);
   },
   event: (seq: number) => get<DecodedEvent>(`/events/${seq}`),
+  txNarrative: (hash: string) => get<TxNarrative>(`/transactions/${hash}/narrative`),
+  smartWallet: (address: string) => get<SmartWalletState>(`/wallet/${address}/smart-wallet`),
   asset: (issuer: string, code: string) => get<AssetInfo>(`/assets/${issuer}/${code}`),
   search: (q: string, limit = 10) => {
     const params = new URLSearchParams();
@@ -736,11 +808,27 @@ export const api = {
   },
 
   /** #528: Download wallet event history as CSV.
-   *  Triggers a browser file download directly. */
-  exportWalletCsv: (address: string, params: { fn?: string } = {}) => {
+   *  Supports one-off downloads or email-based recurring exports. */
+  exportWalletCsv: (
+    address: string,
+    params: { fn?: string; email?: string; schedule?: "daily" | "weekly" } = {},
+  ) => {
     const q = new URLSearchParams({ format: "csv", wallet: address });
     if (params.fn) q.set("fn", params.fn);
+    if (params.email) q.set("email", params.email);
+    if (params.schedule) q.set("schedule", params.schedule);
+
     const url = `/api/export/events?${q}`;
+    if (params.schedule && params.email) {
+      return fetch(url, { headers: { Accept: "application/json" } }).then(async (res) => {
+        if (!res.ok) {
+          const body = await res.json().catch(() => ({}));
+          throw new Error(body?.error || "Failed to schedule export");
+        }
+        return res.json();
+      });
+    }
+
     const a = document.createElement("a");
     a.href = url;
     a.download = `wallet-${address}-events.csv`;
@@ -1003,11 +1091,11 @@ export const api = {
   },
 
   // Issue #514: search + filter contracts list
-  listContractsSearch: (params: { q?: string; type?: string; page?: number; limit?: number }) => {
+  listContractsSearch: (params: { q?: string; type?: string; after?: string; limit?: number }) => {
     const q = new URLSearchParams();
     if (params.q) q.set("q", params.q);
     if (params.type && params.type !== "all") q.set("type", params.type);
-    q.set("page", String(params.page ?? 1));
+    if (params.after) q.set("after", params.after);
     q.set("limit", String(params.limit ?? 25));
     return get<ContractsListResponse>(`/contracts?${q}`);
   },
@@ -1027,5 +1115,18 @@ export const api = {
       const data = await r.json();
       if (!r.ok) throw Object.assign(new Error(data.error ?? `API ${r.status}`), { status: r.status, data });
       return data as { ok: boolean };
+    }),
+
+  // Issue #805: Certified PDF reports & detached verification
+  eventReportUrl: (seq: number) => `${BASE}/reports/event/${seq}`,
+  contractReportUrl: (id: string) => `${BASE}/reports/contract/${encodeURIComponent(id)}`,
+  verifyReport: (data: unknown, expectedHash: string) =>
+    mutationFetch(`${BASE}/reports/verify`, {
+      method: "POST",
+      body: JSON.stringify({ data, expected_hash: expectedHash }),
+    }).then(async (r) => {
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.error || "Verification failed");
+      return data as { verified: boolean; computed_hash: string; algorithm: string };
     }),
 };

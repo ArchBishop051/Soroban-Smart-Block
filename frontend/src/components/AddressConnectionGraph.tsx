@@ -7,6 +7,7 @@ import { useEffect, useRef } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
 import { api } from "../api";
+import { getGraphColors } from "../utils/themeTokens";
 
 export interface GraphNode {
   id: string;
@@ -78,6 +79,8 @@ export default function AddressConnectionGraph({ contractId, variant = "address"
         })),
       ];
 
+      const colors = getGraphColors();
+
       cyRef.current = cytoscape({
         container: containerRef.current,
         elements,
@@ -87,7 +90,7 @@ export default function AddressConnectionGraph({ contractId, variant = "address"
             style: {
               "background-color": "data(type)" as any,
               label: "data(label)",
-              color: "#fff",
+              color: colors.nodeText,
               "font-size": 10,
               "text-valign": "bottom",
               "text-margin-y": 4,
@@ -97,23 +100,23 @@ export default function AddressConnectionGraph({ contractId, variant = "address"
           },
           {
             selector: 'node[type = "contract"]',
-            style: { "background-color": "#6366f1" },
+            style: { "background-color": colors.nodeContract },
           },
           {
             selector: 'node[type = "wallet"]',
-            style: { "background-color": "#0ea5e9" },
+            style: { "background-color": colors.nodeWallet },
           },
           {
             selector: "edge",
             style: {
               width: 2,
-              "line-color": "#4b5563",
-              "target-arrow-color": "#4b5563",
+              "line-color": colors.edge,
+              "target-arrow-color": colors.edge,
               "target-arrow-shape": "triangle",
               "curve-style": "bezier",
               label: "data(label)",
               "font-size": 9,
-              color: "#9ca3af",
+              color: colors.edgeText,
               "text-rotation": "autorotate",
             },
           },

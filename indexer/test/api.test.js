@@ -37,6 +37,20 @@ describe("API request correlation and logging", () => {
     assert.ok(logs.includes(requestId), `Expected logs to contain request id ${requestId}`);
   });
 
+  it("emits a traceparent header even when the client did not send one", async () => {
+    const app = createApi({
+      logDestination: new PassThrough(),
+      dbOverride: {
+        async getEventsCursor() {
+          return { data: [], next_cursor: null };
+        },
+      },
+    });
+
+    const response = await request(app).get("/api/events").expect(200);
+    assert.match(response.headers["traceparent"], /^00-[0-9a-f]{32}-[0-9a-f]{16}-01$/);
+  });
+
   it("records a Prometheus histogram with method, route, and status labels", async () => {
     const app = createApi({
       logDestination: new PassThrough(),

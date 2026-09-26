@@ -315,6 +315,12 @@ describe("REST API Integration Tests", () => {
       expect(res.status).toBe(422);
       expect(res.body).toEqual({ error: "Invalid after_seq" });
     });
+
+    it("should return 422 for an invalid date bound", async () => {
+      const res = await getEvents("/api/events?from=last-tuesday");
+      expect(res.status).toBe(422);
+      expect(res.body).toEqual({ error: "Invalid from" });
+    });
   });
 
   describe("GET /api/v1/events (Cursor-based)", () => {
