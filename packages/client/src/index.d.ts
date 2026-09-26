@@ -19,17 +19,31 @@ export interface DecodedEvent {
   is_clawback?: boolean;
 }
 
+export interface KeysetPageInfo {
+  has_next: boolean;
+  has_previous: boolean;
+  start_cursor: string | null;
+  end_cursor: string | null;
+}
+
 export interface EventsPage {
   data: DecodedEvent[];
-  next_cursor: number | null;
+  page_info?: KeysetPageInfo;
+  next_cursor: string | number | null;
+  total?: number;
+  count_is_estimate?: boolean;
 }
 
 export interface EventsParams {
   contract?: string;
   fn?: string;
   type?: string;
+  cursor?: string;
+  after?: string | number;
+  before?: string;
   after_seq?: number;
   limit?: number;
+  count?: "exact" | "estimate";
 }
 
 export interface SearchResult {
