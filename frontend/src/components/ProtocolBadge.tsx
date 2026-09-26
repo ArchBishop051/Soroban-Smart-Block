@@ -12,7 +12,7 @@ const PROTOCOL_BADGE_STYLES: Record<string, { label: string; color: string; back
 };
 
 /** Coloured protocol-type badge shown on contract cards and next to contract names in the event feed. */
-export default function ProtocolBadge({ type }: { type?: ProtocolType | null }) {
+export default function ProtocolBadge({ type, confidence, inferred = false }: { type?: ProtocolType | null; confidence?: number | null; inferred?: boolean }) {
   if (!type) return null;
   const style = PROTOCOL_BADGE_STYLES[type] ?? PROTOCOL_BADGE_STYLES.other;
 
@@ -31,9 +31,9 @@ export default function ProtocolBadge({ type }: { type?: ProtocolType | null }) 
         background: style.background,
         whiteSpace: "nowrap",
       }}
-      title={`Protocol type: ${style.label}`}
+      title={`${inferred ? "Inferred" : "Manual"} protocol type: ${style.label}`}
     >
-      {style.label}
+      {style.label}{inferred && confidence != null ? ` · ${Math.round(confidence * 100)}%` : ""}
     </span>
   );
 }

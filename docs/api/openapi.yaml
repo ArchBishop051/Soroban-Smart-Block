@@ -63,6 +63,34 @@ security:
   - BearerAuth: []
 
 paths:
+  /api/tx/{hash}:
+    get:
+      summary: Get an indexed Soroban transaction, including failed transactions and fee breakdown
+      parameters:
+        - in: path
+          name: hash
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Transaction record
+          content: { application/json: { schema: { $ref: '#/components/schemas/Transaction' } } }
+        '404': { description: Transaction not found }
+  /api/accounts/{id}/transactions:
+    get:
+      summary: List transactions sent or fee-paid by an account
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+        - in: query
+          name: limit
+          schema: { type: integer, maximum: 100, default: 50 }
+      responses:
+        '200':
+          description: Transaction records
+          content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/Transaction' } } } }
   /health:
     get:
       summary: Comprehensive health check endpoint
@@ -4132,6 +4160,25 @@ components:
         Compatible with standard authenticator apps (30s step, 6 digits, SHA-1).
 
   schemas:
+    Transaction:
+      type: object
+      required: [hash, ledger, status, charged_fee]
+      properties:
+        hash: { type: string }
+        ledger: { type: integer, format: int64 }
+        source: { type: string, nullable: true }
+        fee_payer: { type: string, nullable: true }
+        inner_source: { type: string, nullable: true }
+        status: { type: string, enum: [success, failed, pending, unknown] }
+        result_code: { type: string, nullable: true }
+        operation_count: { type: integer }
+        inclusion_fee: { type: number }
+        resource_fee: { type: number }
+        refundable_fee_charged: { type: number }
+        refund_amount: { type: number }
+        rent_fee: { type: number }
+        charged_fee: { type: number }
+        failure_reason: { type: string, nullable: true }
     HealthStatus:
       type: object
       required: [status, timestamp, dependencies, alerts, dlq]
