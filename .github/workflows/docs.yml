@@ -13,6 +13,9 @@ on:
       - "scripts/docs-snippets.mjs"
       - "indexer/src/**"
       - "contracts/**"
+      - "frontend/src/ui/**"
+      - "frontend/.storybook/**"
+      - "frontend/src/styles/**"
       - "CONTRIBUTING.md"
       - ".github/workflows/docs.yml"
   pull_request:
@@ -47,6 +50,10 @@ jobs:
       - name: Install indexer deps (for spec generation)
         run: npm ci
         working-directory: indexer
+
+      - name: Install frontend deps (for Storybook)
+        run: npm ci
+        working-directory: frontend
 
       - name: Regenerate OpenAPI JSON from YAML
         run: |
@@ -89,6 +96,15 @@ jobs:
           RUSTDOCFLAGS='-D warnings' cargo doc --no-deps -p soroban-explorer-contract
           mkdir -p _site/docs/reference/contract
           cp -r target/doc/* _site/docs/reference/contract/ || true
+
+      - name: Build Storybook
+        run: npm run build-storybook
+        working-directory: frontend
+
+      - name: Copy Storybook to docs
+        run: |
+          mkdir -p _site/storybook
+          cp -r frontend/storybook-static/* _site/storybook/ || true
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
