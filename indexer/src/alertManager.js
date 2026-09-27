@@ -17,7 +17,9 @@ import { logger } from "./logger.js";
  *   9. DECODE_RATE_LOW     — decoder success rate below minimum over the last 24h
  */
 
+import { get as getRuntimeConfig } from "./runtimeConfig.js";
 import config from "./config.js";
+import { safeFetch } from "./safeHttp.js";
 
 const SLACK_WEBHOOK_URL = process.env.SLACK_WEBHOOK_URL ?? "";
 const PAGERDUTY_ROUTING_KEY = process.env.PAGERDUTY_ROUTING_KEY ?? "";
@@ -32,6 +34,7 @@ const MIN_DECODE_RATE = config.ALERT_MIN_DECODE_RATE;
 
 export const ALERT_CONDITIONS = {
   INDEXER_DOWN: "INDEXER_DOWN",
+  RUNTIME_CONFIG_REVERTED: "RUNTIME_CONFIG_REVERTED",
   LEDGER_GAP: "LEDGER_GAP",
   DB_FAILURE: "DB_FAILURE",
   RESOURCE_CONSTRAINT: "RESOURCE_CONSTRAINT",
@@ -41,6 +44,8 @@ export const ALERT_CONDITIONS = {
   REORG_DETECTED: "REORG_DETECTED",
   DECODE_RATE_LOW: "DECODE_RATE_LOW",
   AUDIT_PARTITION_FAILURE: "AUDIT_PARTITION_FAILURE",
+  PROTOCOL_UNSUPPORTED: "PROTOCOL_UNSUPPORTED",
+  RPC_PROVIDER_DISAGREEMENT: "RPC_PROVIDER_DISAGREEMENT",
 };
 
 const SEVERITY = {
@@ -54,6 +59,8 @@ const SEVERITY = {
   [ALERT_CONDITIONS.REORG_DETECTED]: "critical",
   [ALERT_CONDITIONS.DECODE_RATE_LOW]: "warning",
   [ALERT_CONDITIONS.AUDIT_PARTITION_FAILURE]: "critical",
+  [ALERT_CONDITIONS.PROTOCOL_UNSUPPORTED]: "critical",
+  [ALERT_CONDITIONS.RPC_PROVIDER_DISAGREEMENT]: "critical",
 };
 
 // Active alert state — maps condition → timestamp when first fired
@@ -68,7 +75,7 @@ async function sendSlack(condition, message) {
   try {
     const severity = SEVERITY[condition] ?? "warning";
     const emoji = severity === "critical" ? ":red_circle:" : ":warning:";
-    await fetch(SLACK_WEBHOOK_URL, {
+    await safeFetch(SLACK_WEBHOOK_URL, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ text: `${emoji} *[${condition}]* ${message}` }),
@@ -81,7 +88,7 @@ async function sendSlack(condition, message) {
 async function sendPagerDuty(condition, message) {
   if (!PAGERDUTY_ROUTING_KEY) return;
   try {
-    await fetch(PAGERDUTY_EVENTS_URL, {
+    await safeFetch(PAGERDUTY_EVENTS_URL, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -161,7 +168,8 @@ export async function checkIndexerDown() {
  * @param {number} fromLedger  Start ledger of the gap
  */
 export async function checkLedgerGap(gapSize, fromLedger) {
-  if (gapSize > GAP_THRESHOLD) {
+  // Runtime override (#894), read live on every check.
+  if (gapSize > (getRuntimeConfig("alertThresholds")?.ledgerGap ?? GAP_THRESHOLD)) {
     await fireAlert(
       ALERT_CONDITIONS.LEDGER_GAP,
       `Gap of ${gapSize} ledgers starting at ${fromLedger} (threshold=${GAP_THRESHOLD})`,

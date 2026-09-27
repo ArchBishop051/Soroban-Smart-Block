@@ -81,3 +81,6 @@ plans/
 # Jest coverage & cache
 jest_coverage/
 .jest-cache/
+
+# In-browser Soroban host build output (packages/sandbox-host/build.sh)
+frontend/public/sandbox-host/

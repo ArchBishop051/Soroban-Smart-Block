@@ -28,6 +28,7 @@ import {
   ABUSE_PENALTY_PREFIX,
 } from './constants.js';
 import { getRedisClient } from './tokenBucket.js';
+import { safeFetch } from '../safeHttp.js';
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -370,7 +371,7 @@ function notifyCloudflare(endpoint, distinctIps) {
   };
 
   // Fire-and-forget using built-in Node 18+ fetch.
-  fetch(webhookUrl, {
+  safeFetch(webhookUrl, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),

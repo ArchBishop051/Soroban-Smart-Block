@@ -19,7 +19,8 @@ import { readFile } from "fs/promises";
 
 // Import the real database module from indexer
 const __dir = path.dirname(fileURLToPath(import.meta.url));
-const indexerDir = path.resolve(__dir, "../indexer");
+// INDEXER_DIR lets the preview seed Job run from inside the indexer image.
+const indexerDir = process.env.INDEXER_DIR || path.resolve(__dir, "../indexer");
 
 // Dynamically import db.js from indexer
 const { db } = await import(path.resolve(indexerDir, "src/db.js"));

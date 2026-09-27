@@ -88,6 +88,13 @@ function getConcLimit(tier, ws) {
  * @type {import('express').RequestHandler}
  */
 async function concurrentRequestLimiter(req, res, next) {
+  if (
+    req.method === "GET" &&
+    ["/health", "/api/health", "/health/live", "/health/ready"].includes(req.path)
+  ) {
+    return next();
+  }
+
   const rateContext = req.rateContext ?? {
     clientId: 'unknown',
     tier: 'unauthenticated',

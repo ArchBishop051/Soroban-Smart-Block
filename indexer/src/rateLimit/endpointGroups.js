@@ -33,6 +33,7 @@
  *   pro:             200
  *   enterprise:      500
  */
+import { get as getRuntimeConfig } from '../runtimeConfig.js';
 
 // ── Endpoint group definitions ────────────────────────────────────────────────
 
@@ -172,7 +173,9 @@ export function resolveEndpointGroup(path) {
  */
 export function getTierLimits(group, tier, overrideRpm = null) {
   const baseLimits = GROUP_TIER_LIMITS[group] ?? GROUP_TIER_LIMITS.default;
-  const baseRpm = baseLimits[tier] ?? baseLimits.unauthenticated ?? 60;
+  // Runtime override (#894): read live on every call so changes apply without a restart.
+  const runtimeRpm = getRuntimeConfig('rateLimitOverrides')?.[group]?.[tier];
+  const baseRpm = runtimeRpm ?? baseLimits[tier] ?? baseLimits.unauthenticated ?? 60;
 
   const rpm =
     typeof overrideRpm === 'number' && Number.isFinite(overrideRpm) && overrideRpm > 0

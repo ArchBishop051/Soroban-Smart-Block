@@ -29,12 +29,17 @@ fi
 # `|` and `/`, which would force multiple escapes.
 ESCAPED_URL=$(printf '%s' "$VITE_API_URL" | sed 's/[\\&@]/\\&/g')
 
-# Substituting in /usr/share/nginx/html/assets/*.js is sufficient because
+# Substituting in /tmp/html/assets/*.js is sufficient because
 # `vite build` emits every environment-influenced constant into the hashed
 # JS chunks. We deliberately scope to /assets/ to avoid touching /index.html
 # or other static files that may contain $-tokens (e.g. JSON-LD templates).
-if [ -d /usr/share/nginx/html/assets ]; then
-    find /usr/share/nginx/html/assets -type f -name "*.js" -exec \
+# The root filesystem may be read-only (#930): stage the bundle into /tmp
+# (a tmpfs in hardened deployments) and serve it from there — see nginx.conf.
+rm -rf /tmp/html
+cp -R /usr/share/nginx/html /tmp/html
+
+if [ -d /tmp/html/assets ]; then
+    find /tmp/html/assets -type f -name "*.js" -exec \
         sed -i "s@${PLACEHOLDER}@${ESCAPED_URL}@g" {} +
 fi
 

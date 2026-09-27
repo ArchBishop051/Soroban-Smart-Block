@@ -22,6 +22,24 @@ from `indexer/openapi.yaml`). Try endpoints live in the
   durability tier (temporary, persistent, instance).
 - `GET /api/assets/{issuer}/{code}` — classic Stellar asset metadata resolved
   via Horizon, cached for 24 hours.
+- `GET /api/export/events` now supports optional `schedule=daily|weekly` and
+  `email=` delivery metadata for recurring CSV exports.
+
+## [v1.0.0]
+
+### Added
+
+- First formal API version and stable route contract for the public HTTP API.
+- `GET /api/events`, `GET /api/contracts/:id`, and wallet export flows stabilized
+  under the v1 compatibility promise.
+- Documentation references now include a versioned changelog and policy for
+  scheduled migration away from deprecated routes. See the
+  [deprecation policy](./deprecation-policy.md) for full migration details.
+
+### Changed
+
+- API behavior documented as versioned and semver-scoped for future breaking
+  releases.
 
 ## [0.1.0]
 

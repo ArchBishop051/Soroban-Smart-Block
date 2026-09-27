@@ -289,6 +289,39 @@ Ramp-down:    5 minutes
 
 ---
 
+## Workload Scenarios (local network)
+
+`workloads/` holds a seeded workload generator that drives realistic traffic
+through a local `stellar/quickstart` network and records what the indexer should
+end up with.
+
+| File | Purpose |
+|------|---------|
+| `workloads/dsl.ts` | Step/expectation types, seeded PRNG (mulberry32), `WorkloadBuilder` |
+| `workloads/scenarios.ts` | Scenario library: setup, token lifecycle (SAC), failures, explorer registry, ticket, upgrade, TTL extend + restore, fee bump + multi-auth, AMM/NFT/lending/smart-wallet, bursts |
+| `workloads/run.ts` | Executes the plan with the `stellar` CLI and writes `workloads/manifest.json` |
+| `test/workloads/manifest.test.js` | Asserts indexed/decoded events for every scenario against the manifest |
+
+```bash
+docker compose up -d stellar-quickstart postgres indexer   # from the repo root
+cargo build --target wasm32-unknown-unknown --release -p soroban-explorer-contract
+(cd ../contracts/ticket && cargo build --target wasm32-unknown-unknown --release)
+make e2e-scenarios                     # WORKLOAD_SEED=42 by default
+npx tsx workloads/run.ts --seed 7 --dry-run   # print the plan without submitting
+```
+
+- **Determinism:** the same seed always produces the same steps and amounts.
+- **Assertions are content-based** (contract, event name, minimum count), never
+  ledger numbers, so ledger timing variance does not cause flakes.
+- **Optional contracts:** AMM, NFT, lending mock, smart wallet, custom SEP-41 and
+  upgradable contracts are not built in this repo. Point
+  `WORKLOAD_WASM_{AMM,NFT,LENDING,WALLET,TOKEN,UPGRADABLE}` at WASM files to
+  enable those scenarios; otherwise they are recorded as skipped in the manifest.
+- **Environment:** `WORKLOAD_RPC_URL` (default `http://localhost:8000/soroban/rpc`),
+  `WORKLOAD_PASSPHRASE`, `INDEXER_URL`, `WORKLOAD_INDEX_TIMEOUT_MS`.
+- **CI:** the `workload-scenarios` job in `.github/workflows/e2e-nightly.yml`
+  runs nightly with a 15-minute budget for the scenario step.
+
 ## Setup & Configuration
 
 ### Environment Variables

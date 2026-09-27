@@ -36,6 +36,9 @@ export interface ApiResponse<T> {
   meta: ResponseMetadata;
 }
 
+export { verifyEventInclusion } from "./verify.js";
+export type { EventInclusionProof } from "./verify.js";
+
 export class ExplorerApiClient {
   private baseUrl: string;
   private apiKey?: string;
@@ -247,3 +250,5 @@ export function createClient(config?: ClientConfig): ExplorerApiClient {
 }
 
 export default ExplorerApiClient;
+
+export * from './verify';

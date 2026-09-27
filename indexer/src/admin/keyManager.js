@@ -8,6 +8,7 @@
  * Callers (route handlers) are responsible for mapping errors to HTTP responses.
  */
 
+import { normaliseScopes } from '../auth/scopes.js';
 import crypto from 'crypto';
 import bcrypt from 'bcryptjs';
 import { pool } from '../db.js';
@@ -102,11 +103,24 @@ async function listKeys(page = 1, limit = 50) {
  * @param {string[]} [data.allowed_endpoints]
  * @param {string} [data.expires_at]   — ISO-8601 timestamp
  * @param {string} [data.email]        — owner email (self-service "my keys" grouping)
+ * @param {string[]} [data.scopes]      — defaults to read-only (DEFAULT_SCOPES)
+ * @param {string[]} [data.allowed_contract_ids] — restrict the key to these contracts
+ * @param {string[]} [data.allowed_origins]      — restrict browser use to these origins
+ * @param {object} [options]
+ * @param {boolean} [options.allowAdmin=false] — whether `admin:*` may be granted
  * @returns {Promise<{ key: string, record: object }>}
  */
-async function createKey(data) {
-  const { name, tier = 'free', rate_limit, daily_limit, allowed_ips, allowed_endpoints, expires_at, email, verified = false } =
-    data ?? {};
+async function createKey(data, { allowAdmin = false } = {}) {
+  const {
+    name, tier = 'free', rate_limit, daily_limit, allowed_ips, allowed_endpoints, expires_at, email, verified = false,
+    scopes: requestedScopes, allowed_contract_ids, allowed_origins,
+  } = data ?? {};
+  const scopes = normaliseScopes(requestedScopes, { allowAdmin });
+  for (const [field, value] of [['allowed_contract_ids', allowed_contract_ids], ['allowed_origins', allowed_origins]]) {
+    if (value !== undefined && value !== null && (!Array.isArray(value) || value.some((v) => typeof v !== 'string' || !v))) {
+      throw new Error(`${field} must be an array of non-empty strings`);
+    }
+  }
 
   // Validate required fields.
   if (!name || typeof name !== 'string' || name.trim() === '') {
@@ -138,10 +152,12 @@ async function createKey(data) {
 
   const { rows } = await pool.query(
     `INSERT INTO api_keys
-       (name, email, key_hash, key_prefix, tier, rate_limit, daily_limit, allowed_ips, allowed_endpoints, expires_at, verified)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+       (name, email, key_hash, key_prefix, tier, rate_limit, daily_limit, allowed_ips, allowed_endpoints, expires_at, verified,
+        scopes, allowed_contract_ids, allowed_origins)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
      RETURNING id, name, email, key_prefix, tier, rate_limit, daily_limit,
                allowed_ips, allowed_endpoints, expires_at,
+               scopes, allowed_contract_ids, allowed_origins,
                revoked, last_used_at, usage_count, created_at, updated_at`,
     [
       name.trim(),
@@ -155,6 +171,9 @@ async function createKey(data) {
       allowed_endpoints ? JSON.stringify(allowed_endpoints) : null,
       expires_at ?? null,
       verified,
+      scopes,
+      allowed_contract_ids?.length ? allowed_contract_ids : null,
+      allowed_origins?.length ? allowed_origins : null,
     ],
   );
 
