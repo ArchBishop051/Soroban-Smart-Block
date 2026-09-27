@@ -1,5 +1,6 @@
 import js from "@eslint/js";
 import tseslint from "typescript-eslint";
+import designTokensRule from "./eslint-rules/design-tokens.js";
 
 export default [
   js.configs.recommended,
@@ -8,6 +9,26 @@ export default [
     rules: {
       "@typescript-eslint/no-unused-vars": ["error", { argsIgnorePattern: "^_" }],
       "@typescript-eslint/no-explicit-any": "warn",
+      "design-tokens/enforce": ["error", {
+        allowedFiles: [
+          "**/ContractDependencyGraph3D.tsx",
+          "**/AddressConnectionGraph.tsx",
+          "**/DependencyVisualizer.tsx",
+          "**/FileExplorer.tsx",
+          "**/Editor.tsx",
+          "**/Terminal.tsx",
+          "**/*.test.{ts,tsx}",
+          "**/*.stories.{ts,tsx}",
+          "**/eslint-rules/**",
+        ],
+      }],
+    },
+    plugins: {
+      "design-tokens": {
+        rules: {
+          enforce: designTokensRule,
+        },
+      },
     },
   },
   {

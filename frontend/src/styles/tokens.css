@@ -1,0 +1,208 @@
+/**
+ * Design Tokens - CSS Variables
+ * 
+ * This file defines the design system tokens for the Soroban Smart Block Explorer.
+ * All styling should use these tokens instead of hardcoded values.
+ * 
+ * Themes:
+ * - Default (dark mode)
+ * - Light mode (data-theme="light")
+ * - High contrast (data-theme="high-contrast")
+ */
+
+:root {
+  /* === Colors === */
+  
+  /* Semantic colors - dark mode default */
+  --color-bg-primary: #0d1117;
+  --color-bg-secondary: #161b22;
+  --color-bg-tertiary: #21262d;
+  --color-bg-elevated: #1c2128;
+  
+  --color-border-default: #30363d;
+  --color-border-muted: #21262d;
+  --color-border-focus: #58a6ff;
+  
+  --color-text-primary: #e6edf3;
+  --color-text-secondary: #8b949e;
+  --color-text-tertiary: #6e7681;
+  --color-text-inverse: #0d1117;
+  
+  --color-accent-primary: #58a6ff;
+  --color-accent-hover: #79c0ff;
+  --color-accent-active: #1f6feb;
+  
+  --color-success: #3fb950;
+  --color-success-bg: rgba(63, 185, 80, 0.15);
+  --color-warning: #d29922;
+  --color-warning-bg: rgba(210, 153, 34, 0.15);
+  --color-error: #f85149;
+  --color-error-bg: rgba(248, 81, 73, 0.15);
+  --color-info: #58a6ff;
+  --color-info-bg: rgba(88, 166, 255, 0.15);
+  
+  /* === Spacing === */
+  
+  --spacing-0: 0;
+  --spacing-1: 4px;
+  --spacing-2: 8px;
+  --spacing-3: 12px;
+  --spacing-4: 16px;
+  --spacing-5: 20px;
+  --spacing-6: 24px;
+  --spacing-8: 32px;
+  --spacing-10: 40px;
+  --spacing-12: 48px;
+  --spacing-16: 64px;
+  --spacing-20: 80px;
+  --spacing-24: 96px;
+  
+  /* === Typography === */
+  
+  --font-family-base: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+  --font-family-mono: "SF Mono", "Segoe UI Mono", "Roboto Mono", monospace;
+  
+  --font-size-xs: 11px;
+  --font-size-sm: 12px;
+  --font-size-base: 14px;
+  --font-size-md: 16px;
+  --font-size-lg: 18px;
+  --font-size-xl: 20px;
+  --font-size-2xl: 24px;
+  --font-size-3xl: 32px;
+  
+  --font-weight-normal: 400;
+  --font-weight-medium: 500;
+  --font-weight-semibold: 600;
+  --font-weight-bold: 700;
+  
+  --line-height-tight: 1.25;
+  --line-height-normal: 1.5;
+  --line-height-relaxed: 1.75;
+  
+  --letter-spacing-tight: -0.02em;
+  --letter-spacing-normal: 0;
+  --letter-spacing-wide: 0.03em;
+  
+  /* === Border Radius === */
+  
+  --radius-none: 0;
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+  --radius-xl: 12px;
+  --radius-2xl: 16px;
+  --radius-full: 9999px;
+  
+  /* === Elevation / Shadows === */
+  
+  --shadow-none: none;
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.05);
+  --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+  --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
+  --shadow-xl: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04);
+  
+  /* === Motion / Transitions === */
+  
+  --duration-instant: 50ms;
+  --duration-fast: 150ms;
+  --duration-normal: 200ms;
+  --duration-slow: 300ms;
+  --duration-slower: 500ms;
+  
+  --ease-linear: linear;
+  --ease-in: cubic-bezier(0.4, 0, 1, 1);
+  --ease-out: cubic-bezier(0, 0, 0.2, 1);
+  --ease-in-out: cubic-bezier(0.4, 0, 0.2, 1);
+  
+  /* === Z-Index === */
+  
+  --z-index-dropdown: 1000;
+  --z-index-sticky: 1020;
+  --z-index-fixed: 1030;
+  --z-index-modal-backdrop: 1040;
+  --z-index-modal: 1050;
+  --z-index-popover: 1060;
+  --z-index-tooltip: 1070;
+  
+  /* === Component-specific === */
+  
+  --button-height-sm: 28px;
+  --button-height-md: 32px;
+  --button-height-lg: 40px;
+  
+  --input-height-sm: 28px;
+  --input-height-md: 32px;
+  --input-height-lg: 40px;
+  
+  --table-cell-padding: 12px;
+  --table-header-height: 40px;
+  
+  --badge-height: 20px;
+}
+
+/* === Light Theme === */
+[data-theme="light"] {
+  --color-bg-primary: #f8fafc;
+  --color-bg-secondary: #ffffff;
+  --color-bg-tertiary: #f1f5f9;
+  --color-bg-elevated: #ffffff;
+  
+  --color-border-default: #d1d5db;
+  --color-border-muted: #e5e7eb;
+  --color-border-focus: #2563eb;
+  
+  --color-text-primary: #111827;
+  --color-text-secondary: #6b7280;
+  --color-text-tertiary: #9ca3af;
+  --color-text-inverse: #ffffff;
+  
+  --color-accent-primary: #2563eb;
+  --color-accent-hover: #3b82f6;
+  --color-accent-active: #1d4ed8;
+  
+  --color-success: #047857;
+  --color-success-bg: rgba(4, 120, 87, 0.1);
+  --color-warning: #d97706;
+  --color-warning-bg: rgba(217, 119, 6, 0.1);
+  --color-error: #dc2626;
+  --color-error-bg: rgba(220, 38, 38, 0.1);
+  --color-info: #2563eb;
+  --color-info-bg: rgba(37, 99, 235, 0.1);
+}
+
+/* === High Contrast Theme === */
+[data-theme="high-contrast"] {
+  --color-bg-primary: #000000;
+  --color-bg-secondary: #000000;
+  --color-bg-tertiary: #000000;
+  --color-bg-elevated: #000000;
+  
+  --color-border-default: #ffffff;
+  --color-border-muted: #ffffff;
+  --color-border-focus: #ffffff;
+  
+  --color-text-primary: #ffffff;
+  --color-text-secondary: #e0e0e0;
+  --color-text-tertiary: #b0b0b0;
+  --color-text-inverse: #000000;
+  
+  --color-accent-primary: #ffff00;
+  --color-accent-hover: #ffff00;
+  --color-accent-active: #ffff00;
+  
+  --color-success: #00ff00;
+  --color-success-bg: rgba(0, 255, 0, 0.2);
+  --color-warning: #ffff00;
+  --color-warning-bg: rgba(255, 255, 0, 0.2);
+  --color-error: #ff0000;
+  --color-error-bg: rgba(255, 0, 0, 0.2);
+  --color-info: #00ffff;
+  --color-info-bg: rgba(0, 255, 255, 0.2);
+  
+  --shadow-none: none;
+  --shadow-sm: none;
+  --shadow-md: none;
+  --shadow-lg: none;
+  --shadow-xl: none;
+}
