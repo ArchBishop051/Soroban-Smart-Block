@@ -1,0 +1,101 @@
+# Chaos Mesh experiments for staging (#939). Every experiment is confined to
+# the soroban-explorer-staging namespace and carries a bounded duration; abort
+# any of them with `kubectl delete -f` or `deploy/chaos/run.sh abort`.
+apiVersion: chaos-mesh.org/v1alpha1
+kind: PodChaos
+metadata: {name: kill-ingest-leader, namespace: soroban-explorer-staging}
+spec:
+  action: pod-kill
+  mode: one
+  selector:
+    namespaces: [soroban-explorer-staging]
+    labelSelectors: {role: ingest}
+---
+apiVersion: chaos-mesh.org/v1alpha1
+kind: PodChaos
+metadata: {name: kill-api-pods, namespace: soroban-explorer-staging}
+spec:
+  action: pod-kill
+  mode: fixed-percent
+  value: "50"
+  selector:
+    namespaces: [soroban-explorer-staging]
+    labelSelectors: {role: api}
+---
+apiVersion: chaos-mesh.org/v1alpha1
+kind: PodChaos
+metadata: {name: postgres-primary-failover, namespace: soroban-explorer-staging}
+spec:
+  action: pod-kill
+  mode: one
+  selector:
+    namespaces: [soroban-explorer-staging]
+    labelSelectors: {cnpg.io/instanceRole: primary}
+---
+apiVersion: chaos-mesh.org/v1alpha1
+kind: NetworkChaos
+metadata: {name: rpc-partition, namespace: soroban-explorer-staging}
+spec:
+  action: partition
+  mode: all
+  direction: to
+  duration: 2m
+  selector:
+    namespaces: [soroban-explorer-staging]
+    labelSelectors: {role: ingest}
+  externalTargets: [soroban-testnet.stellar.org, rpc.ankr.com, soroban-rpc.mainnet.stellar.gateway.fm]
+---
+apiVersion: chaos-mesh.org/v1alpha1
+kind: NetworkChaos
+metadata: {name: postgres-latency, namespace: soroban-explorer-staging}
+spec:
+  action: delay
+  mode: all
+  duration: 5m
+  delay: {latency: 500ms, jitter: 50ms}
+  direction: to
+  selector:
+    namespaces: [soroban-explorer-staging]
+    labelSelectors: {role: api}
+  target:
+    mode: all
+    selector:
+      namespaces: [soroban-explorer-staging]
+      labelSelectors: {app.kubernetes.io/name: postgres}
+---
+apiVersion: chaos-mesh.org/v1alpha1
+kind: PodChaos
+metadata: {name: redis-loss, namespace: soroban-explorer-staging}
+spec:
+  action: pod-failure
+  mode: all
+  duration: 3m
+  selector:
+    namespaces: [soroban-explorer-staging]
+    labelSelectors: {app.kubernetes.io/name: redis}
+---
+apiVersion: chaos-mesh.org/v1alpha1
+kind: TimeChaos
+metadata: {name: clock-skew, namespace: soroban-explorer-staging}
+spec:
+  mode: one
+  timeOffset: "-5m"
+  duration: 5m
+  selector:
+    namespaces: [soroban-explorer-staging]
+    labelSelectors: {role: ingest}
+---
+apiVersion: chaos-mesh.org/v1alpha1
+kind: IOChaos
+metadata: {name: worker-disk-full, namespace: soroban-explorer-staging}
+spec:
+  action: fault
+  mode: one
+  volumePath: /tmp
+  path: /tmp/**
+  errno: 28   # ENOSPC
+  percent: 100
+  duration: 3m
+  selector:
+    namespaces: [soroban-explorer-staging]
+    labelSelectors: {role: ingest}

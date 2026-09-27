@@ -2,9 +2,20 @@ import { logger } from "./logger.js";
 /**
  * Zero-downtime migration runner.
  *
- * Reads all *.sql files from indexer/migrations/ ordered by filename prefix,
- * skips migrations already recorded in schema_migrations, and runs only the
- * pending ones — each inside its own transaction so a failure is atomic.
+ * Future schema changes should follow the phased pattern below:
+ *
+ *   -- MIGRATION PHASE: add-column
+ *   ALTER TABLE events ADD COLUMN IF NOT EXISTS new_col TEXT;
+ *
+ *   -- MIGRATION PHASE: backfill
+ *   UPDATE events SET new_col = '...' WHERE new_col IS NULL;
+ *
+ *   -- MIGRATION PHASE: finalize
+ *   ALTER TABLE events ALTER COLUMN new_col SET DEFAULT '...';
+ *
+ * This prevents long lock windows on hot tables by keeping each phase small,
+ * marking online-safe DDL separately from row updates, and avoiding a single
+ * giant ALTER TABLE / CREATE INDEX transaction for production data sets.
  */
 import { readdir, readFile } from "fs/promises";
 import path from "path";
@@ -15,21 +26,140 @@ const MIGRATIONS_DIR = path.resolve(
   "../migrations",
 );
 
+// Known grandfathered duplicate prefixes that cannot be renamed without
+// re-running against existing databases.
+const LEGACY_PREFIX_COUNTS = {
+  "021": 2,
+  "028": 4,
+  "029": 2,
+  "030": 2,
+  "031": 2,
+};
+
+/**
+ * Validates that no new migrations share a numeric prefix.
+ */
+export async function validateMigrationPrefixes() {
+  const files = await readdir(MIGRATIONS_DIR);
+  const prefixMap = new Map();
+
+  for (const file of files) {
+    const match = file.match(/^(\d+)/);
+    if (!match) continue;
+    if (!/\.(sql|js)$/.test(file)) continue;
+
+    const prefix = match[1];
+    if (!prefixMap.has(prefix)) {
+      prefixMap.set(prefix, []);
+    }
+    prefixMap.get(prefix).push(file);
+  }
+
+  const duplicates = [];
+  for (const [prefix, fileList] of prefixMap.entries()) {
+    const allowed = LEGACY_PREFIX_COUNTS[prefix] ?? 1;
+    if (fileList.length > allowed) {
+      duplicates.push(
+        `prefix ${prefix} has ${fileList.length} files (max allowed: ${allowed}): ${fileList.join(", ")}`,
+      );
+    }
+  }
+
+  if (duplicates.length > 0) {
+    throw new Error(
+      `Duplicate migration prefix detected:\n  ${duplicates.join("\n  ")}`,
+    );
+  }
+}
+
 // `CREATE INDEX CONCURRENTLY` cannot run inside a transaction block (and
 // Postgres rejects it if it isn't the sole statement in its query message —
 // the simple query protocol treats multiple ;-separated statements as one
 // implicit transaction). Migrations that use it are split into individual
 // statements and run outside BEGIN/COMMIT, each as its own query.
 const CONCURRENTLY_RE = /\bCONCURRENTLY\b/i;
+const PHASE_RE = /^\s*--\s*MIGRATION\s+PHASE\s*:\s*(.+?)\s*$/i;
+const LOCKING_DDL_RE = /\b(ALTER\s+TABLE|CREATE\s+INDEX|DROP\s+INDEX|ALTER\s+TYPE|ALTER\s+COLUMN|CREATE\s+UNLOGGED\s+TABLE|DROP\s+COLUMN|RENAME\s+COLUMN)\b/i;
 
-function splitStatements(sql) {
+function stripComments(sql) {
   return sql
     .split("\n")
     .filter((line) => !line.trim().startsWith("--"))
-    .join("\n")
+    .join("\n");
+}
+
+export function splitStatements(sql) {
+  return stripComments(sql)
     .split(";")
     .map((s) => s.trim())
     .filter(Boolean);
+}
+
+export function parseMigrationPlan(sql) {
+  const lines = sql.split(/\r?\n/);
+  const phases = [{ name: "default", mode: "transactional", statements: [] }];
+  let current = phases[0];
+
+  for (const rawLine of lines) {
+    const line = rawLine.trim();
+    const phaseMatch = line.match(PHASE_RE);
+    if (phaseMatch) {
+      const name = phaseMatch[1].trim();
+      const next = { name, mode: /add-column|backfill|finalize|online/i.test(name) ? "online" : "transactional", statements: [] };
+      phases.push(next);
+      current = next;
+      continue;
+    }
+
+    if (!line || line.startsWith("--")) continue;
+    const statement = line.trim();
+    if (!statement) continue;
+    current.statements.push(statement);
+  }
+
+  const normalized = phases.filter((phase) => phase.statements.length > 0);
+  if (!normalized.length) {
+    return { phases: [{ name: "default", mode: "transactional", statements: splitStatements(sql) }], lockRisk: false };
+  }
+
+  for (const phase of normalized) {
+    const statements = phase.statements.join(";").split(";").map((s) => s.trim()).filter(Boolean);
+    phase.statements = statements;
+    phase.lockRisk = statements.some((statement) => LOCKING_DDL_RE.test(statement) || CONCURRENTLY_RE.test(statement));
+    if (phase.lockRisk && phase.mode !== "online") {
+      phase.mode = "online";
+    }
+  }
+
+  return { phases: normalized, lockRisk: normalized.some((phase) => phase.lockRisk) };
+}
+
+export async function executePhase(pool, phase, file) {
+  const statements = phase.statements || [];
+  if (!statements.length) return;
+
+  if (phase.mode === "online") {
+    for (const statement of statements) {
+      await pool.query(statement);
+    }
+    logger.info(`[migrations] applied ${file} :: ${phase.name} (online)`);
+    return;
+  }
+
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    for (const statement of statements) {
+      await client.query(statement);
+    }
+    await client.query("COMMIT");
+    logger.info(`[migrations] applied ${file} :: ${phase.name}`);
+  } catch (err) {
+    await client.query("ROLLBACK");
+    throw new Error(`Migration ${file} phase ${phase.name} failed: ${err.message}`);
+  } finally {
+    client.release();
+  }
 }
 
 /**
@@ -37,6 +167,8 @@ function splitStatements(sql) {
  * @param {import('pg').Pool} pool
  */
 export async function runMigrations(pool) {
+  await validateMigrationPrefixes();
+
   // Ensure the tracking table exists (bootstraps itself on first run)
   await pool.query(`
     CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -59,43 +191,26 @@ export async function runMigrations(pool) {
     if (appliedSet.has(file)) continue;
 
     const sql = await readFile(path.join(MIGRATIONS_DIR, file), "utf8");
+    const plan = parseMigrationPlan(sql);
 
-    if (CONCURRENTLY_RE.test(sql)) {
-      // No transaction wrapper — each statement commits (or fails) on its
-      // own. Statements use IF NOT EXISTS so a re-run after a partial
-      // failure is safe.
-      try {
-        for (const statement of splitStatements(sql)) {
-          await pool.query(statement);
-        }
-        await pool.query(
-          "INSERT INTO schema_migrations (version) VALUES ($1)",
-          [file],
-        );
-        logger.info(`[migrations] applied ${file} (non-transactional)`);
-        ran++;
-      } catch (err) {
-        throw new Error(`Migration ${file} failed: ${err.message}`);
-      }
-      continue;
+    if (plan.lockRisk || CONCURRENTLY_RE.test(sql)) {
+      logger.warn(
+        `[migrations] ${file} includes lock-prone DDL; running in phased, online-safe steps to reduce table locks`,
+      );
     }
 
-    const client = await pool.connect();
     try {
-      await client.query("BEGIN");
-      await client.query(sql);
-      await client.query(
+      for (const phase of plan.phases) {
+        await executePhase(pool, phase, file);
+      }
+      await pool.query(
         "INSERT INTO schema_migrations (version) VALUES ($1)",
         [file],
       );
-      await client.query("COMMIT");
       logger.info(`[migrations] applied ${file}`);
       ran++;
     } catch (err) {
-      await client.query("ROLLBACK");
       throw new Error(`Migration ${file} failed: ${err.message}`);
-    } finally {
-      client.release();
     }
   }
 

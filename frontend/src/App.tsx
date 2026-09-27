@@ -1,8 +1,9 @@
 import { lazy, Suspense } from "react";
 import { Routes, Route } from "react-router-dom";
+import { useTranslation } from "react-i18next";
 import Nav from "./components/Nav";
 import ErrorBoundary from "./components/ErrorBoundary";
-import { ClientOnly } from "./components/ClientOnly";
+import { useTranslation } from "./i18n";
 
 const Home = lazy(() => import("./pages/Home"));
 const RegistryPage = lazy(() => import("./pages/RegistryPage"));
@@ -10,6 +11,7 @@ const RegisterContractPage = lazy(() => import("./pages/RegisterContractPage"));
 const ContractPage = lazy(() => import("./pages/ContractPage"));
 const WalletPage = lazy(() => import("./pages/WalletPage"));
 const EventPage = lazy(() => import("./pages/EventPage"));
+const TransactionPage = lazy(() => import("./pages/TransactionPage"));
 const SearchPage = lazy(() => import("./pages/SearchPage"));
 const XdrInspector = lazy(() => import("./pages/XdrInspector"));
 const RpcMetricsDashboard = lazy(() => import("./pages/RpcMetricsDashboard"));
@@ -21,16 +23,18 @@ const SetupPage = lazy(() => import("./pages/SetupPage"));
 const BatchMultiCall = lazy(() => import("./pages/BatchMultiCall"));
 const SubInvocationPage = lazy(() => import("./pages/SubInvocationPage"));
 const RateLimitDashboard = lazy(() => import("./pages/RateLimitDashboard"));
+const AdminRuntimeConfigPage = lazy(() => import("./pages/AdminRuntimeConfigPage"));
 const AuditLogPage = lazy(() => import("./pages/AuditLogPage"));
 const NftGallery = lazy(() => import("./pages/NftGallery"));
 const RegistrationSuccessPage = lazy(() => import("./pages/RegistrationSuccessPage"));
 const AbiDiffPage = lazy(() => import("./pages/AbiDiffPage"));
 const DashboardPage = lazy(() => import("./pages/DashboardPage"));
 const Status = lazy(() => import("./pages/Status"));
-const FilterBuilder = lazy(() => import("./pages/FilterBuilder"));
+const AdminJobsPage = lazy(() => import("./pages/AdminJobsPage"));
 
 function Fallback() {
-  return <p style={{ padding: 32, textAlign: "center", color: "var(--muted)" }}>Loading…</p>;
+  const { t } = useTranslation();
+  return <p style={{ padding: 32, textAlign: "center", color: "var(--muted)" }}>{t("app.loading")}</p>;
 }
 
 export default function App() {
@@ -51,18 +55,22 @@ export default function App() {
             <Route path="/contract/:id/abi-diff" element={<AbiDiffPage />} />
             <Route path="/wallet/:address" element={<ClientOnly><WalletPage /></ClientOnly>} />
             <Route path="/event/:seq" element={<EventPage />} />
+            <Route path="/tx/:hash" element={<TransactionPage />} />
             <Route path="/search" element={<SearchPage />} />
             <Route path="/xdr" element={<ClientOnly><XdrInspector /></ClientOnly>} />
             <Route path="/rpc-metrics" element={<RpcMetricsDashboard />} />
-            <Route path="/graph" element={<ClientOnly><GraphPage /></ClientOnly>} />
-            <Route path="/sandbox" element={<ClientOnly><Sandbox /></ClientOnly>} />
-            <Route path="/sandbox/:id" element={<ClientOnly><SharedSandbox /></ClientOnly>} />
-            <Route path="/setup" element={<ClientOnly><SetupPage /></ClientOnly>} />
+            <Route path="/graph" element={<GraphPage />} />
+            <Route path="/sandbox" element={<Sandbox />} />
+            <Route path="/sandbox/:id" element={<SharedSandbox />} />
+            <Route path="/watchlist" element={<WatchlistPage />} />
+            <Route path="/setup" element={<SetupPage />} />
             <Route path="/batch" element={<BatchMultiCall />} />
             <Route path="/sub-invocations" element={<SubInvocationPage />} />
             <Route path="/admin/rate-limits" element={<RateLimitDashboard />} />
+            <Route path="/admin/runtime-config" element={<AdminRuntimeConfigPage />} />
             {/* Issue #737: admin audit-trail UI */}
             <Route path="/admin/audit-log" element={<AuditLogPage />} />
+            <Route path="/admin/jobs" element={<AdminJobsPage />} />
             <Route path="/nft/:contractId" element={<NftGallery />} />
             <Route path="/dashboard" element={<DashboardPage />} />
             <Route path="/status" element={<Status />} />

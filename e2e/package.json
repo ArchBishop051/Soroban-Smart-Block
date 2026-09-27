@@ -6,6 +6,7 @@
   "scripts": {
     "test:api": "node --test test/api/integration.test.js",
     "test:chaos": "node --test test/chaos/fault-injection.test.js",
+    "test:parity": "node --test test/parity/sandbox-host.parity.test.js",
     "test:property": "vitest run",
     "test:playwright": "playwright test",
     "test:playwright:debug": "playwright test --debug",
@@ -14,7 +15,9 @@
     "test:visual": "percy exec -- playwright test test/visual/percy.spec.ts",
     "test:visual-regression": "playwright test --config=playwright.visual.config.ts --project=chromium",
     "test:e2e": "npm run test:api && npm run test:chaos && npm run test:property && npm run test:playwright",
-    "test:full": "npm run test:e2e && npm run test:synthetic && npm run test:visual && npm run test:k6"
+    "test:full": "npm run test:e2e && npm run test:synthetic && npm run test:visual && npm run test:k6",
+    "workload": "tsx workloads/run.ts",
+    "test:scenarios": "node --test test/workloads/manifest.test.js"
   },
   "dependencies": {
     "@percy/playwright": "^1.0.0",
@@ -23,5 +26,8 @@
     "fast-check": "^3.0.0",
     "node-fetch": "^3.3.2",
     "vitest": "^4.1.9"
+  },
+  "devDependencies": {
+    "tsx": "^4.23.15"
   }
 }

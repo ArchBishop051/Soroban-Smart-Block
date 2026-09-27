@@ -69,7 +69,12 @@ jobs:
       #    acceptance criteria 3 and 4.
       - name: Boot container and verify headers + SPA routing
         run: |
+          # Hardened runtime profile (#930): read-only rootfs, arbitrary non-root
+          # uid, no capabilities, no privilege escalation.
           docker run -d --rm --name frontend-ci \
+            --read-only --user 65532 --cap-drop ALL \
+            --security-opt no-new-privileges \
+            --tmpfs /tmp --tmpfs /var/cache/nginx \
             -p 8080:8080 \
             -e VITE_API_URL=https://example.test/api \
             frontend:ci
@@ -119,17 +124,17 @@ jobs:
             sleep 1
           done
 
-          # Walk every JS asset emitted into /usr/share/nginx/html/assets and
+          # Walk every JS asset staged into /tmp/html/assets and
           # confirm none of them still contains the un-substituted placeholder.
           docker exec frontend-ci-rt \
-            sh -c 'find /usr/share/nginx/html/assets -type f -name "*.js" \
+            sh -c 'find /tmp/html/assets -type f -name "*.js" \
                   -exec grep -l "__RUNTIME_VITE_API_URL__" {} +' \
             && (echo "ERROR: placeholder __RUNTIME_VITE_API_URL__ still present in assets" \
                 && exit 1) || true
 
           # And the override string itself must now be present somewhere.
           docker exec frontend-ci-rt \
-            sh -c 'find /usr/share/nginx/html/assets -type f -name "*.js" \
+            sh -c 'find /tmp/html/assets -type f -name "*.js" \
                   -exec grep -l "https://override.example.test/api" {} +' \
             >/dev/null \
             || (echo "ERROR: VITE_API_URL override not found in any JS asset" && exit 1)

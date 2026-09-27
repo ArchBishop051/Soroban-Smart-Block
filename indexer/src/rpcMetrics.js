@@ -20,6 +20,11 @@ const MAX_SAMPLES = config.METRICS_MAX_SAMPLES;
 
 /** @type {Map<string, { latencies: number[], errors: number, total: number, lastLedger: number }>} */
 const store = new Map(RPC_URLS.map((url) => [url, { latencies: [], errors: 0, total: 0, lastLedger: 0 }]));
+const disagreements = new Map(RPC_URLS.map((url) => [url, 0]));
+
+export function recordProviderDisagreement(urls = []) {
+  for (const url of urls) disagreements.set(url, (disagreements.get(url) ?? 0) + 1);
+}
 
 async function probe(url) {
   const server = new SorobanRpc.Server(url, { allowHttp: true });
@@ -57,6 +62,7 @@ function summarise(url) {
     lastLedger,
     sampleCount: latencies.length,
     history: latencies.slice(-60), // last 60 samples for sparkline
+    disagreements: disagreements.get(url) ?? 0,
   };
 }
 

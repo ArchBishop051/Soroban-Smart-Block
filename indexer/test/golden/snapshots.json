@@ -1,0 +1,79 @@
+{
+  "openzeppelin": {
+    "version": "1.0.0",
+    "hash": "00626a4e5d08d490f2aff4bc0a56d4ff49c44e2ee7149d0b26af93fb88aa1c3f",
+    "outputs": [
+      {
+        "module": "ownable",
+        "function": "ownership_transfer_completed",
+        "description": "Ownership transferred to GBBB…BBBB",
+        "role": {
+          "role": "owner",
+          "address": "GBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+          "revoked": false
+        }
+      },
+      {
+        "module": "access_control",
+        "function": "role_granted",
+        "description": "Role minter granted to GAAA…AAAA by GBBB…BBBB",
+        "role": {
+          "role": "minter",
+          "address": "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+          "revoked": false
+        }
+      },
+      {
+        "module": "pausable",
+        "function": "paused",
+        "description": "Contract paused by CCCC…CCCC",
+        "pause": {
+          "paused": true
+        }
+      },
+      {
+        "module": "non_fungible_consecutive",
+        "function": "mint_nft",
+        "description": "3 NFTs (#1–#3) minted to GAAA…AAAA",
+        "nft": {
+          "tokenIds": [
+            1,
+            2,
+            3
+          ],
+          "to": "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+        }
+      }
+    ]
+  },
+  "smart-wallet": {
+    "version": "1.0.0",
+    "hash": "7015a72e2ce94c17ead6b5484e60a5647e103659b694c30e49049b64cc7b614b",
+    "outputs": [
+      {
+        "subject": "signer",
+        "action": "added",
+        "key": "passkey-1",
+        "type": "secp256r1",
+        "expiration": 500,
+        "description": "Smart wallet signer passkey-1 (secp256r1) added, expires at ledger 500"
+      },
+      {
+        "subject": "signer",
+        "action": "removed",
+        "key": "GKEY",
+        "type": "unknown",
+        "expiration": null,
+        "description": "Smart wallet signer GKEY removed"
+      },
+      {
+        "subject": "policy",
+        "action": "added",
+        "key": "CPOLICY",
+        "type": "policy",
+        "expiration": null,
+        "description": "Smart wallet policy CPOLICY added"
+      }
+    ]
+  }
+}

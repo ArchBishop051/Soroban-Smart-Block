@@ -1,0 +1,8 @@
+{
+  "name": "soroban-explorer-extension",
+  "private": true,
+  "version": "0.1.0",
+  "scripts": {
+    "build": "mkdir -p dist && cp manifest.json dist/manifest.json && cp popup.html dist/popup.html && cp popup.js dist/popup.js"
+  }
+}

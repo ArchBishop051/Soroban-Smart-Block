@@ -8,11 +8,96 @@ import TemplateSelector from "../components/TemplateSelector";
 import { initWebContainer, mountFiles, runCommand, SandboxFile } from "../services/webcontainer";
 import { getTemplate } from "../services/templates";
 import { generateSandboxId } from "../services/export";
-import { saveSandbox } from "../services/sandbox-api";
+import { saveSandbox, LocalSandboxHost, SimulationResult, parseArgs, simulateRemote } from "../services/sandbox-api";
 import { createAutoSaver } from "../services/session";
 import { WebContainer } from "@webcontainer/api";
 
 const Editor = lazy(() => import("../components/Editor"));
+
+/** Contract simulation via the RPC proxy or the in-browser Soroban host (#925). */
+const SimulationPanel: React.FC = () => {
+  const hostRef = useRef<LocalSandboxHost | null>(null);
+  const [local, setLocal] = useState(false);
+  const [contractId, setContractId] = useState("");
+  const [fn, setFn] = useState("");
+  const [args, setArgs] = useState("[]");
+  const [busy, setBusy] = useState(false);
+  const [status, setStatus] = useState<string | null>(null);
+  const [result, setResult] = useState<SimulationResult | null>(null);
+
+  const host = async () => {
+    if (!hostRef.current) {
+      hostRef.current = new LocalSandboxHost();
+      const info = await hostRef.current.init();
+      setStatus(`Local host ready (protocol ${info.protocolVersion})`);
+    }
+    return hostRef.current;
+  };
+
+  const withBusy = async (fnc: () => Promise<void>) => {
+    setBusy(true);
+    try {
+      await fnc();
+    } catch (err) {
+      setStatus(`✗ ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const importState = () =>
+    withBusy(async () => {
+      const n = await (await host()).importState(contractId, fn, parseArgs(args));
+      setStatus(`Imported ${n} ledger entries from the network`);
+    });
+
+  const simulate = () =>
+    withBusy(async () => {
+      const a = parseArgs(args);
+      setResult(local ? await (await host()).simulate(contractId, fn, a) : await simulateRemote(contractId, fn, a));
+    });
+
+  return (
+    <div className="preview">
+      <div className="preview-header">Contract simulation</div>
+      <div className="preview-content" style={{ fontSize: "12px", display: "grid", gap: "6px" }}>
+        <label>
+          <input type="checkbox" checked={local} onChange={(e) => setLocal(e.target.checked)} /> Local execution (offline, in-browser host)
+        </label>
+        <input placeholder="Contract ID (C…)" value={contractId} onChange={(e) => setContractId(e.target.value.trim())} />
+        <input placeholder="Function" value={fn} onChange={(e) => setFn(e.target.value.trim())} />
+        <input placeholder='Args (JSON array), e.g. ["G…", 100]' value={args} onChange={(e) => setArgs(e.target.value)} />
+        <div>
+          {local && (
+            <button onClick={importState} disabled={busy || !contractId || !fn}>
+              Import state
+            </button>
+          )}{" "}
+          <button onClick={simulate} disabled={busy || !contractId || !fn}>
+            {busy ? "Working…" : "Simulate"}
+          </button>
+        </div>
+        {status && <div>{status}</div>}
+        {result && (
+          <div data-testid="simulation-result">
+            {result.warnings.map((w) => (
+              <div key={w} style={{ color: "#e5c07b" }}>
+                ⚠ {w}
+              </div>
+            ))}
+            {result.error ? <div style={{ color: "#f48771" }}>✗ {result.error}</div> : <div>Return value (XDR): {result.returnValue}</div>}
+            <div>
+              Budget ({result.mode}): {result.cpuInsns.toLocaleString()} CPU instructions · {result.memBytes.toLocaleString()} bytes memory
+            </div>
+            <div>
+              Events: {result.events.length} · State changes: {result.stateDiff.length}
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
 
 const Sandbox: React.FC = () => {
   const [files, setFiles] = useState<Map<string, SandboxFile>>(new Map());
@@ -158,6 +243,7 @@ const Sandbox: React.FC = () => {
 
         <div className="right-panel">
           <Preview packageJsonContent={files.get("package.json")?.content || ""} />
+          <SimulationPanel />
           <Terminal output={terminalOutput} />
         </div>
       </div>

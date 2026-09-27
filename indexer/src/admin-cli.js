@@ -20,15 +20,10 @@ import http from "http";
 const ADMIN_URL = process.env.ADMIN_URL || "http://localhost:3001";
 const ADMIN_SECRET = process.env.ADMIN_SECRET;
 
-if (!ADMIN_SECRET) {
-  console.error("ERROR: ADMIN_SECRET environment variable is not set.");
-  console.error("Set it in indexer/.env or export it before running this CLI.");
-  process.exit(1);
-}
-
 // ── HTTP request helper ──────────────────────────────────────────────────────
 
 function request(method, path, body) {
+  if (!ADMIN_SECRET) throw new Error("ADMIN_SECRET environment variable is not set");
   return new Promise((resolve, reject) => {
     const url = new URL(path, ADMIN_URL);
     const options = {
@@ -64,6 +59,26 @@ function request(method, path, body) {
     }
     req.end();
   });
+}
+
+function option(args, name, fallback = undefined) {
+  const index = args.indexOf(name);
+  return index >= 0 ? args[index + 1] : fallback;
+}
+
+async function runReplay(args) {
+  const from = Number(option(args, "--from"));
+  const to = Number(option(args, "--to", from));
+  if (!Number.isInteger(from) || !Number.isInteger(to) || from > to) throw new Error("replay requires --from and --to ledger numbers");
+  const { replayRange, diffAgainstProduction } = await import("./replay/replay.js");
+  const fixtureDir = option(args, "--fixture-dir", "tests/fixtures/replay");
+  const result = await replayRange({ from, to, source: option(args, "--source", "fixture"), fixtureDir, record: args.includes("--record") });
+  const output = { from, to, rows: result.rowCount, digest: result.digest };
+  if (args.includes("--diff") && option(args, "--diff") === "prod") {
+    const { db } = await import("./db.js");
+    output.diff = await diffAgainstProduction({ rows: result.rows, db, from, to });
+  }
+  console.log(JSON.stringify(output, null, 2));
 }
 
 // ── Commands ───────────────────────────────────────────────────────────────
@@ -182,13 +197,18 @@ async function main() {
     console.log("  npm run admin -- keys create <name> [--tier pro] [--rate-limit 1000]");
     console.log("  npm run admin -- keys rotate <key-id>");
     console.log("  npm run admin -- integrity-check");
+    console.log("  npm run admin -- replay --from X --to Y --db ephemeral [--diff prod]");
     process.exit(0);
   }
 
   const [command, subcommand, ...rest] = args;
 
   try {
-    if (command === "keys") {
+    if (command === "replay") {
+      await runReplay(args.slice(1));
+    } else if (!ADMIN_SECRET) {
+      throw new Error("ADMIN_SECRET environment variable is not set");
+    } else if (command === "keys") {
       if (subcommand === "list") {
         await listKeys();
       } else if (subcommand === "create") {

@@ -8,6 +8,32 @@ const { checkForReorg } = await import("../src/reorgWorker.js");
 const { db, pool } = await import("../src/db.js");
 
 describe("reorganization detection", () => {
+  it("rewinds to the earliest retained ledger when the latest hash changes", async () => {
+    const rpc = {
+      getLedger: jest.fn(async (ledger) => ({
+        hash: ledger <= 120 ? "new-fork" : "stable-hash",
+      })),
+    };
+    const rollbackFork = jest.fn().mockResolvedValue();
+    const alertReorg = jest.fn().mockResolvedValue();
+    const getStoredHashes = jest.fn().mockResolvedValue([
+      { ledger: "123", hash: "latest-old-hash" },
+      { ledger: "121", hash: "stable-hash" },
+      { ledger: "120", hash: "old-fork-hash" },
+    ]);
+
+    const forkLedger = await checkForReorg(123, "latest-new-hash", {
+      rpc,
+      getStoredHashes,
+      rollbackFork,
+      alertReorg,
+    });
+
+    expect(forkLedger).toBe(120);
+    expect(rollbackFork).toHaveBeenCalledWith(120);
+    expect(alertReorg).toHaveBeenCalledWith(120);
+  });
+
   it("returns the fork after one rollback even when alert delivery fails", async () => {
     const rpc = {
       getLedger: jest.fn(async (ledger) => ({
