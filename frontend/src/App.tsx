@@ -2,6 +2,7 @@ import { lazy, Suspense } from "react";
 import { Routes, Route } from "react-router-dom";
 import Nav from "./components/Nav";
 import ErrorBoundary from "./components/ErrorBoundary";
+import { ClientOnly } from "./components/ClientOnly";
 
 const Home = lazy(() => import("./pages/Home"));
 const RegistryPage = lazy(() => import("./pages/RegistryPage"));
@@ -45,18 +46,18 @@ export default function App() {
             {/* Issue #524: registration success page */}
             <Route path="/contracts/register/success" element={<RegistrationSuccessPage />} />
             <Route path="/contract/:id" element={<ContractPage />} />
-            <Route path="/contract/:id/workspace" element={<DeveloperWorkspace />} />
+            <Route path="/contract/:id/workspace" element={<ClientOnly><DeveloperWorkspace /></ClientOnly>} />
             {/* Issue #521: ABI diff view */}
             <Route path="/contract/:id/abi-diff" element={<AbiDiffPage />} />
-            <Route path="/wallet/:address" element={<WalletPage />} />
+            <Route path="/wallet/:address" element={<ClientOnly><WalletPage /></ClientOnly>} />
             <Route path="/event/:seq" element={<EventPage />} />
             <Route path="/search" element={<SearchPage />} />
-            <Route path="/xdr" element={<XdrInspector />} />
+            <Route path="/xdr" element={<ClientOnly><XdrInspector /></ClientOnly>} />
             <Route path="/rpc-metrics" element={<RpcMetricsDashboard />} />
-            <Route path="/graph" element={<GraphPage />} />
-            <Route path="/sandbox" element={<Sandbox />} />
-            <Route path="/sandbox/:id" element={<SharedSandbox />} />
-            <Route path="/setup" element={<SetupPage />} />
+            <Route path="/graph" element={<ClientOnly><GraphPage /></ClientOnly>} />
+            <Route path="/sandbox" element={<ClientOnly><Sandbox /></ClientOnly>} />
+            <Route path="/sandbox/:id" element={<ClientOnly><SharedSandbox /></ClientOnly>} />
+            <Route path="/setup" element={<ClientOnly><SetupPage /></ClientOnly>} />
             <Route path="/batch" element={<BatchMultiCall />} />
             <Route path="/sub-invocations" element={<SubInvocationPage />} />
             <Route path="/admin/rate-limits" element={<RateLimitDashboard />} />
