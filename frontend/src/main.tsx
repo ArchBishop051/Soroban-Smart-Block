@@ -6,9 +6,13 @@ import App from "./App";
 import { NetworkProvider } from "./contexts/NetworkContext";
 import { initCsrf } from "./hooks/useCsrf";
 import { initSentry } from "./sentry";
+import { initWebVitals } from "./utils/webVitals";
 import "./index.css";
 
 initSentry();
+
+// Initialize web vitals RUM collection
+initWebVitals();
 
 const qc = new QueryClient();
 

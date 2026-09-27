@@ -195,6 +195,99 @@ jobs:
           retention-days: 30
           if-no-files-found: ignore
 
+  # ── Lighthouse CI Performance Tests ─────────────────────────────────────────
+  # Closes performance regression issue — runs Lighthouse on key routes with
+  # budgets: LCP < 2.5s, TBT < 200ms, CLS < 0.1. Uses median of 3 runs to reduce flakiness.
+  lighthouse-ci:
+    name: Lighthouse CI Performance Tests
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: soroban
+          POSTGRES_PASSWORD: soroban_secret
+          POSTGRES_DB: soroban_explorer
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Cache node_modules
+        uses: actions/cache@v4
+        with:
+          path: |
+            indexer/node_modules
+            frontend/node_modules
+          key: lighthouse-20-${{ hashFiles('indexer/package-lock.json', 'frontend/package-lock.json') }}
+          restore-keys: lighthouse-20-
+
+      - name: Install dependencies
+        run: |
+          npm ci
+          cd indexer && npm ci
+          cd ../frontend && npm ci
+
+      - name: Install Lighthouse CI
+        run: npm install -g @lhci/cli
+
+      - name: Start indexer with seeded data
+        run: |
+          npm start > indexer.log 2>&1 &
+          for i in $(seq 1 30); do
+            curl -fsS http://localhost:3001/health && break
+            echo "waiting for indexer... ($i)"; sleep 2
+          done
+          curl -fsS http://localhost:3001/health || { echo "indexer failed to start"; cat indexer.log; exit 1; }
+        working-directory: indexer
+        env:
+          DATABASE_URL: postgres://soroban:soroban_secret@localhost:5432/soroban_explorer
+          NODE_ENV: development
+          RATE_LIMITING_DISABLED: "true"
+
+      - name: Build frontend
+        run: npm run build
+        working-directory: frontend
+
+      - name: Check bundle sizes
+        run: node ../scripts/check-bundle-size.js
+        working-directory: frontend
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Start preview server
+        run: |
+          npm run preview > preview.log 2>&1 &
+          for i in $(seq 1 30); do
+            curl -fsS http://localhost:4173/ && break
+            echo "waiting for preview server... ($i)"; sleep 2
+          done
+          curl -fsS http://localhost:4173/ || { echo "preview server failed to start"; cat preview.log; exit 1; }
+        working-directory: frontend
+
+      - name: Run Lighthouse CI
+        run: lhci autorun
+        working-directory: frontend
+        env:
+          LHCI_GITHUB_APP_TOKEN: ${{ secrets.LHCI_GITHUB_APP_TOKEN }}
+
+      - name: Upload Lighthouse results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lighthouse-results
+          path: frontend/.lighthouseci/
+          retention-days: 30
+
   # ── Services ──────────────────────────────────────────────────────────────
   services:
     name: Services (indexer + frontend)
@@ -279,6 +372,12 @@ jobs:
       - name: Frontend typecheck + build
         run: npm run build
         working-directory: frontend
+
+      - name: Check bundle sizes
+        run: node ../scripts/check-bundle-size.js
+        working-directory: frontend
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   # ── Visual Regression ─────────────────────────────────────────────────────
   # Closes #767 — screenshot-based visual regression for the highest-traffic
