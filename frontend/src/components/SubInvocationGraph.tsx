@@ -5,6 +5,7 @@
 import { useEffect, useRef } from "react";
 import type { Core } from "cytoscape";
 import type { SubInvocationExtended } from "../api";
+import { getGraphColors } from "../utils/themeTokens";
 
 interface Props {
   invocations: SubInvocationExtended[];
@@ -77,6 +78,8 @@ export default function SubInvocationGraph({ invocations }: Props) {
         }),
       ];
 
+      const colors = getGraphColors();
+
       cyRef.current = cytoscape({
         container: containerRef.current,
         elements,
@@ -86,7 +89,7 @@ export default function SubInvocationGraph({ invocations }: Props) {
             style: {
               label: "data(label)",
               "background-color": CONTRACT_TYPE_COLORS.other,
-              color: "#fff",
+              color: colors.nodeText,
               "font-size": 10,
               "text-valign": "bottom",
               "text-margin-y": 4,
@@ -102,8 +105,8 @@ export default function SubInvocationGraph({ invocations }: Props) {
             selector: "edge",
             style: {
               width: "mapData(weight, 1, 10, 1, 5)",
-              "line-color": "#4b5563",
-              "target-arrow-color": "#4b5563",
+              "line-color": colors.edge,
+              "target-arrow-color": colors.edge,
               "target-arrow-shape": "triangle",
               "curve-style": "bezier",
             },

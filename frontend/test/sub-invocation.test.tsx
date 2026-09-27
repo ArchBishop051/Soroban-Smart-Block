@@ -248,6 +248,19 @@ describe("buildDependencyMap", () => {
     expect(map["CBBB"]).toContain("CCCC");
   });
 
+  it("keeps all contracts in the graph, even when they have no outgoing edges", () => {
+    const map = buildDependencyMap([
+      inv({ id: 1, parent_tx_hash: "txC", depth: 0, contract_id: "CAAA", function: "mint" }),
+      inv({ id: 2, parent_tx_hash: "txD", depth: 0, contract_id: "CBBB", function: "deposit" }),
+      inv({ id: 3, parent_tx_hash: "txD", depth: 1, contract_id: "CAAA", function: "stake" }),
+    ]);
+
+    expect(map["CAAA"]).toContain("CBBB");
+    expect(map["CBBB"]).toEqual(["CAAA"]);
+    expect(map["CAAA"]).toEqual(expect.arrayContaining(["CBBB"]));
+    expect(Object.keys(map)).toEqual(expect.arrayContaining(["CAAA", "CBBB"]));
+  });
+
   it("returns empty object for empty list", () => {
     expect(buildDependencyMap([])).toEqual({});
   });

@@ -14,6 +14,16 @@ concurrency:
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
+  dependency-review:
+    name: Dependency Review
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/dependency-review-action@v4
+        with:
+          fail-on-severity: high
+
   # ── Secret Scanning ──────────────────────────────────────────────────────
   # Closes #735 — fails the build if a credential-shaped string is committed.
   secret-scan:
@@ -30,6 +40,18 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITLEAKS_CONFIG: .gitleaks.toml
 
+  # ── SLO rules (#943) ─────────────────────────────────────────────────────
+  slo-rules:
+    name: SLO rules (promtool)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: promtool test rules
+        run: |
+          curl -sL https://github.com/prometheus/prometheus/releases/download/v2.53.2/prometheus-2.53.2.linux-amd64.tar.gz \
+            | tar xz --strip-components=1 prometheus-2.53.2.linux-amd64/promtool
+          ./promtool test rules monitoring/prometheus/slo/*.test.yml
+
   # ── Contracts ─────────────────────────────────────────────────────────────
   contracts:
     name: Contracts (build + test)
@@ -43,17 +65,21 @@ jobs:
           target: wasm32-unknown-unknown
           components: rustfmt, clippy
 
+      # #941: sccache (GHA backend) + rust-cache. Caches are read-only for
+      # fork PRs to prevent cache poisoning.
+      - name: Setup sccache
+        uses: mozilla-actions/sccache-action@v0.0.6
+
+      - name: Enable sccache
+        if: github.event.pull_request.head.repo.fork != true
+        run: |
+          echo "SCCACHE_GHA_ENABLED=true" >> "$GITHUB_ENV"
+          echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
+
       - name: Cache Rust build artifacts
-        uses: actions/cache@v4
+        uses: Swatinem/rust-cache@v2
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            ~/.cargo/bin
-            target/release/build
-            target/wasm32-unknown-unknown/release/deps
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-cargo-
+          save-if: ${{ github.event.pull_request.head.repo.fork != true }}
 
       - name: fmt
         run: cargo fmt --check
@@ -62,10 +88,21 @@ jobs:
         run: cargo clippy --all-targets --all-features -- -D warnings
 
       - name: Build (wasm32)
-        run: cargo build --target wasm32-unknown-unknown --release -p soroban-explorer-contract
+        run: ./scripts/build-contract.sh soroban-explorer-contract
+
+      - name: Upload WASM build manifest
+        uses: actions/upload-artifact@v4
+        with:
+          name: soroban-explorer-wasm-manifest
+          path: |
+            target/wasm32-unknown-unknown/release/soroban-explorer-contract.wasm
+            target/wasm32-unknown-unknown/release/soroban-explorer-contract.wasm.build-manifest
+          if-no-files-found: error
 
       - name: Install cargo-llvm-cov
-        run: cargo install cargo-llvm-cov --locked
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-llvm-cov
 
       - name: Test — explorer contract with coverage
         run: |
@@ -124,6 +161,73 @@ jobs:
           name: ticket-coverage
           fail_ci_if_error: false
           token: ${{ secrets.CODECOV_TOKEN }}
+
+  # ── Resource budget gate ──────────────────────────────────────────────────
+  # Closes #873 — fails when any contract entrypoint's CPU / memory / event
+  # cost, or the explorer WASM size, grows past the thresholds in
+  # contracts/budget-baseline.json. See docs/BUDGET.md.
+  budget:
+    name: Contracts (resource budget)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+          target: wasm32-unknown-unknown
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Cache Rust build artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+            contracts/ticket/target
+          key: ${{ runner.os }}-budget-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-budget-
+
+      - name: Measure entrypoint budgets
+        run: make budget-measure
+
+      - name: Compare against baseline
+        run: node scripts/budget-check.js
+
+      - name: Publish budget report
+        if: always() && github.event_name == 'pull_request'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          [ -f target/budget/report.md ] || exit 0
+          cat target/budget/report.md >> "$GITHUB_STEP_SUMMARY"
+          gh pr comment "$PR" --edit-last --body-file target/budget/report.md \
+            || gh pr comment "$PR" --body-file target/budget/report.md
+
+      - name: Baseline changes require approval label
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
+        run: |
+          if git cat-file -e "$BASE_SHA:contracts/budget-baseline.json" 2>/dev/null \
+            && ! git diff --quiet "$BASE_SHA" HEAD -- contracts/budget-baseline.json; then
+            if [[ ",$LABELS," != *",budget-change-approved,"* ]]; then
+              echo "::error::contracts/budget-baseline.json changed — add the 'budget-change-approved' label and re-run this job."
+              exit 1
+            fi
+          fi
 
   # ── Migrations ────────────────────────────────────────────────────────────
   # Closes #425 — verify every SQL migration applies cleanly on a fresh
@@ -359,6 +463,10 @@ jobs:
         working-directory: indexer
         env:
           TEST_DATABASE_URL: postgres://soroban:soroban_secret@localhost:5432/soroban_explorer
+
+      - name: Decoder golden snapshots (version bump required on output change)
+        working-directory: indexer
+        run: node --test test/golden.test.js
 
       - name: Upload indexer coverage to CodeCov
         uses: codecov/codecov-action@v4

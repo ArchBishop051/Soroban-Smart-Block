@@ -4,6 +4,16 @@ This runbook describes how to deploy the Soroban Smart Block Explorer stack to
 Stellar testnet, from a fresh checkout through to a fully operational deployment
 with all CI smoke tests passing.
 
+## Contract schema migrations
+
+Explorer contract upgrades keep a monotonic schema version in instance storage.
+After deploying a new WASM, confirm the current version, then call the admin-only
+`migrate(caller, from, to, batch)` entrypoint with a bounded batch size. Repeat
+the call until the migration cursor has consumed the registry. Reads remain
+available during migration; a paused contract may be resumed after unpausing.
+Never pass a lower target version or a `from` value that does not match the
+stored schema version.
+
 > ⏱ **Target time**: Following this runbook from a clean checkout results in a
 > working testnet deployment with all CI smoke tests passing.
 

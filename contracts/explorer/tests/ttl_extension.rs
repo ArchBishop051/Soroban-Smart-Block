@@ -24,6 +24,11 @@ fn setup() -> (Env, ExplorerContractClient<'static>, Address, BytesN<32>) {
     (env, explorer, admin, contract_id)
 }
 
+fn advance_ledgers(env: &Env, ledgers: u32) {
+    env.ledger()
+        .set_sequence_number(env.ledger().sequence() + ledgers);
+}
+
 fn make_meta(env: &Env, name: &str, admin: &Address) -> ContractMeta {
     let mut functions = Vec::new(env);
     functions.push_back(FunctionAbi {
@@ -63,10 +68,7 @@ fn test_register_contract_extends_persistent_ttl() {
     // Advance the ledger by 60 days (just shy of PERSISTENT_TTL_EXTEND_TO = 90 days)
     // If extend_ttl extended to 90 days, the entry should still be accessible.
     let ledgers_to_advance = DAY_IN_LEDGERS * 60;
-    env.budget().reset_default();
-    for _ in 0..ledgers_to_advance {
-        env.ledger().set_nonce_unit_limit(env.ledger().nonce_unit_limit());
-    }
+    advance_ledgers(&env, ledgers_to_advance);
 
     // Fetch the contract again — it should still be accessible because extend_ttl
     // extended its TTL to 90 days (PERSISTENT_TTL_EXTEND_TO)
@@ -100,10 +102,7 @@ fn test_update_contract_extends_persistent_ttl() {
 
     // Advance the ledger by 60 days
     let ledgers_to_advance = DAY_IN_LEDGERS * 60;
-    env.budget().reset_default();
-    for _ in 0..ledgers_to_advance {
-        env.ledger().set_nonce_unit_limit(env.ledger().nonce_unit_limit());
-    }
+    advance_ledgers(&env, ledgers_to_advance);
 
     // Fetch the contract again — it should still be accessible
     let fetched_after = explorer.get_contract(&contract_id).unwrap();
@@ -140,10 +139,7 @@ fn test_submit_event_extends_persistent_ttl() {
 
     // Advance the ledger by 60 days
     let ledgers_to_advance = DAY_IN_LEDGERS * 60;
-    env.budget().reset_default();
-    for _ in 0..ledgers_to_advance {
-        env.ledger().set_nonce_unit_limit(env.ledger().nonce_unit_limit());
-    }
+    advance_ledgers(&env, ledgers_to_advance);
 
     // Fetch the event again — it should still be accessible because extend_ttl
     // extended its TTL to 90 days
@@ -172,10 +168,7 @@ fn test_bump_instance_ttl_on_register() {
 
     // Advance the ledger by 20 days (less than INSTANCE_TTL_EXTEND_TO = 30 days)
     let ledgers_to_advance = DAY_IN_LEDGERS * 20;
-    env.budget().reset_default();
-    for _ in 0..ledgers_to_advance {
-        env.ledger().set_nonce_unit_limit(env.ledger().nonce_unit_limit());
-    }
+    advance_ledgers(&env, ledgers_to_advance);
 
     // Instance storage should still be accessible
     let count2 = explorer.event_count();
@@ -211,12 +204,49 @@ fn test_multiple_extends_accumulate() {
     // Advance the ledger by 70 days (more than PERSISTENT_TTL_THRESHOLD = 30 days,
     // but less than PERSISTENT_TTL_EXTEND_TO = 90 days)
     let ledgers_to_advance = DAY_IN_LEDGERS * 70;
-    env.budget().reset_default();
-    for _ in 0..ledgers_to_advance {
-        env.ledger().set_nonce_unit_limit(env.ledger().nonce_unit_limit());
-    }
+    advance_ledgers(&env, ledgers_to_advance);
 
     // The contract should still be accessible because the last update extended TTL to 90 days
     let fetched_after = explorer.get_contract(&contract_id).unwrap();
     assert_eq!(fetched_after.version, 3);
+}
+
+#[test]
+fn test_permissionless_keeper_refreshes_registry_history_and_event_slots() {
+    let (env, explorer, admin, contract_id) = setup();
+    let meta = make_meta(&env, "TestSwap", &admin);
+    explorer.register_contract(&admin, &contract_id, &meta);
+
+    let input = EventInput {
+        contract_id: contract_id.clone(),
+        function: soroban_sdk::symbol_short!("swap"),
+        ledger: 1000,
+        description: String::from_str(&env, "Swap executed"),
+        raw_topics: Vec::new(&env),
+        raw_data: Bytes::new(&env),
+    };
+    explorer.submit_event(&admin, &input);
+
+    let updated = ContractMeta {
+        abi_version: 1,
+        version: 2,
+        ..meta
+    };
+    explorer.update_contract(&admin, &contract_id, &updated);
+
+    for _ in 0..5 {
+        advance_ledgers(&env, DAY_IN_LEDGERS * 20);
+        explorer.bump_contract_ttl(&contract_id);
+        explorer
+            .bump_contract_version_ttl(&contract_id, &0)
+            .unwrap();
+        explorer
+            .bump_contract_version_ttl(&contract_id, &1)
+            .unwrap();
+        explorer.bump_event_ttl(&0).unwrap();
+    }
+
+    assert_eq!(explorer.get_contract(&contract_id).unwrap().abi_version, 1);
+    assert_eq!(explorer.get_contract_version(&contract_id, &0).unwrap().abi_version, 0);
+    assert_eq!(explorer.get_event(&0).seq, 0);
 }

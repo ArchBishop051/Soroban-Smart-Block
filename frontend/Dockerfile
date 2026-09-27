@@ -4,7 +4,7 @@
 #  Stage 1 (build): install ALL deps (Vite + plugins) and run `vite build`,
 #                   emitting a literal placeholder string for VITE_API_URL so
 #                   the same image can be re-targeted at container start.
-#  Stage 2 (serve): nginx:1.25-alpine serving the static dist + a custom
+#  Stage 2 (serve): nginx-unprivileged (non-root, #930) serving the static dist + a custom
 #                   nginx.conf (5 security headers, gzip, SPA routing,
 #                   long-lived /assets/ caching, /api/ proxy) on port 8080,
 #                   fronted by a tiny entrypoint that performs runtime
@@ -38,25 +38,19 @@ RUN npm run build \
  && test -n "$(ls dist 2>/dev/null)"
 
 
-# ---------- Stage 2: nginx runtime -------------------------------------------
-FROM nginx:1.25-alpine AS final
+# ---------- Stage 2: unprivileged nginx runtime ----------------------------
+# Runs as non-root. Compatible with --read-only --user 65532 --cap-drop ALL
+# given tmpfs mounts for /tmp and /var/cache/nginx: the entrypoint stages the
+# bundle into /tmp/html before substituting VITE_API_URL.
+FROM nginxinc/nginx-unprivileged:1.25-alpine AS final
 
-# The custom nginx config replaces /etc/nginx/conf.d/default.conf — it is
-# already wired into nginx:1.25-alpine's /etc/nginx/nginx.conf http{} block.
 COPY nginx.conf /etc/nginx/conf.d/default.conf
-
-# Drop in the runtime envsubst entrypoint. This is what the container runs
-# instead of the stock nginx CMD.
-COPY docker-entrypoint.sh /docker-entrypoint.sh
-RUN chmod +x /docker-entrypoint.sh
-
-# Copy the built static assets from Stage 1.
+COPY --chmod=755 docker-entrypoint.sh /docker-entrypoint.sh
 COPY --from=build /app/dist /usr/share/nginx/html
 
-# Listen on 8080 (unprivileged) so the container can stay runnable as a
-# non-root user in the future and so acceptance tests `curl :8080` succeed.
 EXPOSE 8080
 
-# Exec form — the entrypoint performs runtime substitution, then exec's nginx.
-# No `/bin/sh -c` wrapper around nginx itself.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+  CMD ["wget", "-qO-", "http://127.0.0.1:8080/"]
+
 ENTRYPOINT ["/docker-entrypoint.sh"]

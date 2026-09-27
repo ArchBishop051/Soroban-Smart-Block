@@ -150,6 +150,11 @@ export default function RegisterContractPage() {
           </a>
           .
         </p>
+        <p role="note" style={{ color: "var(--muted)", fontSize: 13 }}>
+          Registration may require a refundable SEP-41 token deposit. Your wallet will
+          request approval before funds are transferred; the recorded deposit is refunded
+          when the contract owner deregisters.
+        </p>
       </div>
 
       {/* Toast */}
