@@ -9,6 +9,7 @@ import cors from "cors";
 import rateLimit from "express-rate-limit";
 import swaggerUi from "swagger-ui-express";
 import { db as defaultDb, pool } from "./db.js";
+import { getNetworkMetrics, RANGES as NETWORK_METRIC_RANGES } from "./networkMetrics.js";
 import { safeFetch } from "./safeHttp.js";
 import config from "./config.js";
 import { InvalidCursorError, CursorFilterMismatchError } from "./cursor.js";
@@ -2483,6 +2484,35 @@ export function createApi({ logDestination, dbOverride } = {}) {
     } catch (e) {
       res.status(500).json({ error: e.message });
     }
+  });
+
+  // ── Network metrics (#921) ─────────────────────────────────────
+  // GET /api/network/metrics?range=1h|24h|7d
+  app.get("/api/network/metrics", async (req, res) => {
+    const range = req.query.range || "1h";
+    if (!NETWORK_METRIC_RANGES[range]) return res.status(400).json({ error: "range must be 1h, 24h or 7d" });
+    try { res.json(await getNetworkMetrics(pool, range)); }
+    catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
+  // GET /api/network/metrics/stream — server-sent latest ledger metrics at ledger cadence.
+  app.get("/api/network/metrics/stream", (req, res) => {
+    res.set({ "Content-Type": "text/event-stream", "Cache-Control": "no-cache", Connection: "keep-alive" });
+    res.flushHeaders();
+    let last = null;
+    const tick = async () => {
+      try {
+        const { metrics, recommended, staleness_seconds } = await getNetworkMetrics(pool, "1h");
+        const latest = metrics[metrics.length - 1];
+        if (latest && latest.ledger !== last) {
+          last = latest.ledger;
+          res.write(`data: ${JSON.stringify({ metric: latest, recommended, staleness_seconds })}\n\n`);
+        }
+      } catch { /* keep the stream open; the client shows staleness */ }
+    };
+    tick();
+    const timer = setInterval(tick, 5000);
+    req.on("close", () => clearInterval(timer));
   });
 
   // ── Storage State-Diff Timeline ────────────────────────────────

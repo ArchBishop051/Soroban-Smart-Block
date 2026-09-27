@@ -1,6 +1,8 @@
 import { BatchCall } from "./types/batch";
 import { getCsrfToken, refreshCsrfToken } from "./hooks/useCsrf";
 import { readCachedResponse, writeCachedResponse } from "./services/offlineStore";
+import { apiClient, unwrap, type Schemas } from "./generated/client";
+import type { I128 } from "./types/api";
 
 const BASE = "/api";
 
@@ -500,6 +502,9 @@ export interface StateDiff {
   new_value: string | null;
   change_type: "created" | "updated" | "removed";
   created_at: string;
+  // Issue #922: entry TTL and size when the indexer has them
+  live_until_ledger?: number | null;
+  size_bytes?: number | null;
 }
 
 // Issue #516: ABI version history entry (one row per contract_versions table row)
@@ -652,7 +657,8 @@ export interface GraphEdge {
   source: string;
   target: string;
   label?: string;
-  amount?: string;
+  // i128 amount serialized as a string (#923)
+  amount?: I128;
 }
 
 export interface AddressGraphData {
@@ -808,7 +814,14 @@ export interface TxNarrative {
   net_flows: Record<string, Record<string, string>>;
 }
 
+// Issue #921/#923: network metrics shapes come from the generated OpenAPI types.
+export type NetworkLedgerMetric = Schemas["NetworkLedgerMetric"];
+export type NetworkMetricsResponse = Schemas["NetworkMetricsResponse"];
+
 export const api = {
+  networkMetrics: (range: NetworkMetricsResponse["range"] = "1h") =>
+    unwrap(apiClient.GET("/api/network/metrics", { params: { query: { range } } })),
+  networkMetricsStreamUrl: `${BASE}/network/metrics/stream`,
   events: (params: { contract?: string; fn?: string; after_seq?: number; limit?: number; type?: string; from?: string; to?: string }) => {
     const q = new URLSearchParams();
     if (params.contract) q.set("contract", params.contract);
