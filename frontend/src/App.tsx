@@ -50,14 +50,14 @@ export default function App() {
             {/* Issue #524: registration success page */}
             <Route path="/contracts/register/success" element={<RegistrationSuccessPage />} />
             <Route path="/contract/:id" element={<ContractPage />} />
-            <Route path="/contract/:id/workspace" element={<DeveloperWorkspace />} />
+            <Route path="/contract/:id/workspace" element={<ClientOnly><DeveloperWorkspace /></ClientOnly>} />
             {/* Issue #521: ABI diff view */}
             <Route path="/contract/:id/abi-diff" element={<AbiDiffPage />} />
-            <Route path="/wallet/:address" element={<WalletPage />} />
+            <Route path="/wallet/:address" element={<ClientOnly><WalletPage /></ClientOnly>} />
             <Route path="/event/:seq" element={<EventPage />} />
             <Route path="/tx/:hash" element={<TransactionPage />} />
             <Route path="/search" element={<SearchPage />} />
-            <Route path="/xdr" element={<XdrInspector />} />
+            <Route path="/xdr" element={<ClientOnly><XdrInspector /></ClientOnly>} />
             <Route path="/rpc-metrics" element={<RpcMetricsDashboard />} />
             <Route path="/graph" element={<GraphPage />} />
             <Route path="/sandbox" element={<Sandbox />} />
