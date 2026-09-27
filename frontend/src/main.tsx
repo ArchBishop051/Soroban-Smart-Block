@@ -12,6 +12,9 @@ import "./index.css";
 
 initSentry();
 
+// Initialize web vitals RUM collection
+initWebVitals();
+
 const qc = new QueryClient();
 
 // Fetch the CSRF token once at startup so all mutation requests can attach it.
