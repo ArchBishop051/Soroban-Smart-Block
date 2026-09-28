@@ -31,6 +31,7 @@ const AbiDiffPage = lazy(() => import("./pages/AbiDiffPage"));
 const DashboardPage = lazy(() => import("./pages/DashboardPage"));
 const Status = lazy(() => import("./pages/Status"));
 const AdminJobsPage = lazy(() => import("./pages/AdminJobsPage"));
+const NetworkDashboard = lazy(() => import("./pages/NetworkDashboard"));
 
 function Fallback() {
   const { t } = useTranslation();
@@ -74,6 +75,7 @@ export default function App() {
             <Route path="/nft/:contractId" element={<NftGallery />} />
             <Route path="/dashboard" element={<DashboardPage />} />
             <Route path="/status" element={<Status />} />
+            <Route path="/network" element={<NetworkDashboard />} />
             <Route path="/filter-builder" element={<FilterBuilder />} />
           </Routes>
         </Suspense>

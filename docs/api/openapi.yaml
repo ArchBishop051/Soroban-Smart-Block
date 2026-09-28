@@ -840,7 +840,6 @@ paths:
           description: Opaque signed keyset cursor for backward pagination
         - name: page
           in: query
-          description: Opaque cursor from the previous response
           schema:
             type: integer
             minimum: 1
@@ -1437,7 +1436,6 @@ paths:
           description: Opaque signed keyset cursor for backward pagination
         - name: page
           in: query
-          description: Sequence cursor returned as next_cursor on the previous page
           schema:
             type: integer
             default: 1
@@ -3526,7 +3524,6 @@ paths:
             maximum: 1000
         - name: after
           in: query
-          description: Opaque timestamp/id cursor from the previous response
           schema:
             type: integer
             default: 0
@@ -3560,9 +3557,6 @@ paths:
                     nullable: true
                   limit:
                     type: integer
-                  next_cursor:
-                    type: string
-                    nullable: true
         "401":
           description: Missing or invalid admin token
           content:
@@ -4113,6 +4107,37 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
 
+  /api/network/metrics:
+    get:
+      summary: Per-ledger network metrics (TPS, close time, fee percentiles, utilization, surge)
+      parameters:
+        - name: range
+          in: query
+          schema:
+            type: string
+            enum: ["1h", "24h", "7d"]
+            default: "1h"
+      responses:
+        "200":
+          description: Network metrics for the requested range
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NetworkMetricsResponse"
+        "400":
+          description: Invalid range
+
+  /api/network/metrics/stream:
+    get:
+      summary: Server-sent stream of the latest ledger's network metrics
+      responses:
+        "200":
+          description: text/event-stream of {metric, recommended, staleness_seconds}
+          content:
+            text/event-stream:
+              schema:
+                type: string
+
   /api/export/contracts:
     get:
       summary: Export registered contracts as CSV or JSON
@@ -4129,7 +4154,6 @@ paths:
             minimum: 1
             maximum: 10000
             default: 1000
-      parameters:
         - name: format
           in: query
           schema:
@@ -4301,6 +4325,51 @@ components:
         Compatible with standard authenticator apps (30s step, 6 digits, SHA-1).
 
   schemas:
+    NullableNumber:
+      type: number
+      nullable: true
+    NetworkLedgerMetric:
+      type: object
+      required: [ledger, closed_at, tx_count, close_time, tps, fees, utilization, surge]
+      properties:
+        ledger: { type: integer }
+        closed_at: { type: string, format: date-time }
+        tx_count: { type: integer }
+        close_time: { $ref: "#/components/schemas/NullableNumber" }
+        tps: { $ref: "#/components/schemas/NullableNumber" }
+        fees:
+          type: object
+          required: [p10, p50, p90, p99]
+          properties:
+            p10: { $ref: "#/components/schemas/NullableNumber" }
+            p50: { $ref: "#/components/schemas/NullableNumber" }
+            p90: { $ref: "#/components/schemas/NullableNumber" }
+            p99: { $ref: "#/components/schemas/NullableNumber" }
+        utilization:
+          type: object
+          required: [tx_count, instructions, read_bytes, write_bytes]
+          properties:
+            tx_count: { $ref: "#/components/schemas/NullableNumber" }
+            instructions: { $ref: "#/components/schemas/NullableNumber" }
+            read_bytes: { $ref: "#/components/schemas/NullableNumber" }
+            write_bytes: { $ref: "#/components/schemas/NullableNumber" }
+        surge: { type: boolean }
+    NetworkMetricsResponse:
+      type: object
+      required: [range, metrics, recommended, staleness_seconds]
+      properties:
+        range: { type: string, enum: ["1h", "24h", "7d"] }
+        metrics:
+          type: array
+          items: { $ref: "#/components/schemas/NetworkLedgerMetric" }
+        recommended:
+          type: object
+          nullable: true
+          required: [fee, surge]
+          properties:
+            fee: { $ref: "#/components/schemas/NullableNumber" }
+            surge: { type: boolean }
+        staleness_seconds: { $ref: "#/components/schemas/NullableNumber" }
     Transaction:
       type: object
       required: [hash, ledger, status, charged_fee]

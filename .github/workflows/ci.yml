@@ -307,6 +307,11 @@ jobs:
         run: npm ci
         working-directory: frontend
 
+      # #923: generated API types must match docs/api/openapi.yaml
+      - name: Check generated API types are in sync
+        run: npm run check:api
+        working-directory: frontend
+
       - name: Frontend tests
         run: npm test -- --coverage
         working-directory: frontend
