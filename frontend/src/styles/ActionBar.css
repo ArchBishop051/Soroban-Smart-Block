@@ -3,8 +3,8 @@
   justify-content: space-between;
   align-items: center;
   padding: 8px 12px;
-  background: #2d2d30;
-  border-bottom: 1px solid #3e3e42;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
   gap: 8px;
 }
 
@@ -16,8 +16,8 @@
 .action-btn {
   padding: 4px 8px;
   background: transparent;
-  color: #d4d4d4;
-  border: 1px solid #3e3e42;
+  color: var(--text-secondary);
+  border: 1px solid var(--border);
   border-radius: 3px;
   cursor: pointer;
   font-size: 12px;
@@ -25,8 +25,9 @@
 }
 
 .action-btn:hover {
-  background: #3e3e42;
-  border-color: #007acc;
+  background: var(--surface-raised);
+  border-color: var(--accent);
+  color: var(--text-primary);
 }
 
 .menu {
@@ -36,26 +37,27 @@
 .menu-btn {
   padding: 4px 8px;
   background: transparent;
-  color: #d4d4d4;
-  border: 1px solid #3e3e42;
+  color: var(--text-secondary);
+  border: 1px solid var(--border);
   border-radius: 3px;
   cursor: pointer;
   font-size: 12px;
 }
 
 .menu-btn:hover {
-  background: #3e3e42;
+  background: var(--surface-raised);
+  color: var(--text-primary);
 }
 
 .menu-dropdown {
   position: absolute;
   top: 100%;
   right: 0;
-  background: #252526;
-  border: 1px solid #3e3e42;
+  background: var(--surface-raised);
+  border: 1px solid var(--border);
   border-radius: 3px;
   min-width: 120px;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+  box-shadow: var(--shadow-md);
   z-index: 100;
 }
 
@@ -64,7 +66,7 @@
   width: 100%;
   padding: 6px 12px;
   background: transparent;
-  color: #d4d4d4;
+  color: var(--text-secondary);
   border: none;
   text-align: left;
   cursor: pointer;
@@ -72,8 +74,8 @@
 }
 
 .menu-item:hover {
-  background: #2d2d30;
-  color: #0e639c;
+  background: var(--surface);
+  color: var(--accent);
 }
 
 .menu-item:first-child {

@@ -3,6 +3,17 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
 describe("reDecodeWorker", () => {
+  it("marks events stale when their contract ABI version advances", async () => {
+    let marked = false;
+    await runReDecodeBatch({
+      dbModule: {
+        markStaleAbiEvents: async () => { marked = true; },
+        getEventsNeedingRedecode: async () => [],
+      },
+    });
+    assert.equal(marked, true);
+  });
+
   it("re-decodes superseded events and clears their marker", async () => {
     const updated = [];
     const db = {

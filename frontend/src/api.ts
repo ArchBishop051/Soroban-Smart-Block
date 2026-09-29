@@ -1,7 +1,60 @@
 import { BatchCall } from "./types/batch";
 import { getCsrfToken, refreshCsrfToken } from "./hooks/useCsrf";
+import { readCachedResponse, writeCachedResponse } from "./services/offlineStore";
+import { apiClient, unwrap, type Schemas } from "./generated/client";
+import type { I128 } from "./types/api";
 
 const BASE = "/api";
+
+function randomTraceId() {
+  const bytes = new Uint8Array(16);
+  crypto.getRandomValues(bytes);
+  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+function randomSpanId() {
+  const bytes = new Uint8Array(8);
+  crypto.getRandomValues(bytes);
+  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+function buildTraceHeaders() {
+  const traceId = randomTraceId();
+  const spanId = randomSpanId();
+  const version = "00";
+  const flags = "01";
+  const traceparent = `${version}-${traceId}-${spanId}-${flags}`;
+  return {
+    "X-Request-Id": crypto.randomUUID(),
+    traceparent,
+    "sentry-trace": traceparent,
+  };
+}
+
+function withTraceHeaders(init: RequestInit = {}): RequestInit {
+  const headers = new Headers(init.headers || {});
+  const traceHeaders = buildTraceHeaders();
+  for (const [key, value] of Object.entries(traceHeaders)) {
+    headers.set(key, value);
+  }
+  return { ...init, headers };
+}
+
+export interface LineageStep {
+  action: string;
+  lineage?: "legacy";
+  lineage_id?: number;
+  run_type?: string;
+  code_version?: string;
+  decoder_versions?: Record<string, string>;
+  created_at?: string;
+}
+
+export interface EventLineage {
+  event_seq: number;
+  lineage: "legacy" | "tracked";
+  chain: LineageStep[];
+}
 
 export interface SpecType {
   kind: "struct" | "enum" | "union" | "error_enum";
@@ -70,6 +123,10 @@ export interface HeuristicParam {
 }
 
 export interface DecodedEvent {
+  /** Canonical, chain-derived event ID (Soroban RPC format, #892). */
+  event_id?: string | null;
+  /** How the event was decoded (#895): registered ABI, on-chain spec, or heuristics. */
+  decode_source?: "abi" | "spec" | "spec_mismatch" | "heuristic" | null;
   seq: number;
   contract_id: string;
   function: string;
@@ -127,7 +184,27 @@ export interface DecodedEvent {
   factory_deployment?: FactoryDeploymentTree;
   // DEX swap slippage in basis points (1% = 100 bps); present only when computable
   slippage_bps?: number | null;
+  created_at?: string;
+  decode_status?: "verified" | "unverified" | "heuristic";
+  decode_warnings?: string[];
 }
+
+// Event filter DSL types
+export type EventFilterOperator = "and" | "or" | "not";
+export type EventConditionOperator = "eq" | "ne" | "gt" | "lt" | "gte" | "lte" | "contains" | "starts_with" | "ends_with" | "in";
+
+export interface EventCondition {
+  field: string;
+  operator: EventConditionOperator;
+  value: any;
+}
+
+export interface EventFilterGroup {
+  operator: EventFilterOperator;
+  conditions: (EventFilter | EventCondition)[];
+}
+
+export type EventFilter = EventCondition | EventFilterGroup;
 
 export interface SourceFile {
   path: string;
@@ -214,11 +291,11 @@ export interface AbiHistoryResponse {
 
 export interface ContractsListResponse {
   contracts: ContractListItem[];
+  next_cursor: string | null;
   pagination: {
     page: number;
     limit: number;
-    total: number;
-    total_pages: number;
+    has_next: boolean;
   };
 }
 
@@ -335,7 +412,7 @@ export interface ContractGraphData {
 }
 
 async function get<T>(path: string): Promise<T> {
-  const res = await fetch(BASE + path);
+  const res = await fetch(BASE + path, withTraceHeaders());
   if (!res.ok) throw new Error(`API ${res.status}: ${path}`);
   return res.json();
 }
@@ -357,11 +434,11 @@ async function mutationFetch(
     ...(token ? { "X-CSRF-Token": token } : {}),
   });
 
-  const res = await fetch(url, {
+  const res = await fetch(url, withTraceHeaders({
     credentials: "include",
     ...options,
     headers: buildHeaders(getCsrfToken()),
-  });
+  }));
 
   // On CSRF mismatch refresh the token and retry exactly once.
   if (res.status === 403) {
@@ -372,11 +449,11 @@ async function mutationFetch(
       body.error === "CSRF token mismatch"
     ) {
       await refreshCsrfToken();
-      return fetch(url, {
+      return fetch(url, withTraceHeaders({
         credentials: "include",
         ...options,
         headers: buildHeaders(getCsrfToken()),
-      });
+      }));
     }
   }
 
@@ -425,6 +502,9 @@ export interface StateDiff {
   new_value: string | null;
   change_type: "created" | "updated" | "removed";
   created_at: string;
+  // Issue #922: entry TTL and size when the indexer has them
+  live_until_ledger?: number | null;
+  size_bytes?: number | null;
 }
 
 // Issue #516: ABI version history entry (one row per contract_versions table row)
@@ -457,6 +537,29 @@ export interface TxStatusResponse {
   status: "pending" | "success" | "failed";
   ledger: number | null;
   error?: string | null;
+}
+
+export interface TransactionDetails extends TxStatusResponse {
+  latest_ledger?: number;
+  oldest_ledger?: number;
+  created_at?: number;
+  application_order?: number;
+  fee_bump?: boolean;
+  fee_source?: string | null;
+  envelope_xdr?: string | null;
+  result_xdr?: string | null;
+  result_meta_xdr?: string | null;
+  diagnostic_events_xdr?: string[];
+  events: DecodedEvent[];
+  invocations: SubInvocation[];
+}
+
+export interface AnalyticsSqlResult {
+  rows: Record<string, unknown>[];
+  row_count: number;
+  truncated: boolean;
+  duration_ms: number;
+  plan_cost: number;
 }
 
 // Live TTL status for contract instance and code entries
@@ -554,7 +657,8 @@ export interface GraphEdge {
   source: string;
   target: string;
   label?: string;
-  amount?: string;
+  // i128 amount serialized as a string (#923)
+  amount?: I128;
 }
 
 export interface AddressGraphData {
@@ -684,17 +788,54 @@ export interface TransactionTreeDiff {
   changed: { a: SubInvocationExtended; b: SubInvocationExtended }[];
 }
 
+/** Signers and policies of a contract account (#898). */
+export interface SmartWalletSigner {
+  key: string;
+  type: string;
+  expiration: number | null;
+  since_ledger: number | null;
+}
+export interface SmartWalletState {
+  address: string;
+  signers: SmartWalletSigner[];
+  policies: SmartWalletSigner[];
+  history: { subject: string; action: string; key: string; type: string; ledger: number; description: string }[];
+}
+
+/** One-line transaction summary (#897). */
+export interface TxNarrative {
+  tx_hash: string;
+  event_count: number;
+  action: string | null;
+  protocol: string | null;
+  actor: string | null;
+  sentence: string;
+  rule: string;
+  net_flows: Record<string, Record<string, string>>;
+}
+
+// Issue #921/#923: network metrics shapes come from the generated OpenAPI types.
+export type NetworkLedgerMetric = Schemas["NetworkLedgerMetric"];
+export type NetworkMetricsResponse = Schemas["NetworkMetricsResponse"];
+
 export const api = {
-  events: (params: { contract?: string; fn?: string; after_seq?: number; limit?: number; type?: string }) => {
+  networkMetrics: (range: NetworkMetricsResponse["range"] = "1h") =>
+    unwrap(apiClient.GET("/api/network/metrics", { params: { query: { range } } })),
+  networkMetricsStreamUrl: `${BASE}/network/metrics/stream`,
+  events: (params: { contract?: string; fn?: string; after_seq?: number; limit?: number; type?: string; from?: string; to?: string }) => {
     const q = new URLSearchParams();
     if (params.contract) q.set("contract", params.contract);
     if (params.fn) q.set("fn", params.fn);
     if (params.after_seq) q.set("after_seq", String(params.after_seq));
     if (params.limit) q.set("limit", String(params.limit));
     if (params.type) q.set("type", params.type);
+    if (params.from) q.set("from", params.from);
+    if (params.to) q.set("to", params.to);
     return get<EventsPage>(`/events?${q}`);
   },
   event: (seq: number) => get<DecodedEvent>(`/events/${seq}`),
+  txNarrative: (hash: string) => get<TxNarrative>(`/transactions/${hash}/narrative`),
+  smartWallet: (address: string) => get<SmartWalletState>(`/wallet/${address}/smart-wallet`),
   asset: (issuer: string, code: string) => get<AssetInfo>(`/assets/${issuer}/${code}`),
   search: (q: string, limit = 10) => {
     const params = new URLSearchParams();
@@ -702,6 +843,7 @@ export const api = {
     params.set("limit", String(limit));
     return get<SearchResponse>(`/search?${params}`);
   },
+  lineage: (seq: number) => get<EventLineage>(`/events/${seq}/lineage`),
   zkCosts: (seq: number) => get<{ calls: ZkHostCall[]; delta: ZkCostDelta | null }>(`/events/${seq}/zk-costs`),
   /** Powers the home page's compact stats bar — polled every 10s. */
   health: () => get<HealthResponse>("/health"),
@@ -736,11 +878,27 @@ export const api = {
   },
 
   /** #528: Download wallet event history as CSV.
-   *  Triggers a browser file download directly. */
-  exportWalletCsv: (address: string, params: { fn?: string } = {}) => {
+   *  Supports one-off downloads or email-based recurring exports. */
+  exportWalletCsv: (
+    address: string,
+    params: { fn?: string; email?: string; schedule?: "daily" | "weekly" } = {},
+  ) => {
     const q = new URLSearchParams({ format: "csv", wallet: address });
     if (params.fn) q.set("fn", params.fn);
+    if (params.email) q.set("email", params.email);
+    if (params.schedule) q.set("schedule", params.schedule);
+
     const url = `/api/export/events?${q}`;
+    if (params.schedule && params.email) {
+      return fetch(url, { headers: { Accept: "application/json" } }).then(async (res) => {
+        if (!res.ok) {
+          const body = await res.json().catch(() => ({}));
+          throw new Error(body?.error || "Failed to schedule export");
+        }
+        return res.json();
+      });
+    }
+
     const a = document.createElement("a");
     a.href = url;
     a.download = `wallet-${address}-events.csv`;
@@ -783,6 +941,29 @@ export const api = {
 
   // transaction status (polling fallback; SSE via useTxStatus hook)
   txStatus: (txHash: string) => get<TxStatusResponse>(`/transactions/${txHash}/status`),
+  transaction: (txHash: string) => get<TransactionDetails>(`/transactions/${txHash}`),
+  runAnalyticsQuery: (query: string) =>
+    mutationFetch(`${BASE}/sql`, {
+      method: "POST",
+      body: JSON.stringify({ query, format: "json" }),
+    }).then(async (response) => {
+      if (!response.ok) {
+        const body = await response.json().catch(() => ({}));
+        throw new Error(body.error ?? `API ${response.status}`);
+      }
+      return response.json() as Promise<AnalyticsSqlResult>;
+    }),
+  exportAnalyticsCsv: async (query: string) => {
+    const response = await mutationFetch(`${BASE}/sql`, {
+      method: "POST",
+      body: JSON.stringify({ query, format: "csv" }),
+    });
+    if (!response.ok) {
+      const body = await response.json().catch(() => ({}));
+      throw new Error(body.error ?? `API ${response.status}`);
+    }
+    return response.blob();
+  },
 
   // Circuit breaker status
   circuitBreakerStatus: (id: string) => get<CircuitBreakerStatus>(`/contracts/${id}/circuit-breaker`),
@@ -1003,11 +1184,11 @@ export const api = {
   },
 
   // Issue #514: search + filter contracts list
-  listContractsSearch: (params: { q?: string; type?: string; page?: number; limit?: number }) => {
+  listContractsSearch: (params: { q?: string; type?: string; after?: string; limit?: number }) => {
     const q = new URLSearchParams();
     if (params.q) q.set("q", params.q);
     if (params.type && params.type !== "all") q.set("type", params.type);
-    q.set("page", String(params.page ?? 1));
+    if (params.after) q.set("after", params.after);
     q.set("limit", String(params.limit ?? 25));
     return get<ContractsListResponse>(`/contracts?${q}`);
   },
@@ -1027,5 +1208,18 @@ export const api = {
       const data = await r.json();
       if (!r.ok) throw Object.assign(new Error(data.error ?? `API ${r.status}`), { status: r.status, data });
       return data as { ok: boolean };
+    }),
+
+  // Issue #805: Certified PDF reports & detached verification
+  eventReportUrl: (seq: number) => `${BASE}/reports/event/${seq}`,
+  contractReportUrl: (id: string) => `${BASE}/reports/contract/${encodeURIComponent(id)}`,
+  verifyReport: (data: unknown, expectedHash: string) =>
+    mutationFetch(`${BASE}/reports/verify`, {
+      method: "POST",
+      body: JSON.stringify({ data, expected_hash: expectedHash }),
+    }).then(async (r) => {
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.error || "Verification failed");
+      return data as { verified: boolean; computed_hash: string; algorithm: string };
     }),
 };

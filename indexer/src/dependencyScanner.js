@@ -1,4 +1,5 @@
 import { logger } from "./logger.js";
+import { safeFetch } from "./safeHttp.js";
 const CRATES_API_BASE = "https://crates.io/api/v1/crates";
 
 const FRAMEWORK_DEPENDENCIES = [
@@ -84,7 +85,7 @@ async function fetchLatestCrateVersion(crateName) {
   if (latestVersionCache.has(crateName)) return latestVersionCache.get(crateName);
 
   try {
-    const res = await fetch(`${CRATES_API_BASE}/${crateName}`);
+    const res = await safeFetch(`${CRATES_API_BASE}/${encodeURIComponent(crateName)}`);
     if (!res.ok) throw new Error(`Crates.io responded ${res.status}`);
     const json = await res.json();
     const latest = json?.crate?.max_version;

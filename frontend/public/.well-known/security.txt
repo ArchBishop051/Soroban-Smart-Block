@@ -1,0 +1,6 @@
+# Soroban Smart Block Explorer — RFC 9116 security contact
+Contact: https://github.com/Soroban-Smart-Block-Explorer/Soroban-Smart-Block/security/advisories/new
+Expires: 2027-09-26T00:00:00.000Z
+Policy: https://github.com/Soroban-Smart-Block-Explorer/Soroban-Smart-Block/blob/main/SECURITY.md
+Preferred-Languages: en
+Canonical: https://github.com/Soroban-Smart-Block-Explorer/Soroban-Smart-Block/blob/main/frontend/public/.well-known/security.txt

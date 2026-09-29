@@ -1,77 +1,157 @@
+@import "./styles/tokens.css";
+
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
-:root {
-  --bg: #0d1117;
-  --surface: #161b22;
-  --border: #30363d;
-  --accent: #58a6ff;
-  --text: #e6edf3;
-  --muted: #8b949e;
-  --green: #3fb950;
-  --yellow: #d29922;
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, 'Open Sans', 'Helvetica Neue', sans-serif;
+  font-size: 14px;
+  transition: background 200ms ease, color 200ms ease;
 }
 
-[data-theme="light"] {
-  --bg: #f8fafc;
-  --surface: #ffffff;
-  --border: #d1d5db;
-  --accent: #2563eb;
-  --text: #111827;
-  --muted: #6b7280;
-  --green: #047857;
-  --yellow: #d97706;
+a {
+  color: var(--accent);
+  text-decoration: none;
 }
-
-body { background: var(--bg); color: var(--text); font-family: system-ui, sans-serif; font-size: 14px; transition: background 200ms ease, color 200ms ease; }
-
-a { color: var(--accent); text-decoration: none; }
-a:hover { text-decoration: underline; }
+a:hover {
+  text-decoration: underline;
+}
 
 input, select {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  color: var(--text);
-  border-radius: 6px;
-  padding: 6px 10px;
-  font-size: 14px;
+  background: var(--color-bg-secondary);
+  border: 1px solid var(--color-border-default);
+  color: var(--color-text-primary);
+  border-radius: var(--radius-md);
+  padding: var(--spacing-2) var(--spacing-3);
+  font-size: var(--font-size-base);
   outline: none;
-  transition: background 200ms ease, border-color 200ms ease, color 200ms ease;
+  transition: background var(--duration-normal) var(--ease-out), border-color var(--duration-normal) var(--ease-out), color var(--duration-normal) var(--ease-out);
 }
-input:focus, select:focus { border-color: var(--accent); }
+input:focus, select:focus {
+  border-color: var(--border-focus);
+  box-shadow: 0 0 0 2px var(--focus-ring);
+}
 
 button {
   background: var(--accent);
-  color: #0d1117;
-  border: none;
+  color: var(--accent-contrast);
+  border: 1px solid transparent;
   border-radius: 7px;
   padding: 6px 14px;
   font-weight: 600;
   cursor: pointer;
-  transition: background 200ms ease, color 200ms ease, opacity 200ms ease;
+  transition: background var(--duration-normal) var(--ease-out), color var(--duration-normal) var(--ease-out), opacity var(--duration-normal) var(--ease-out);
 }
-button:hover { opacity: 0.85; }
+button:hover {
+  opacity: 0.88;
+}
+button:focus-visible {
+  outline: 2px solid var(--border-focus);
+  outline-offset: 2px;
+}
 
 .card {
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 8px;
   padding: 17px;
-  transition: background 200ms ease, border-color 200ms ease, color 200ms ease;
+  box-shadow: var(--shadow-sm);
+  transition: background 200ms ease, border-color 200ms ease, color 200ms ease, box-shadow 200ms ease;
 }
 
 .badge {
   display: inline-block;
-  padding: 2px 8px;
-  border-radius: 12px;
-  font-size: 12px;
-  font-weight: 600;
-  background: var(--border);
-  color: var(--text);
-  transition: background 200ms ease, color 200ms ease;
+  padding: var(--spacing-1) var(--spacing-3);
+  border-radius: var(--radius-full);
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-semibold);
+  background: var(--color-border-default);
+  color: var(--color-text-primary);
+  transition: background var(--duration-normal) var(--ease-out), color var(--duration-normal) var(--ease-out);
 }
-.badge.green { background: #1a3a22; color: var(--green); }
-.badge.yellow { background: #3a2e0a; color: var(--yellow); }
-.badge.wrap { background: #0d2a3a; color: #15a2e4; }
-.badge.unwrap { background: #2a1a0d; color: #e8a44a; }
-.badge.clawback { background: #3a0d0d; color: #f85149; }
-.badge.classic { background: #21262d; color: #8b949e; }
+.badge.green {
+  background: var(--success-bg);
+  color: var(--success);
+  border: 1px solid var(--success-border);
+}
+.badge.yellow {
+  background: var(--warning-bg);
+  color: var(--warning);
+  border: 1px solid var(--warning-border);
+}
+.badge.wrap {
+  background: var(--info-bg);
+  color: var(--accent);
+  border: 1px solid var(--info-border);
+}
+.badge.unwrap {
+  background: var(--warning-bg);
+  color: var(--warning);
+  border: 1px solid var(--warning-border);
+}
+.badge.clawback {
+  background: var(--danger-bg);
+  color: var(--danger);
+  border: 1px solid var(--danger-border);
+}
+.badge.classic {
+  background: var(--surface-raised);
+  color: var(--text-muted);
+  border: 1px solid var(--border);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* Issue #924: mobile-first detail pages — no horizontal page scroll at 360px,
+   ≥44px touch targets, card transforms for tables and sticky section nav. */
+img, svg, canvas, video { max-width: 100%; }
+pre, code { overflow-wrap: anywhere; }
+main { overflow-wrap: anywhere; }
+
+.contract-tabs {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  background: var(--bg);
+  overflow-x: auto;
+  flex-wrap: nowrap;
+  scrollbar-width: none;
+}
+.contract-tabs > button { white-space: nowrap; flex: 0 0 auto; }
+
+@media (max-width: 640px) {
+  main table { display: block; max-width: 100%; overflow-x: auto; }
+  table.responsive-table, .responsive-table tbody, .responsive-table tr, .responsive-table td { display: block; width: 100%; }
+  .responsive-table thead { display: none; }
+  .responsive-table tr {
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    padding: 8px;
+    margin-bottom: 8px;
+  }
+  .responsive-table td[data-label]::before {
+    content: attr(data-label);
+    display: block;
+    font-size: 11px;
+    color: var(--muted);
+    text-transform: uppercase;
+  }
+  /* Wide visualizations: allow native pan/pinch inside their own box, never the page. */
+  .card { max-width: 100%; overflow-x: auto; touch-action: pan-x pan-y pinch-zoom; }
+}
+
+@media (pointer: coarse), (max-width: 640px) {
+  button, [role="button"], select, input[type="checkbox"], input[type="radio"], .contract-tabs > button {
+    min-height: 44px;
+    min-width: 44px;
+  }
+  .copy-btn { min-width: 44px !important; min-height: 44px !important; }
+}

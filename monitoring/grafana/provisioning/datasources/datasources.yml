@@ -6,3 +6,9 @@ datasources:
     access: proxy
     url: http://prometheus:9090
     isDefault: true
+
+  # Continuous profiling (#944); only reachable with the "profiling" compose profile.
+  - name: Pyroscope
+    type: grafana-pyroscope-datasource
+    access: proxy
+    url: http://pyroscope:4040

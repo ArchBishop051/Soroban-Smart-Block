@@ -9,9 +9,21 @@ on:
     branches: [main]
     paths:
       - "docs/**"
+      - "examples/tutorials/**"
+      - "scripts/docs-snippets.mjs"
       - "indexer/src/**"
       - "contracts/**"
+      - "frontend/src/ui/**"
+      - "frontend/.storybook/**"
+      - "frontend/src/styles/**"
       - "CONTRIBUTING.md"
+      - ".github/workflows/docs.yml"
+  pull_request:
+    paths:
+      - "docs/**"
+      - "examples/tutorials/**"
+      - "packages/cli/src/tui/filter.js"
+      - "scripts/docs-snippets.mjs"
       - ".github/workflows/docs.yml"
   workflow_dispatch:
 
@@ -39,6 +51,10 @@ jobs:
         run: npm ci
         working-directory: indexer
 
+      - name: Install frontend deps (for Storybook)
+        run: npm ci
+        working-directory: frontend
+
       - name: Regenerate OpenAPI JSON from YAML
         run: |
           node -e "
@@ -62,6 +78,10 @@ jobs:
           <a href="./docs/site/index.html">Continue to the documentation</a>
           EOF
 
+      # Tutorials include code from examples/tutorials; fails on a missing snippet.
+      - name: Include tutorial snippets
+        run: node scripts/docs-snippets.mjs _site/docs/guides
+
       - name: Generate JSDoc reference for the indexer
         continue-on-error: true
         run: npx --yes jsdoc@4 -r indexer/src -d _site/docs/reference/indexer
@@ -77,14 +97,58 @@ jobs:
           mkdir -p _site/docs/reference/contract
           cp -r target/doc/* _site/docs/reference/contract/ || true
 
+      - name: Build Storybook
+        run: npm run build-storybook
+        working-directory: frontend
+
+      - name: Copy Storybook to docs
+        run: |
+          mkdir -p _site/storybook
+          cp -r frontend/storybook-static/* _site/storybook/ || true
+
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
         with:
           path: _site
 
+  tutorials:
+    name: Run tutorials against local stack
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Start local stack (Postgres + quickstart + indexer)
+        run: |
+          # Tutorial 2 registers a placeholder contract that has no on-chain WASM spec.
+          printf 'services:\n  indexer:\n    environment:\n      - VERIFY_ABI=false\n' > "$RUNNER_TEMP/compose.ci.yml"
+          docker compose -f docker-compose.yml -f docker-compose.override.yml -f "$RUNNER_TEMP/compose.ci.yml" \
+            up -d --build postgres stellar-quickstart indexer
+          for i in $(seq 1 60); do curl -sf http://localhost:3001/health && exit 0; sleep 5; done
+          docker compose logs indexer; exit 1
+
+      - name: Install tutorial dependencies
+        run: npm ci
+        working-directory: examples/tutorials
+
+      - name: Run tutorials
+        run: node run-all.mjs
+        working-directory: examples/tutorials
+        env:
+          EXPLORER_URL: http://localhost:3001
+
+      - name: Stack logs on failure
+        if: failure()
+        run: docker compose logs --tail=200 indexer
+
   deploy:
     name: Deploy to GitHub Pages
-    needs: build
+    if: github.event_name != 'pull_request'
+    needs: [build, tutorials]
     runs-on: ubuntu-latest
     environment:
       name: github-pages

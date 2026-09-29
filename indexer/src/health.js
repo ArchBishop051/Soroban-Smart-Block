@@ -252,6 +252,7 @@ export async function getHealthStatus() {
   const indexer = checkIndexer();
   const workers = checkWorkers();
   const activeAlerts = getActiveAlerts();
+  const replicas = db.getReplicaState?.() ?? [];
 
   // Overall status: healthy if all critical dependencies are healthy
   // Cache is optional, workers are degradable
@@ -268,6 +269,7 @@ export async function getHealthStatus() {
       cache,
       indexer,
       workers,
+      replicas: { configured: replicas.length, healthy: replicas.filter((replica) => replica.healthy).length, instances: replicas },
     },
     // Powers the frontend's compact home-page stats bar (polled every 10s).
     stats: {

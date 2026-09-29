@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { NETWORK_COLORS, useNetwork, type NetworkConfig } from "../contexts/NetworkContext";
+import { sorobanRpcRequest } from "../services/sandbox-api";
 
 type HealthState = "checking" | "connected" | "degraded" | "down";
 
@@ -11,13 +12,8 @@ interface Health {
 async function probeNetwork(rpcUrl: string): Promise<Health> {
   const start = performance.now();
   try {
-    const res = await fetch(rpcUrl, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "getHealth" }),
-    });
+    await sorobanRpcRequest(rpcUrl, "getNetwork");
     const latencyMs = Math.round(performance.now() - start);
-    if (!res.ok) return { state: "degraded", latencyMs };
     return { state: latencyMs > 1500 ? "degraded" : "connected", latencyMs };
   } catch {
     return { state: "down", latencyMs: null };

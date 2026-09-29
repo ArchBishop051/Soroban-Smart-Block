@@ -30,5 +30,5 @@ wildcards = "allow"
 ignore = []
 
 [sources]
-unknown-registry = "warn"
-unknown-git = "warn"
+unknown-registry = "deny"
+unknown-git = "deny"

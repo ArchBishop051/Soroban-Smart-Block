@@ -8,6 +8,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { api, type GraphNode3D, type GraphLink3D } from "../api";
+import { getGraphColors } from "../utils/themeTokens";
 
 interface GraphData {
   nodes: GraphNode3D[];
@@ -45,13 +46,14 @@ export default function ContractDependencyGraph3D() {
     import("3d-force-graph").then(({ default: ForceGraph3D }) => {
       if (!containerRef.current) return;
 
+      const colors = getGraphColors();
       const graph = ForceGraph3D()(containerRef.current)
-        .backgroundColor("#0a0a14")
+        .backgroundColor(colors.bg)
         .nodeId("id")
         .nodeLabel((n: any) => shortId(n.id))
-        .nodeColor((n: any) => (n.callCount > 10 ? "#f59e0b" : "#6366f1"))
+        .nodeColor((n: any) => (n.callCount > 10 ? colors.nodeContract : colors.nodeWallet))
         .nodeVal((n: any) => Math.max(1, Math.log2(n.callCount + 1)) * 2)
-        .linkColor(() => "#4b5563")
+        .linkColor(() => colors.edge)
         .linkWidth((l: any) => Math.min(Math.log2((l.value ?? 1) + 1), 4))
         .linkDirectionalArrowLength(4)
         .linkDirectionalArrowRelPos(1)

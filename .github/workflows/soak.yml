@@ -1,0 +1,74 @@
+name: Soak test
+
+# Closes #893 — long-duration leak / latency-drift detection for the indexer.
+# Weekly on a self-hosted or large runner (set the SOAK_RUNNER repository
+# variable, e.g. "self-hosted"); GitHub-hosted runners cap jobs at 6 h, so
+# the default hosted run is 5 h. Use the duration input for 72 h runs.
+
+on:
+  schedule:
+    - cron: "0 3 * * 6" # Saturday 03:00 UTC
+  workflow_dispatch:
+    inputs:
+      duration:
+        description: "Soak duration (e.g. 2h, 5h, 72h)"
+        required: false
+        default: "5h"
+
+jobs:
+  soak:
+    name: Indexer soak (${{ inputs.duration || '5h' }})
+    runs-on: ${{ vars.SOAK_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 4380
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: soroban
+          POSTGRES_PASSWORD: soroban_secret
+          POSTGRES_DB: soroban_explorer
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+    env:
+      DATABASE_URL: postgres://soroban:soroban_secret@localhost:5432/soroban_explorer
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Start indexer
+        working-directory: indexer
+        env:
+          NODE_ENV: development
+          RATE_LIMITING_DISABLED: "true"
+        run: |
+          npm ci
+          npm start > indexer.log 2>&1 &
+          for i in $(seq 1 30); do curl -fsS http://localhost:3001/health && break; sleep 2; done
+          curl -fsS http://localhost:3001/health || { cat indexer.log; exit 1; }
+          ln -s ../indexer/node_modules ../seed-data/node_modules
+          (cd ../seed-data && node seed.js)
+
+      - name: Soak
+        run: node tests/soak/run.js --duration "${{ inputs.duration || '5h' }}" --interval 60s
+
+      - name: Summary
+        if: always()
+        run: cat tests/soak/reports/summary.md >> "$GITHUB_STEP_SUMMARY" || true
+
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: soak-report
+          path: |
+            tests/soak/reports
+            indexer/indexer.log
+          if-no-files-found: ignore

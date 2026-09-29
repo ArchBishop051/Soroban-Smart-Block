@@ -16,6 +16,10 @@ import { logger } from "./logger.js";
 
 import cron from "node-cron";
 import { db } from "./db.js";
+import { safeFetch } from "./safeHttp.js";
+
+// Per-purpose allow-list: ABI sync may only talk to GitHub.
+export const GITHUB_HOSTS = ["api.github.com", "raw.githubusercontent.com"];
 
 const GITHUB_API = "https://api.github.com";
 const ABI_REPO = process.env.ABI_REPO || "Soroban-Smart-Block-Explorer/verified-abis";
@@ -34,7 +38,7 @@ function githubHeaders() {
 }
 
 async function ghFetch(url) {
-  const res = await fetch(url, { headers: githubHeaders() });
+  const res = await safeFetch(url, { headers: githubHeaders(), allowedHosts: GITHUB_HOSTS, allowHttp: false });
 
   if (res.status === 403 || res.status === 429) {
     const reset = res.headers.get("x-ratelimit-reset");
