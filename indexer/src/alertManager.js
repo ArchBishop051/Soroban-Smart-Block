@@ -30,7 +30,7 @@ const MAX_HEAP_MB = config.ALERT_MAX_HEAP_MB;
 const INDEXER_STALL_MS = config.ALERT_INDEXER_STALL_MS;
 const MIN_DECODE_RATE = config.ALERT_MIN_DECODE_RATE;
 
-export const ALERT_CONDITIONS = {
+export const ALERT_CONDITIONS = Object.freeze({
   INDEXER_DOWN: "INDEXER_DOWN",
   LEDGER_GAP: "LEDGER_GAP",
   DB_FAILURE: "DB_FAILURE",
@@ -41,7 +41,8 @@ export const ALERT_CONDITIONS = {
   REORG_DETECTED: "REORG_DETECTED",
   DECODE_RATE_LOW: "DECODE_RATE_LOW",
   AUDIT_PARTITION_FAILURE: "AUDIT_PARTITION_FAILURE",
-};
+  ALERTING_PIPELINE_LAG: "ALERTING_PIPELINE_LAG",
+});
 
 const SEVERITY = {
   [ALERT_CONDITIONS.INDEXER_DOWN]: "critical",
@@ -54,6 +55,7 @@ const SEVERITY = {
   [ALERT_CONDITIONS.REORG_DETECTED]: "critical",
   [ALERT_CONDITIONS.DECODE_RATE_LOW]: "warning",
   [ALERT_CONDITIONS.AUDIT_PARTITION_FAILURE]: "critical",
+  [ALERT_CONDITIONS.ALERTING_PIPELINE_LAG]: "critical",
 };
 
 // Active alert state — maps condition → timestamp when first fired
@@ -263,3 +265,32 @@ export async function checkDecodeRate(successRate) {
     resolveAlert(ALERT_CONDITIONS.DECODE_RATE_LOW);
   }
 }
+
+export async function checkAlertingPipelineLag(lagSeconds) {
+  if (lagSeconds > 300) {
+    await fireAlert(
+      ALERT_CONDITIONS.ALERTING_PIPELINE_LAG,
+      `Alerting evaluations are ${Math.round(lagSeconds)} seconds behind`,
+    );
+  } else {
+    resolveAlert(ALERT_CONDITIONS.ALERTING_PIPELINE_LAG);
+  }
+}
+
+export default Object.freeze({
+  ALERT_CONDITIONS,
+  fireAlert,
+  resolveAlert,
+  getActiveAlerts,
+  recordPoll,
+  checkIndexerDown,
+  checkLedgerGap,
+  checkDbHealth,
+  checkResourceConstraints,
+  checkRpcHealth,
+  checkThroughput,
+  checkDlqSize,
+  alertReorg,
+  checkDecodeRate,
+  checkAlertingPipelineLag,
+});
