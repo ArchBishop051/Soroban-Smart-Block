@@ -35,7 +35,9 @@ import {
   getKeyUsage,
 } from '../admin/keyManager.js';
 import { db, pool } from '../db.js';
-import { getActiveAlerts, resolveAlert } from '../alertManager.js';
+import * as alertManager from '../alertManager.js';
+
+const { getActiveAlerts, resolveAlert } = alertManager;
 // Note: getRedisClient (rateLimit/tokenBucket.js) and runAllChecks
 // (doctor-lib.js) were imported here but never called anywhere in this
 // file — dead imports left over from the removed legacy /api/doctor route
